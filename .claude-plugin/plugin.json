@@ -1,0 +1,16 @@
+{
+  "name": "mindframe",
+  "description": "Customer-installable bundle for shipping AI-agent infrastructure. Wraps taskpilot, session-bridge, taskboard, dispatcher, librarian, browser-bridge, and a customer-domain knowledge base into one onboardable product. First wedge: AI Sentry triage.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Thatcher",
+    "url": "https://github.com/ThatcherT"
+  },
+  "keywords": [
+    "agentic",
+    "bundle",
+    "framework",
+    "ops",
+    "claude"
+  ]
+}
