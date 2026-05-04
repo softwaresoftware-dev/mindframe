@@ -31,8 +31,8 @@ Two views.
                                        │ requires
    ┌──────────────┬────────────┬───────┼────────────┬────────────┬──────────────┐
    ▼              ▼            ▼       ▼            ▼            ▼              ▼
-agent-       channel    knowledge-   event-     infra-       browser-      error-triage
-spawning                base         routing    status-page  automation    (optional)
+agent-       channel    knowledge-   event-     status-      browser-      error-triage
+spawning                base         routing    dashboard    automation    (optional)
    │              │            │       │            │            │              │
  taskpilot   session-bridge librarian  dispatcher  taskboard   browser-bridge   gh-mcp,
                                                                                 sentry-mcp,
