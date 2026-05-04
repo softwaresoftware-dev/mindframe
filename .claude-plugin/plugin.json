@@ -1,7 +1,7 @@
 {
   "name": "mindframe",
-  "description": "Customer-installable bundle for shipping AI-agent infrastructure. Wraps taskpilot, session-bridge, taskboard, dispatcher, librarian, browser-bridge, and a customer-domain knowledge base into one onboardable product. First wedge: AI Sentry triage.",
-  "version": "0.1.0",
+  "description": "Customer-installable bundle for shipping AI-agent infrastructure. Composes agent-spawning, session-mesh, knowledge-base, event-routing, status-dashboard, and browser-automation into one onboardable product. First wedge: AI Sentry triage.",
+  "version": "0.2.0",
   "author": {
     "name": "Thatcher",
     "url": "https://github.com/ThatcherT"
@@ -12,5 +12,25 @@
     "framework",
     "ops",
     "claude"
-  ]
+  ],
+  "userConfig": {
+    "anthropic_api_key": {
+      "type": "string",
+      "description": "Anthropic API key used by spawned agents in this deployment. Bring your own from your Team or Enterprise org. Stored in the system keychain.",
+      "required": true,
+      "sensitive": true
+    },
+    "customer_name": {
+      "type": "string",
+      "description": "Short identifier for this deployment (e.g. 'acme'). Used in vault paths, daemon names, and routing recipes so multiple deployments on one machine don't collide.",
+      "required": true,
+      "sensitive": false
+    },
+    "vault_path": {
+      "type": "directory",
+      "description": "Where the customer-domain knowledge base lives. Mindframe scaffolds the v2 schema (Services, Repositories, Decisions, Incidents, Runbooks) into this directory. Defaults to ~/.mindframe/<customer_name>/vault.",
+      "required": false,
+      "sensitive": false
+    }
+  }
 }
