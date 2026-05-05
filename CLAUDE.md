@@ -18,8 +18,6 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 
 ## Architecture
 
-Two views.
-
 ### Plugin/capability graph
 
 ```
@@ -56,36 +54,20 @@ Sentry → dispatcher (webhook) → spawn ephemeral claude → /mindframe:sentry
 ## Invariants
 
 - **Mindframe is manifest-first.** Bundle composition lives in `requires`. No business logic in this plugin.
-- **Every box is a plugin or an MCP.** No loose `tools/` directories in the bundle. The only existing exception is `home-taskboard` (Thatcher's :42069 deployment) — that migrates to a `taskboard`-plugin deployment in parallel work.
+- **Every box is a plugin or an MCP.** No loose `tools/` directories in the bundle.
 - **Capabilities are the only contract.** Any provider is swappable per customer (notification → Slack today, email tomorrow).
 - **Push and pull paths stay separate.** Dispatcher (ears) and taskboard (eyes) don't talk directly.
-
-## Decisions (canonical 2026-04-27, see vault)
-
-- **Job-per-event over long-running.** Each event spawns fresh claude that dies after the job. Reliable, avoids context-window collapse.
-- **Claude Code subscription pricing.** Agents run as `claude` in tmux, billed against the user's subscription, not API tokens.
-- **Customer credentials = setup user's credentials (POC compromise).** Must change before second customer.
-- **Adopt-first for MCPs.** Only build if no acceptable community option exists.
-- **Markdown vault for KB.** Greppable, human-editable, dogfoods existing librarian.
-- **Browser-bridge default-install.** General-purpose perception, not optional.
 
 ## Bootstrap order
 
 KB schema (paper) ✓ → `/mindframe:sentry-triage` against fake KB → `/mindframe:setup` wizard → trigger plumbing.
 
-## Reference
+## Status, decisions, open threads
 
-- `docs/kb-schema.md` — customer-domain KB contract (11 entity types, FK rules, CATALOG, validator, 3-pass bootstrap)
-- `../taskboard/` — sibling plugin, dashboard framework, also bundled
-- `vault-v1/Projects/mindframe/mindframe.md` — open threads, decisions log
+Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don't re-record state here. The librarian owns the v2 schema (11 entity types + FK rules) and will keep cross-references correct.
 
-## Open threads
+## In-directory artifacts
 
-Tracked in the vault note. Highlights:
-
-1. Generalize vault for customer domain (services/repos/runbooks/incidents/owners) + per-customer packaging
-2. Dispatcher: add spawn-on-demand mode + idempotency + customer-domain ingress
-3. MCP fitness assessment per system
-5. Get 30-50 anonymized real Sentry issues from customer
-6. Notification mechanism per integration (Slack thread vs PR comment vs email)
-7. RCA destination (GitHub wiki vs PR description vs vault entry)
+- `docs/kb-schema.md` — customer-domain KB contract. Read before building setup or wedge skills.
+- `skills/setup/` — `/mindframe:setup` wizard.
+- `skills/sentry-triage/` — `/mindframe:sentry-triage` wedge skill.
