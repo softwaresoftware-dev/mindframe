@@ -3,8 +3,8 @@
   "description": "AI agents that watch your stack and act on it.",
   "version": "0.2.0",
   "author": {
-    "name": "Thatcher",
-    "url": "https://github.com/ThatcherT"
+    "name": "NOV LLC",
+    "url": "https://github.com/softwaresoftware-dev"
   },
   "keywords": [
     "incident-response",
@@ -12,5 +12,6 @@
     "ai-agent",
     "ops",
     "claude"
-  ]
+  ],
+  "repository": "https://github.com/softwaresoftware-dev/mindframe"
 }
