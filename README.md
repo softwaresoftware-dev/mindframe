@@ -12,10 +12,7 @@ See [CLAUDE.md](CLAUDE.md) for the bundle composition (7 buckets), runtime flow,
 
 ## Commands
 
-- `/mindframe:setup` — onboarding wizard (placeholder, see SKILL.md)
-- `/mindframe:sentry-triage` — wedge skill (placeholder, see SKILL.md)
+- `/mindframe:setup` — onboarding wizard. Walks the operator through credentials per data system, validates connections, bootstraps the customer-domain knowledge base from real source systems, wires the dispatcher webhook, and runs an end-to-end smoke test.
+- `/mindframe:sentry-triage` — wedge skill. A Sentry issue arrives; the agent investigates from logs, traces, and recent code; drafts a fix PR or RCA; writes an Incident note; notifies the configured channel.
 
-## Status
-
-v0.1.0 — manifest scaffolded, KB schema documented, skills are placeholders.
-The dashboard component lives in the sibling [`taskboard`](../taskboard/) plugin (formerly the body of this plugin).
+The dashboard component lives in the sibling [`taskboard`](../taskboard/) plugin.

@@ -545,4 +545,4 @@ This keeps schema enforcement in one place and prevents race conditions between 
 2. Monorepo handling: when one Repository hosts ten Services, do we want a `paths_per_service` field on Repository to disambiguate? Defer until first monorepo customer hits it.
 3. Glossary pagination: at 500+ terms a single file gets unwieldy. Split-by-letter (`Glossary/A.md`, etc.) when that becomes a problem; not before.
 4. Project to Decision back-pressure: if a Project produces multiple Decisions, the Project's `linked_decisions` list grows. Probably fine; flag if it exceeds 20 on any project.
-5. Schema versioning: when we add a new entity type or field, how do existing customer vaults migrate? Out of scope for v1; revisit when we have two customers.
+5. Schema versioning: when a new entity type or field is added, how do existing customer vaults migrate? A migration tool would need to detect the prior schema version (frontmatter or sentinel file), apply the diff per entity, and re-run the validator. Not present today; design when the second deployment forces the issue.

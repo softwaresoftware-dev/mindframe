@@ -58,13 +58,9 @@ Sentry → dispatcher (webhook) → spawn ephemeral claude → /mindframe:sentry
 - **Capabilities are the only contract.** Any provider is swappable per customer (notification → Slack today, email tomorrow).
 - **Push and pull paths stay separate.** Dispatcher (ears) and taskboard (eyes) don't talk directly.
 
-## Bootstrap order
-
-KB schema (paper) ✓ → `/mindframe:sentry-triage` against fake KB → `/mindframe:setup` wizard → trigger plumbing.
-
 ## Status, decisions, open threads
 
-Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don't re-record state here. The librarian owns the v2 schema (11 entity types + FK rules) and will keep cross-references correct.
+Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don't re-record state here. The librarian owns the customer-domain KB schema and will keep cross-references correct.
 
 ## In-directory artifacts
 
