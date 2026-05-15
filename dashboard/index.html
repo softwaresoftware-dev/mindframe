@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mindframe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Source+Serif+4:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="wordmark">MINDFRAME</span>
+      <span class="status">live</span>
+    </div>
+    <div class="task-strip">
+      <span class="task-label">current task</span>
+      <span id="task" class="task-value">—</span>
+    </div>
+    <div class="meta">
+      <button id="share" class="share-btn" type="button" disabled title="run an instruction first">share</button>
+      session <span id="sid" class="mono">--------</span>
+    </div>
+  </header>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <main id="stage" class="stage">
+    <div id="empty" class="empty-state">
+      <h1>No tool loaded.</h1>
+      <p>Type an instruction below, or click a starter:</p>
+      <p class="starter-row">
+        <button type="button" class="starter" data-cmd="show me payments-api">show me payments-api</button>
+        <button type="button" class="starter" data-cmd="health of the cluster">health of the cluster</button>
+        <button type="button" class="starter" data-cmd="investigate notifications-worker restarts">investigate notifications-worker restarts</button>
+      </p>
+    </div>
+
+    <div id="spinner" class="spinner-overlay" hidden>
+      <div class="spinner">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="spinner-label">building tool…</div>
+      <div class="spinner-sub" id="spinner-sub"></div>
+      <div class="activity-log" id="spinner-activity"></div>
+    </div>
+
+    <iframe id="artifact" class="artifact" hidden title="Mindframe artifact"></iframe>
+  </main>
+
+  <form id="composer" class="composer" autocomplete="off">
+    <textarea
+      id="input"
+      placeholder="instruct mindframe…  (enter to run, shift+enter for newline)"
+      rows="1"
+      spellcheck="false"
+    ></textarea>
+    <button type="submit" class="send" aria-label="run">run</button>
+  </form>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
