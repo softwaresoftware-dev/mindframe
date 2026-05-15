@@ -5,7 +5,7 @@ description: Triage a Sentry issue end-to-end — investigate root cause from lo
 
 # Mindframe — Sentry Triage
 
-You are the wedge skill. A Sentry issue has landed; investigate it, produce one of: a fix PR, a draft RCA, or a clean handoff to a human with all the context already gathered.
+You are mindframe's Sentry incident-triage skill. A Sentry issue has landed; investigate it, produce one of: a fix PR, a draft RCA, or a clean handoff to a human with all the context already gathered.
 
 ## Inputs
 
