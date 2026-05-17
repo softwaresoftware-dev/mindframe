@@ -8,7 +8,7 @@ further instruction refines or replaces it. Built for the Mindframe demo
 ## Architecture
 
 ```
-Browser (Vite + TS)            this server (Node/Express)         taskpilot
+Browser (Vite + TS)            this server (Python/FastAPI)       taskpilot
 ─────────────────────          ──────────────────────────        ─────────────
 type instruction ─SSE /api/run─▶ POST :8912/tasks/<agent>/message ─▶ daemon ─▶
                                                                     session-bridge ─▶
@@ -45,10 +45,18 @@ no `claude --print` fallback by design.
 
 ## Run
 
+Backend — Python/FastAPI:
+
+```bash
+pip install -r server/requirements.txt
+python3 server/server.py     # backend, http://127.0.0.1:5174  (warms the agent on boot)
+```
+
+Frontend — Vite:
+
 ```bash
 npm install
-npm run server     # backend, http://127.0.0.1:5174  (warms the agent on boot)
-npm run dev        # frontend, http://127.0.0.1:5173
+npm run dev                  # frontend, http://127.0.0.1:5173
 ```
 
 Open <http://127.0.0.1:5173>. The first instruction pays a one-time ~16s agent
@@ -77,7 +85,8 @@ delivered instantly and the agent keeps conversation context across them.
 
 | File | What |
 |---|---|
-| `server/server.ts` | Express server. Drives the taskpilot agent, watches artifacts, serves shares. |
+| `server/server.py` | FastAPI server. Drives the taskpilot agent, watches artifacts, serves shares. |
+| `server/requirements.txt` | Backend Python dependencies (FastAPI, uvicorn, httpx). |
 | `src/main.ts` | Shell UI — instruction box, spinner + activity log, iframe, share button. |
 | `agent/CLAUDE.md` | The Mindframe agent's persona + grounding rules. Loaded as the agent's project context. |
 | `agent/brief.json` | taskpilot operating brief for the agent task. |
@@ -111,11 +120,13 @@ delivered instantly and the agent keeps conversation context across them.
 | `MINDFRAME_SESSION_BRIDGE` | `http://127.0.0.1:8910` | session-bridge daemon |
 | `MINDFRAME_TASKPILOT_DIR` | `../../../providers/taskpilot` | taskpilot plugin dir (for `spawner_cli.py`) |
 | `MINDFRAME_SHARE_RETENTION_DAYS` | `60` | Share retention window |
+| `MINDFRAME_CORS_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173` | Comma-separated CORS allowlist |
 
 ## Notes
 
 - The browser hits the backend directly (`:5174`) for SSE — Vite's dev proxy
-  buffers and drops the final `done` event. CORS on the backend allows this.
+  buffers and drops the final `done` event. The backend's CORS allowlist
+  permits the `:5173` dev origin (`MINDFRAME_CORS_ORIGINS` to override).
 - Vite's file watcher ignores `artifacts/` and `shares/` so backend writes
   don't trigger a page reload mid-run.
 - On load the frontend probes `artifacts/<sid>/latest.html` and restores it

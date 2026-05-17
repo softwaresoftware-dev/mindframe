@@ -5,3 +5,6 @@ dist
 artifacts
 shares
 .agent-id
+__pycache__/
+*.pyc
+.venv/

@@ -4,3 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 .env
+
+# Internal-only material — not part of the customer-installable plugin.
+# Reviews, UAT artifacts, and launch/demo-production work.
+internal/
