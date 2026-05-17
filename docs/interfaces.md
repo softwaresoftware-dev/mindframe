@@ -232,9 +232,9 @@ Team, …), a `CATALOG.md` index, and a `librarian` agent that maintains it.
 
 The vault is **read by grep**, not by embeddings. The full contract — entity
 types, required frontmatter, foreign-key rules, identity invariants, and the
-catalog format — is specified in [`kb-schema.md`](kb-schema.md). Triage skills
-depend on the grep contract documented per-vault in its `README.md`; the demo
-vault's contract is pinned by `tests/e2e/test_vault_fixture.py`.
+catalog format — is specified in [`kb-schema.md`](kb-schema.md). Deliverable
+skills depend on the grep contract documented per-vault in its `README.md`; the
+demo vault's contract is pinned by `tests/e2e/test_vault_fixture.py`.
 
 Consumers should treat `kb-schema.md` as the interface and never assume
 frontmatter fields outside it.
@@ -297,7 +297,7 @@ routes and `POST /api/direct/{session}` both deliver through this mesh.
 
 ## 8. Notification capability
 
-Triage skills end by notifying a human. They do this through the
+Deliverable skills typically end by notifying a human. They do this through the
 `notification` capability — never a named provider:
 
 ```markdown
@@ -311,8 +311,8 @@ The resolver binds `notification` to whatever fits the environment —
 (which Slack channel, which address) comes from the customer's vault — the
 Service or Team note's `slack:` / `notify:` frontmatter — not from the skill.
 
-`notification` is an **optional** capability for the bundle: the triage skills
-include a fallback-file path so a run still produces an artifact if no
+`notification` is an **optional** capability for the bundle: the deliverable
+skills include a fallback-file path so a run still produces an artifact if no
 notification provider is installed.
 
 ---

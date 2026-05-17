@@ -1,18 +1,33 @@
 # mindframe
 
-Customer-installable bundle for shipping AI-agent infrastructure. Wraps existing tools (taskpilot, session-bridge, taskboard, dispatcher, librarian, browser-bridge) into one onboardable product, plus an incident-triage skill on top.
+Customer-installable bundle that gives an organization a knowledge base of how
+it works — and AI agents that act on it.
 
-Lead use case: **AI Sentry triage** — Sentry issue lands, an ephemeral Claude triages it against the customer's vault, drafts a fix or RCA, and notifies the right team.
+Mindframe builds a knowledge base from the systems a team already uses (Slack,
+GitHub, Gmail, infrastructure), then runs agents that turn that knowledge into
+work: reports and reviews, incident triage, answers to "how does X actually
+work here."
 
-Mindframe-the-plugin is **manifest-first**: it ships skills, customer-domain templates (`docs/kb-schema.md`), and a `requires` list. The actual work is done by the bundled providers.
+Mindframe-the-plugin is **manifest-first**: it ships skills, the customer-domain
+knowledge-base schema (`docs/kb-schema.md`), and a `requires` list. The actual
+work is done by the bundled providers (taskpilot, session-bridge, taskboard,
+dispatcher, librarian, browser-bridge).
 
 ## Architecture
 
-See [CLAUDE.md](CLAUDE.md) for the bundle composition (7 buckets), runtime flow, and decisions.
+See [CLAUDE.md](CLAUDE.md) for the bundle composition (7 buckets), runtime flow,
+and decisions. See [`docs/`](docs/) for the product overview, architecture, and
+subsystem interfaces.
 
 ## Commands
 
-- `/mindframe:setup` — onboarding wizard. Walks the operator through credentials per data system, validates connections, bootstraps the customer-domain knowledge base from real source systems, wires the dispatcher webhook, and runs an end-to-end smoke test.
-- `/mindframe:sentry-triage` — incident-triage skill. A Sentry issue arrives; the agent investigates from logs, traces, and recent code; drafts a fix PR or RCA; writes an Incident note; notifies the configured channel.
+- `/mindframe:setup` — onboarding wizard. Probes the environment for available
+  data sources, walks the operator through credentials, bootstraps the
+  customer-domain knowledge base from real source systems, wires the event
+  router, and runs an end-to-end smoke test.
+- `/mindframe:sentry-triage`, `/mindframe:k8s-triage` — deliverable skills. One
+  kind of work the agents do: investigate an incident against the knowledge
+  base, draft a fix or RCA, notify the right team. Incident triage is the first
+  entry in the skills library, not the whole product.
 
 The dashboard component lives in the sibling [`taskboard`](../taskboard/) plugin.

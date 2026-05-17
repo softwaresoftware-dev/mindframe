@@ -1,6 +1,6 @@
 # Mindframe — Agentic Framework Bundle
 
-Customer-installable bundle for shipping AI-agent infrastructure to enterprises. Mindframe is a packaging + onboarding layer, not a framework or dashboard in its own right. The components do the work; mindframe is what makes them installable as one product.
+Customer-installable bundle that gives an organization a knowledge base of how it works — and AI agents that act on it. Mindframe is a packaging + onboarding layer, not a framework or dashboard in its own right. The components do the work; mindframe is what makes them installable as one product. Incident triage is the first deliverable skill, not the mission — the bundle is general over business, engineering, and software-ops domains.
 
 This plugin is **manifest-first** — ships skills, customer templates, and a `requires` list. Actual work happens in the bundled providers. The one exception is `dashboard/` (see below): a self-contained generative-UI web app that ships *inside* this plugin, distributed by mindframe, run locally under Claude Code, and opened through browser-bridge.
 
@@ -12,7 +12,7 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 2. **Knowledge base** — customer vault + librarian agent. Markdown + frontmatter, schema in `docs/kb-schema.md`. Persistent memory: services, repos, runbooks, owners, on-call, past incidents.
 3. **Event router** — `dispatcher`. Push-path: public webhook ingress + LLM/direct router + audit. Spawns ephemeral agents on demand.
 4. **Setup wizard** — `/mindframe:setup`. Claude-driven onboarding. Walks user through credentials per data system, validates connections live, bootstraps the vault, configures triggers, runs end-to-end smoke test.
-5. **Wedge skill** — `/mindframe:sentry-triage`. RCA → draft fix → notify. The thing the customer pays for.
+5. **Deliverable skills** — a library of skills that turn the knowledge base into work: incident triage (`/mindframe:sentry-triage`, `/mindframe:k8s-triage` — RCA → draft fix → notify), reviews and reports, answers about how the org runs. What the customer asks the agents for. New deliverables are added to the library; incident triage is the first.
 6. **Dashboard** — `taskboard` (sibling plugin). Pull-path: probes services, agents, daemons, sites, sessions, telemetry and renders status. Pairs with dispatcher — taskboard is the eyes (pull), dispatcher is the ears (push).
 7. **Perception + adopt-first MCPs** — `claude-browser-bridge` + sentry / gcp-logging / github / grafana / slack MCPs. Browser-bridge is general-purpose perception for any web UI; default-install, not opt-in.
 
@@ -23,7 +23,7 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 ```
                            mindframe (this plugin)
                            - /mindframe:setup
-                           - /mindframe:sentry-triage
+                           - deliverable skills (sentry-triage, k8s-triage, …)
                            - customer-domain KB schema (docs/kb-schema.md)
                                        │
                                        │ requires
@@ -38,7 +38,7 @@ spawning                base         routing    dashboard    automation    (opti
                                                                                 slack
 ```
 
-### Runtime flow (Sentry triage)
+### Runtime flow (example: a Sentry-triage deliverable)
 
 ```
 Sentry → dispatcher (webhook) → spawn ephemeral claude → /mindframe:sentry-triage
@@ -64,7 +64,7 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 
 ## In-directory artifacts
 
-- `docs/kb-schema.md` — customer-domain KB contract. Read before building setup or wedge skills.
+- `docs/kb-schema.md` — customer-domain KB contract. Read before building setup or deliverable skills.
 - `skills/setup/` — `/mindframe:setup` wizard.
-- `skills/sentry-triage/` — `/mindframe:sentry-triage` wedge skill.
+- `skills/sentry-triage/`, `skills/k8s-triage/` — deliverable skills (incident triage). The first entries in the skills library.
 - `dashboard/` — generative-UI web app (Vite + TS frontend, Node/Express backend). The Mindframe agent authors a complete HTML dashboard per instruction; runs locally under Claude Code via a persistent taskpilot agent, opened through browser-bridge. See `dashboard/README.md`.

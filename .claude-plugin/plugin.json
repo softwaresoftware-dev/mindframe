@@ -1,16 +1,16 @@
 {
   "name": "mindframe",
-  "description": "AI agents that watch your stack and act on it.",
+  "description": "AI agents that learn your org and act on it.",
   "version": "0.2.0",
   "author": {
     "name": "NOV LLC",
     "url": "https://github.com/softwaresoftware-dev"
   },
   "keywords": [
-    "incident-response",
-    "triage",
+    "knowledge-base",
     "ai-agent",
-    "ops",
+    "automation",
+    "reporting",
     "claude"
   ],
   "repository": "https://github.com/softwaresoftware-dev/mindframe"

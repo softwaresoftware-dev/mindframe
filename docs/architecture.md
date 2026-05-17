@@ -1,8 +1,8 @@
 # Mindframe — Architecture
 
 This document describes how the mindframe bundle is composed, the two paths it
-runs on, and what happens end-to-end when an incident fires. For what the
-product *is*, see [`product.md`](product.md); for the contracts between
+runs on, and what happens end-to-end when an agent runs a deliverable. For what
+the product *is*, see [`product.md`](product.md); for the contracts between
 subsystems, see [`interfaces.md`](interfaces.md).
 
 ---
@@ -27,10 +27,10 @@ Each clause is one of the seven buckets.
 | # | Bucket | Components | Role |
 |---|--------|-----------|------|
 | 1 | Agent runtime | `taskpilot` + `session-bridge` | Spawns and supervises `claude` processes (tmux-backed, reboot-persistent). A mesh carries inter-agent and agent-to-human messages. |
-| 2 | Knowledge base | customer vault + `librarian` agent | Persistent memory: services, repos, runbooks, owners, on-call, past incidents. Markdown + frontmatter; schema in [`kb-schema.md`](kb-schema.md). |
+| 2 | Knowledge base | customer vault + `librarian` agent | Persistent memory of how the org works: services, projects, decisions, people, past incidents. Markdown + frontmatter; schema in [`kb-schema.md`](kb-schema.md). |
 | 3 | Event router | `dispatcher` | The push path: public webhook ingress, a router, an audit log. Turns events into agent spawns. |
 | 4 | Setup wizard | `/mindframe:setup` | Claude-driven onboarding: discovers the environment, collects credentials, bootstraps the vault, wires triggers, runs a smoke test. |
-| 5 | Incident-triage skill | `/mindframe:sentry-triage`, `/mindframe:k8s-triage` | The work: RCA → draft fix/recommendation → notify. The thing the customer pays for. |
+| 5 | Deliverable skills | `/mindframe:sentry-triage`, `/mindframe:k8s-triage`, … | The work: a library of skills that ground a request in the knowledge base and produce something a human can use. Incident triage is the first; the library grows. |
 | 6 | Dashboard | `taskboard` + the mindframe dashboard app | The pull path: probes everything and renders status. |
 | 7 | Perception + connectors | `claude-browser-bridge` + Sentry / GCP-logging / GitHub / Grafana / Slack MCPs | General-purpose web perception plus adopt-on-install data connectors. |
 
@@ -44,7 +44,7 @@ a provider directly — capabilities are the only contract.
 ```
                          mindframe (this plugin)
                          - /mindframe:setup
-                         - /mindframe:sentry-triage, /mindframe:k8s-triage
+                         - deliverable skills (sentry-triage, k8s-triage, …)
                          - customer-domain KB schema (docs/kb-schema.md)
                          - the dashboard app
                                      │
@@ -65,7 +65,7 @@ verified by `tests/e2e/test_install_contract.py`.
 
 Because the binding is by capability, any provider is swappable per customer:
 notifications resolve to Slack on one install and email on the next, with no
-change to mindframe or to the triage skills.
+change to mindframe or to its deliverable skills.
 
 ## Two paths: push and pull
 
@@ -82,8 +82,8 @@ separate — they never call each other.
               │                                    services, daemons, agents,
        route → spawn ephemeral agent               sessions, telemetry
               │                                          │
-       triage skill runs, recommends                renders current status
-              │
+       deliverable skill runs, produces             renders current status
+              │   its output
        notify the human
 ```
 
@@ -94,11 +94,13 @@ separate — they never call each other.
   announced — a daemon that died quietly, a disk filling up.
 
 Keeping them separate means a flood of events can't blind the dashboard, and a
-slow probe can't delay an incident spawn.
+slow probe can't delay an agent spawn.
 
-## Runtime flow — incident triage
+## Runtime flow — a deliverable run (example: incident triage)
 
-The canonical push-path run, using Sentry as the example source:
+The canonical push-path run. Incident triage is the worked example here because
+it is the first deliverable skill that ships; any deliverable follows the same
+shape — receive a request, ground it in the knowledge base, produce output.
 
 ```
 Sentry ──webhook──▶ dispatcher-ingress ──▶ route ──▶ spawn ephemeral claude
@@ -164,8 +166,8 @@ decision:
   swappable per customer.
 - **Push and pull stay separate.** The dispatcher (ears) and taskboard (eyes)
   do not talk to each other.
-- **Agents recommend; humans act.** Triage skills stop at "recommend + notify."
-  Rollbacks, merges, and pages are gated on human approval.
+- **Agents recommend; humans act.** Deliverable skills stop at producing and
+  notifying. Rollbacks, merges, sends, and pages are gated on human approval.
 - **Subscription auth only.** Agents run as `claude` processes authenticated by
   the Claude Code subscription. No Anthropic API key anywhere in the bundle.
 
@@ -175,7 +177,7 @@ decision:
 |---|---|---|
 | Customer domain knowledge | the vault (git repo) | persistent; curated by the librarian |
 | Event audit + dedupe | dispatcher-ingress SQLite DB | rolling; dedupe entries expire |
-| A triage run's working data | the spawned agent's task directory + recipe cache | the life of the run; cache enables idempotent replay |
+| A deliverable run's working data | the spawned agent's task directory + recipe cache | the life of the run; cache enables idempotent replay |
 | Agent ↔ agent / human messages | the session-bridge mesh | transient |
 | Bundle + per-deployment config | `~/.claude/settings.json` (`pluginConfigs`) | persistent |
 

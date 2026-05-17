@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Onboard a new mindframe deployment. Walk the operator through credentials per data system, validate connections live, bootstrap the customer-domain knowledge base from real source systems (GitHub, Sentry, GCP, PagerDuty, Slack), seed the incident-triage skill, and run an end-to-end smoke test. Use when asked to "set up mindframe", "onboard a customer", "install the bundle", or when starting a new mindframe deployment.
+description: Onboard a new mindframe deployment. Walk the operator through credentials per data system, validate connections live, bootstrap the customer-domain knowledge base from real source systems (Slack, GitHub, Gmail, Sentry, GCP, and whatever else the environment exposes), wire the deliverable skills, and run an end-to-end smoke test. Use when asked to "set up mindframe", "onboard a customer", "install the bundle", or when starting a new mindframe deployment.
 ---
 
 # Mindframe — Setup
@@ -77,7 +77,7 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
 
 5. **Wire the event router.** Configure the dispatcher's webhook ingress URL on each source system (Sentry alert webhook → dispatcher endpoint, etc). Verify the round-trip with a deliberately-injected test event.
 
-6. **Smoke test the incident-triage skill.** Trigger a synthetic Sentry event end-to-end. Confirm the dispatcher spawns the triage agent, the agent reads the vault, makes a recommendation, and notifies through the configured channel.
+6. **Smoke test a deliverable skill.** Trigger a synthetic event end-to-end — a Sentry event against the incident-triage skill is the default, since it ships first. Confirm the dispatcher spawns the agent, the agent reads the vault, produces its output, and notifies through the configured channel.
 
 ## Dependencies
 

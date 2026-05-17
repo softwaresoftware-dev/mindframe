@@ -2,7 +2,7 @@
 
 The persistent memory layer for a mindframe deployment. A markdown + frontmatter Obsidian-style vault, owned by the customer, queried and maintained by the librarian agent.
 
-This schema is the contract between the librarian, the setup wizard, the triage skills (sentry-triage, on-call-buddy, pr-review, etc.), and the validator. Skills query the catalog and read notes. The librarian writes notes. The validator enforces invariants.
+This schema is the contract between the librarian, the setup wizard, the deliverable skills (sentry-triage, k8s-triage, and others as the library grows), and the validator. Skills query the catalog and read notes. The librarian writes notes. The validator enforces invariants.
 
 This is the customer-domain schema. Thatcher's personal vault stays on its existing project-tracker schema and does not migrate.
 
