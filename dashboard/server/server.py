@@ -53,7 +53,7 @@ SHARES_ROOT = ROOT / "shares"
 AGENT_CWD = ROOT / "agent"
 AGENT_BRIEF = AGENT_CWD / "brief.json"
 AGENT_ID_FILE = ROOT / ".agent-id"
-DIST_ROOT = ROOT / "dist"
+WEB_ROOT = ROOT / "public"
 # The customer vault lives beside the dashboard, under the mindframe launch dir.
 VAULT_ROOT = (ROOT / ".." / "launch" / "stage" / "vault").resolve()
 
@@ -729,19 +729,19 @@ async def _run_worker(msg: str, sid: str, queue: asyncio.Queue) -> None:
         await queue.put(None)
 
 
-# Serve the built SPA. Behind nginx, /demo/ is stripped, so the backend sees
-# /, /assets/*, etc. Real files in dist/ are served directly; unknown GET paths
-# fall back to index.html for SPA client-side routing.
+# Serve the static frontend from public/ — no build step. Behind nginx, /demo/
+# is stripped, so the backend sees /, /main.js, /style.css, etc. Real files in
+# public/ are served directly; unknown GET paths fall back to index.html.
 @app.get("/{full_path:path}")
 def serve_spa(full_path: str) -> Response:
     if full_path.startswith("api/"):
         return JSONResponse({"error": "not found"}, status_code=404)
-    dist = DIST_ROOT.resolve()
+    web = WEB_ROOT.resolve()
     if full_path:
-        candidate = (dist / full_path).resolve()
-        if (dist in candidate.parents) and candidate.is_file():
+        candidate = (web / full_path).resolve()
+        if (web in candidate.parents) and candidate.is_file():
             return FileResponse(candidate)
-    index = dist / "index.html"
+    index = web / "index.html"
     if index.is_file():
         return FileResponse(index)
     return JSONResponse({"error": "not found"}, status_code=404)

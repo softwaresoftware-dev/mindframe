@@ -1,12 +1,20 @@
 // Mindframe shell — instruction box, live activity log, iframe holder.
-// Each user instruction opens an SSE to /api/run. The server streams
+// Each user instruction opens an SSE to api/run. The server streams
 // `progress` events (thinking, tool calls, byte counter) while claude works,
 // then a single `done` event with the artifact URL. The shell renders those
 // events as a live activity log under the spinner.
+//
+// No build step: this file is served as-is. All API/asset URLs are relative
+// to APP_BASE — the directory the page is served from — so the same files
+// work whether the page is at / (local) or /demo/ (behind nginx).
 
 const SID_KEY = 'mindframe.sid';
 
-function getOrCreateSid(): string {
+// The directory the current page lives in: '/' locally, '/demo/' behind nginx.
+// Every API call and artifact URL is resolved against this.
+const APP_BASE = location.pathname.replace(/[^/]*$/, '');
+
+function getOrCreateSid() {
   let sid = localStorage.getItem(SID_KEY);
   if (!sid) {
     sid = crypto.randomUUID();
@@ -15,45 +23,34 @@ function getOrCreateSid(): string {
   return sid;
 }
 
-function el<T extends HTMLElement>(sel: string): T {
+function el(sel) {
   const node = document.querySelector(sel);
   if (!node) throw new Error(`missing element: ${sel}`);
-  return node as T;
+  return node;
 }
 
 function init() {
-  const stage = el<HTMLDivElement>('#stage');
-  const empty = el<HTMLDivElement>('#empty');
-  const spinner = el<HTMLDivElement>('#spinner');
-  const spinnerSub = el<HTMLDivElement>('#spinner-sub');
-  const spinnerActivity = el<HTMLDivElement>('#spinner-activity');
-  const iframe = el<HTMLIFrameElement>('#artifact');
-  const input = el<HTMLTextAreaElement>('#input');
-  const form = el<HTMLFormElement>('#composer');
-  const sidBadge = el<HTMLSpanElement>('#sid');
-  const taskBadge = el<HTMLSpanElement>('#task');
+  const stage = el('#stage');
+  const empty = el('#empty');
+  const spinner = el('#spinner');
+  const spinnerSub = el('#spinner-sub');
+  const spinnerActivity = el('#spinner-activity');
+  const iframe = el('#artifact');
+  const input = el('#input');
+  const form = el('#composer');
+  const sidBadge = el('#sid');
+  const taskBadge = el('#task');
 
-  const shareBtn = el<HTMLButtonElement>('#share');
-  const toast = el<HTMLDivElement>('#toast');
+  const shareBtn = el('#share');
+  const toast = el('#toast');
 
   const sid = getOrCreateSid();
   sidBadge.textContent = sid.slice(0, 8);
 
-  // In dev the Vite proxy eats the SSE done event, so we point at the backend
-  // directly (`http://127.0.0.1:5174`). In production the SPA is served BY
-  // the backend (or by nginx in front of it), so we use the build-time BASE_URL
-  // — which is '/' for root deploys and '/demo/' for the subpath deploy at
-  // mindframe.softwaresoftware.dev/demo/. All API URLs must respect that base
-  // so requests land at /demo/api/run rather than /api/run.
-  const isDevServer = location.port === '5173';
-  const baseUrl = ((import.meta as any).env?.BASE_URL || '/').replace(/\/$/, '');
-  const BACKEND = (import.meta as any).env?.VITE_BACKEND
-    ?? (isDevServer ? 'http://127.0.0.1:5174' : baseUrl);
-
   let busy = false;
   let hasArtifact = false;
 
-  function setShareEnabled(on: boolean) {
+  function setShareEnabled(on) {
     hasArtifact = on;
     shareBtn.disabled = !on || busy;
     shareBtn.title = on
@@ -61,8 +58,8 @@ function init() {
       : 'run an instruction first';
   }
 
-  let toastTimer: number | undefined;
-  function showToast(text: string, kind: 'ok' | 'err' = 'ok', durationMs = 6000) {
+  let toastTimer;
+  function showToast(text, kind = 'ok', durationMs = 6000) {
     toast.textContent = text;
     toast.dataset.kind = kind;
     toast.hidden = false;
@@ -71,7 +68,7 @@ function init() {
   }
   toast.addEventListener('click', () => { toast.hidden = true; });
 
-  async function copyToClipboard(text: string): Promise<boolean> {
+  async function copyToClipboard(text) {
     try { await navigator.clipboard.writeText(text); return true; }
     catch {
       // Fallback for non-secure contexts: temporary textarea + execCommand.
@@ -92,7 +89,7 @@ function init() {
     setShareEnabled(false);
     shareBtn.textContent = 'saving…';
     try {
-      const res = await fetch(`${BACKEND}/api/save`, {
+      const res = await fetch(APP_BASE + 'api/save', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sid, label: taskBadge.textContent || '' }),
@@ -101,8 +98,9 @@ function init() {
         const body = await res.text().catch(() => '');
         throw new Error(body || `server ${res.status}`);
       }
-      const meta = await res.json() as { id: string; url: string; expiresAt: number };
-      const fullUrl = `${BACKEND}${meta.url}`;
+      const meta = await res.json();
+      // meta.url is a backend-relative path like /s/<id>; build a full URL.
+      const fullUrl = location.origin + APP_BASE + String(meta.url).replace(/^\//, '');
       const copied = await copyToClipboard(fullUrl);
       const expires = new Date(meta.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
       showToast(copied
@@ -110,7 +108,7 @@ function init() {
         : `saved at ${fullUrl}  ·  expires ${expires}  (copy failed — select manually)`,
         'ok',
         10000);
-    } catch (err: any) {
+    } catch (err) {
       showToast(`save failed: ${err?.message || err}`, 'err', 8000);
     } finally {
       shareBtn.textContent = 'share';
@@ -119,10 +117,10 @@ function init() {
   }
   shareBtn.addEventListener('click', share);
 
-  let elapsedTimer: number | undefined;
+  let elapsedTimer;
   let lastActivityLabel = '';
 
-  function setTask(t: string) {
+  function setTask(t) {
     taskBadge.textContent = t || '—';
   }
 
@@ -146,12 +144,12 @@ function init() {
     }
   }
 
-  function appendActivityRow(label: string, kind: 'event' | 'tick') {
+  function appendActivityRow(label, kind) {
     const row = document.createElement('div');
     row.className = 'activity-row';
     row.dataset.kind = kind;
     row.innerHTML = '<span class="activity-tick">›</span><span class="activity-text"></span>';
-    (row.querySelector('.activity-text') as HTMLElement).textContent = label;
+    row.querySelector('.activity-text').textContent = label;
     spinnerActivity.appendChild(row);
     // Keep last ~6 rows visible.
     while (spinnerActivity.children.length > 6) {
@@ -159,27 +157,27 @@ function init() {
     }
   }
 
-  function logActivity(label: string) {
+  function logActivity(label) {
     // Skip duplicate consecutive labels.
     if (label === lastActivityLabel) return;
     lastActivityLabel = label;
     appendActivityRow(label, 'event');
   }
 
-  function updateLastActivityLabel(label: string) {
+  function updateLastActivityLabel(label) {
     // Heartbeat ticks update the last row in place — but ONLY if that row is
     // itself a tick. A tick must never clobber a real event row (e.g. the
     // "agent picked up the instruction" line); in that case it appends.
-    const last = spinnerActivity.lastElementChild as HTMLElement | null;
+    const last = spinnerActivity.lastElementChild;
     if (last && last.dataset.kind === 'tick') {
-      const text = last.querySelector('.activity-text') as HTMLElement | null;
+      const text = last.querySelector('.activity-text');
       if (text) text.textContent = label;
     } else {
       appendActivityRow(label, 'tick');
     }
   }
 
-  function showError(msg: string) {
+  function showError(msg) {
     hideSpinner();
     empty.hidden = false;
     empty.innerHTML = `<h1 style="color: var(--color-danger)">Error</h1><p>${msg}</p>`;
@@ -197,12 +195,10 @@ function init() {
     setTask(msg.length > 80 ? msg.slice(0, 77) + '…' : msg);
     showSpinner();
 
-    // Bypass Vite's dev-proxy for the SSE stream — it swallows the final
-    // `done` event when the server calls res.end(). Hit the backend directly.
-    const url = `${BACKEND}/api/run?sid=${encodeURIComponent(sid)}&msg=${encodeURIComponent(msg)}`;
+    const url = APP_BASE + 'api/run?sid=' + encodeURIComponent(sid) + '&msg=' + encodeURIComponent(msg);
     const es = new EventSource(url);
 
-    es.addEventListener('progress', (e: MessageEvent) => {
+    es.addEventListener('progress', (e) => {
       try {
         const evt = JSON.parse(e.data);
         const label = String(evt.label ?? '');
@@ -217,28 +213,28 @@ function init() {
       } catch {}
     });
 
-    es.addEventListener('done', (e: MessageEvent) => {
+    es.addEventListener('done', (e) => {
       es.close();
       try {
         const { url: artifactUrl } = JSON.parse(e.data);
-        // Artifact URL is a backend-relative path; make it absolute too.
-        const absolute = artifactUrl.startsWith('http')
+        // Artifact URL is a backend-relative path; resolve it against APP_BASE.
+        const absolute = String(artifactUrl).startsWith('http')
           ? artifactUrl
-          : `${BACKEND}${artifactUrl}`;
+          : APP_BASE + String(artifactUrl).replace(/^\//, '');
         iframe.src = `${absolute}?t=${Date.now()}`;
         iframe.hidden = false;
         hideSpinner();
         busy = false;
         setShareEnabled(true);
         return;
-      } catch (err: any) {
+      } catch (err) {
         showError(err?.message || 'bad done payload');
       }
       busy = false;
       setShareEnabled(hasArtifact);
     });
 
-    es.addEventListener('error', (e: MessageEvent) => {
+    es.addEventListener('error', (e) => {
       const data = (e && 'data' in e) ? e.data : '';
       es.close();
       showError(data ? String(data) : 'stream lost');
@@ -266,7 +262,7 @@ function init() {
   input.addEventListener('input', autoResize);
 
   stage.addEventListener('click', (e) => {
-    const t = e.target as HTMLElement;
+    const t = e.target;
     if (t.matches('button.starter[data-cmd]')) {
       input.value = t.getAttribute('data-cmd') || '';
       submit();
@@ -288,7 +284,7 @@ function init() {
   // sitting right there on disk.
   (async () => {
     try {
-      const probe = `${BACKEND}/artifacts/${encodeURIComponent(sid)}/latest.html`;
+      const probe = APP_BASE + 'artifacts/' + encodeURIComponent(sid) + '/latest.html';
       const r = await fetch(probe, { method: 'HEAD' });
       if (r.ok && busy === false && iframe.hidden) {
         iframe.src = `${probe}?t=${Date.now()}`;
