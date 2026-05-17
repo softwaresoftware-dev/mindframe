@@ -1,0 +1,9 @@
+# Valid channels.yaml: the spawn route supplies every required brief key.
+# calendar_id is optional, so omitting it is fine.
+routes:
+  - source: test-stream
+    event_type: calendar-check
+    target: spawn:good-reader
+    brief:
+      output_path: /tmp/good-reader-{event_id}.log
+      window: 24h

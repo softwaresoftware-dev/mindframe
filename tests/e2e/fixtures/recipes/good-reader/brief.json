@@ -1,0 +1,10 @@
+{
+  "objectives": [
+    "Read upcoming events for the window and write a summary to output_path."
+  ],
+  "context": {
+    "output_path": "{{output_path}}",
+    "window": "{{window}}",
+    "calendar_id": "{{calendar_id}}"
+  }
+}

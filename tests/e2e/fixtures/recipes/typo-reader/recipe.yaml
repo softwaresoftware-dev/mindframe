@@ -1,0 +1,12 @@
+# Fixture recipe with a typo: brief.json uses {{output_pth}} but the
+# brief_schema declares 'output_path'. The checker must catch this.
+task_id_pattern: "typo-reader-{event_id}"
+task_name: typo-reader
+kind: task
+
+brief_schema:
+  required:
+    - output_path
+
+starter_prompt: |
+  Read task {task_id}.
