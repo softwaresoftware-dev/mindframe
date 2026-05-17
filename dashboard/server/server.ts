@@ -587,6 +587,19 @@ app.get('/api/health', async (_req, res) => {
   res.json({ ok: true, port: PORT, agentId: readAgentId(), daemons });
 });
 
+// Serve the built SPA. Behind nginx, /demo/ is stripped, so the backend
+// sees /, /assets/*, etc. express.static serves index.html at /; the
+// fallback handles SPA client-side routes.
+const DIST_ROOT = join(__dirname, '..', 'dist');
+app.use(express.static(DIST_ROOT));
+app.use((req, res) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+    res.sendFile(join(DIST_ROOT, 'index.html'));
+  } else {
+    res.status(404).json({ error: 'not found' });
+  }
+});
+
 app.listen(PORT, '127.0.0.1', async () => {
   // eslint-disable-next-line no-console
   console.log(`[mindframe-dashboard] server on http://127.0.0.1:${PORT}`);
