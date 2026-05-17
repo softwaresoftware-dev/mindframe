@@ -73,4 +73,4 @@ The first three steps install the bundle. `/mindframe:setup` does the rest: prob
   the push/pull split, and the runtime flows.
 - [`interfaces.md`](interfaces.md) — the contracts between subsystems: the
   event API, routing config, recipe format, and knowledge-base schema.
-- [`kb-schema.md`](kb-schema.md) — the customer-domain knowledge-base contract.
+- [`kb-schema.md`](kb-schema.md) — the knowledge-base schema library: the meta-schema, core entities, domain packs, and the per-install manifest.

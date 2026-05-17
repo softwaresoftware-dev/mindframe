@@ -1,124 +1,226 @@
-# KB Schema (customer-domain)
+# KB Schema — Customer Knowledge Base
 
-The persistent memory layer for a mindframe deployment. A markdown + frontmatter Obsidian-style vault, owned by the customer, queried and maintained by the librarian agent.
+The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer, queried and maintained by the librarian agent.
 
-This schema is the contract between the librarian, the setup wizard, the deliverable skills (sentry-triage, k8s-triage, and others as the library grows), and the validator. Skills query the catalog and read notes. The librarian writes notes. The validator enforces invariants.
+## What this document is
 
-This is the customer-domain schema. Thatcher's personal vault stays on its existing project-tracker schema and does not migrate.
+This document is the **library**, not the contract.
+
+Different organizations have different entities — a software company has Services and Repositories, a paper mill has Machines and Suppliers, a law firm has Matters. No fixed entity list fits all of them. So mindframe's schema has two parts:
+
+- **The meta-schema** — the universal, fixed rules every entity obeys regardless of domain. This *is* the contract, and it never changes without a version bump.
+- **The entity library** — core entities (every install gets them), domain packs (opt-in sets), and custom entities (defined per install). This is a menu.
+
+Each deployment assembles its own schema from the library and records it in the vault's **`schema.yaml` manifest** (see "The schema manifest"). The manifest is the contract *for that vault*. The librarian, the validator, and skills read the manifest — never a hardcoded entity list.
 
 ## Design principles
 
 1. **Markdown + frontmatter**, not a database. Greppable, human-editable, diffable in git, renderable in Obsidian.
-2. **Frontmatter is the contract.** Body is for prose humans and agents both read.
+2. **Frontmatter is the contract.** The body is prose that humans and agents both read.
 3. **Foreign keys are names, not paths.** Resilient to reorganization.
-4. **CATALOG.md is the index.** Agents read it first to find the right note. Body queries are a second hop.
-5. **Per-customer single-tenant.** One vault, one customer, one git repo. No cross-tenant joins.
-6. **The librarian is the only writer.** Other agents request changes through the librarian via the session-bridge mesh. The librarian validates, writes, commits.
+4. **CATALOG.md is the index.** Agents read it first; opening notes is the second hop.
+5. **Per-customer single-tenant.** One vault, one customer, one git repo.
+6. **The librarian is the only writer.** Other agents request changes through the librarian over the session-bridge mesh.
 7. **Live state is not in the vault.** Active alerts, current PRs, deploy status: queried from source systems at runtime.
-8. **Secrets are referenced, never stored.** Frontmatter holds the keychain entry name; the value never appears in markdown.
+8. **Secrets are referenced, never stored.** Frontmatter holds a keychain entry name; the value never appears in markdown.
+9. **The schema is per-install.** The meta-schema is fixed; the entity set is assembled at setup and recorded in `schema.yaml`.
 
-## Entity catalog
+---
 
-Three layers. Eleven entity types. Files per type vary from one (Glossary) to hundreds (Incidents over time).
+## The meta-schema
 
-| Layer | Entity | Files | One-line role |
-|-------|--------|-------|---------------|
-| Things | Service | one per service | Deployable software unit |
-| Things | Repository | one per repo | Source code |
-| Things | Team | one per team | People, channels, on-call |
-| Things | Product | one per product | Customer-facing capability |
-| Things | Integration | one per system | External system endpoint + auth pointer |
-| Events | Project | one per initiative | In-flight work |
-| Events | Decision | one per ADR | Architectural choice with rationale |
-| Events | Incident | one per failure | Past failure with root cause + fix |
-| Knowledge | Runbook | one per procedure | Operational response |
-| Knowledge | Convention | one per standard | Engineering policy |
-| Knowledge | Glossary | one file total | Domain terms |
+The fixed, universal contract. Every entity in every deployment — core, pack, or custom — obeys these rules.
 
-## Identity rules
+### The four layers
 
-- Names use kebab-case.
-- Names are unique within an entity type. `payment-api` can be a Service and a Repository, but not two Services.
-- Event-type slugs prefix the date: `YYYY-MM-DD-<topic>`. Sorts chronologically, deduplicates same-day topics.
-- File path matches the name or slug exactly: `Services/payment-api.md`, `Incidents/2026-03-12-payment-api-outage.md`.
-- Frontmatter `name` or `slug` field must match the filename minus `.md`.
+Every entity type belongs to exactly one **layer** — a category answering a different question about the organization:
 
-## Per-entity schema
+| Layer | Answers | Nature |
+|-------|---------|--------|
+| **Thing** | what exists | persistent entities you track the current state of |
+| **Event** | what happened | immutable, dated records of an occurrence |
+| **Knowledge** | what's true / what the rules are | declarative reference |
+| **Process** | how the organization operates | the procedures and practices it runs |
 
-### Service
+A layer is a *category of entity types*, not an entity itself. The Thing layer holds Person, Team, …; the Process layer holds Runbook, Deployment, …. A layer may be entirely populated by pack or custom entity types (the Process layer has no core types).
 
-A deployable software unit. The thing Sentry projects, log streams, K8s deployments, and metrics attach to.
+### Identity rules
+
+- Entity **type** names are lowercase kebab-case (`service`, `code-review`).
+- Each entity instance has a **name** (Things, Knowledge, Process) or a **slug** (Events).
+- Names/slugs are kebab-case and unique within an entity type. `payments` can be a Team and a Customer, but not two Teams.
+- **Event slugs prefix the date:** `YYYY-MM-DD-<topic>` — sorts chronologically, deduplicates same-day topics. Only Events do this; Things/Knowledge/Process use plain names.
+- The file path matches the name/slug exactly: `Services/payment-api.md`, `Incidents/2026-03-12-payment-api-outage.md`.
+- Frontmatter `name` or `slug` must match the filename minus `.md`.
+
+### Entity definition
+
+Every entity type — wherever it comes from — is defined by:
+
+- a `type` (kebab-case)
+- a **layer** (one of the four)
+- an **identity** mode (`name` or `slug`)
+- a **directory** (flat-by-type: `People/`, `Runbooks/`, …)
+- a set of **fields** (frontmatter keys)
+- a set of **foreign keys** — fields whose value is the name/slug of another entity
+
+Every note carries `type` in its frontmatter. The note does *not* carry its layer — the manifest maps type → layer.
+
+### Foreign keys
+
+A foreign key names another entity; the validator checks the target exists. An FK declares a **target**, which is one of:
+
+- **A single entity type.** The value must name a note of that type. Written as the bare type name: `team: team`.
+- **A whole layer.** The value may name *any* entity type in that layer. Written `any:<layer>`: `affected: any:thing` means the value may name any Thing — a Service, a Machine, a Product. The four layer names (`thing`, `event`, `knowledge`, `process`) are reserved for this; no entity type may use them.
+
+Layer-wide targets exist because some relationships are inherently polymorphic — an Incident's `affected` points at whatever broke, which differs by domain. Without them you would hardcode one type (and break on the next customer) or carry a field per type (`services_affected`, `machines_affected`, …). The surface is small: in the core schema only `Incident.affected` and `Incident.related_process` are layer-wide.
+
+Self-referential FKs are allowed (`manager: person`) but must not form cycles.
+
+---
+
+## The schema manifest
+
+Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; the librarian, validator, and skills read it.
+
+```yaml
+schema_version: 2
+packs: [software-ops, communications]      # packs activated at setup
+entities:
+  person:
+    layer: thing
+    source: core                           # core | pack:<name> | custom
+    identity: name
+    directory: People
+    foreign_keys: { team: team, manager: person }
+  runbook:
+    layer: process
+    source: pack:software-ops
+    identity: slug
+    directory: Runbooks
+    foreign_keys: { service: service, notify: team }
+  incident:
+    layer: event
+    source: core
+    identity: slug
+    directory: Incidents
+    foreign_keys: { affected: any:thing, related_process: any:process }
+  mill:
+    layer: thing
+    source: custom                         # proposed by setup, confirmed by the operator
+    identity: name
+    directory: Mills
+    foreign_keys: { facility: facility }
+```
+
+A foreign-key target is a bare type name (`team`) or a layer (`any:thing`).
+
+`source` records provenance: `core` (always present), `pack:<name>` (from an activated pack), or `custom` (defined for this install). An entity type absent from `entities` simply does not exist in this vault — a paper company's manifest has no `service`, no `repository`.
+
+Because the manifest is self-contained, the vault owns and versions its own schema. There is no central schema to migrate against.
+
+---
+
+## Core entities
+
+Every install gets these. They are the entities every organization has, regardless of domain.
+
+### Person — *Thing*
 
 ```yaml
 ---
-type: service
-name: payment-api
-description: "Charges customer payment methods, issues refunds"
-criticality: tier-1                     # tier-1 (revenue-critical) | tier-2 (degraded UX) | tier-3 (internal)
-runtime: python-3.11                    # informational
-environments: [production, staging]
-repos: [payment-api]                    # FK -> Repository.name
-team: payments-team                     # FK -> Team.name
-products: [checkout, refunds]           # FK -> Product.name
-depends_on: [auth-api, redis-payments]  # FK -> Service.name (no cycles, no self-ref)
-deploy_target: gke/payments-prod        # informational
-sentry_project: payment-api-prod        # external ID, queried by sentry-triage
-gcp_service: payment-api                # external ID, queried by gcp-logging
-github_team: payments                   # for codeowners lookups
+type: person
+name: alice-okafor
+display_name: Alice Okafor
+email: alice@customer.com
+role: Staff Engineer
+team: payments-team                     # FK -> Team
+manager: dana-li                        # FK -> Person (no cycles)
 ---
 ```
 
-Body: prose description, architecture sketch, gotchas, links to ADRs, anything an agent or new engineer should know before changing this service.
+Body: responsibilities, areas of expertise, anything an agent should know before routing work or a question to this person.
 
-### Repository
+### Team — *Thing*
 
-Source code. Most often 1:1 with a Service, but monorepos may contain many services.
-
-```yaml
----
-type: repo
-name: payment-api
-description: "Python service for payment processing"
-github: customer-org/payment-api
-default_branch: main
-languages: [python]
-build_system: bazel
-ci: github-actions
-deploy_via: argo-cd
-review_team: payments-team              # FK -> Team.name
-review_policy: pr-review-policy         # FK -> Convention.slug
-services: [payment-api]                 # FK -> Service.name; reverse of Service.repos
----
-```
-
-Body: how to build locally, project layout, where entry points live, where tests live.
-
-### Team
-
-People plus ownership plus channels. Where notifications go.
+A group of people with a shared remit — team, department, squad, crew.
 
 ```yaml
 ---
 type: team
 name: payments-team
 description: "Owns payments, refunds, billing"
-slack_channel: "#payments"
-slack_alerts_channel: "#payments-alerts"
-email_alias: payments@customer.com
-on_call_schedule: payments-rotation     # external ID (PagerDuty, opsgenie)
-manager: alice@customer.com
-members:
-  - alice@customer.com
-  - bob@customer.com
-github_team: payments
+parent_team: ~                          # FK -> Team (org hierarchy)
+lead: alice-okafor                      # FK -> Person
+members: [alice-okafor, bob-singh]      # FK -> Person
 ---
 ```
 
-Body: charter, scope, working hours, escalation paths.
+Body: charter, scope, working hours, how to reach them. Packs may extend Team — the communications pack adds `slack_channel`.
 
-### Product
+### Customer — *Thing*
 
-Customer-facing capability. Different lens from Service. Lets agents reason about user impact.
+Who the organization serves. Customers, clients, accounts, patients — whatever the domain calls them.
+
+```yaml
+---
+type: customer
+name: northwind-traders
+display_name: Northwind Traders
+status: active                          # prospect | active | churned
+segment: enterprise
+owner: alice-okafor                     # FK -> Person (account owner)
+products: [checkout]                    # FK -> Product
+since: 2025-06-01
+---
+```
+
+Body: relationship history, key contacts, current health, open concerns.
+
+### Partner — *Thing*
+
+An external organization the org works with that is not a customer — a supplier, vendor, reseller, contractor, or collaborator. The `relationship` field records which.
+
+```yaml
+---
+type: partner
+name: kerchanshe-trading
+display_name: Kerchanshe Trading
+relationship: supplier                  # supplier | vendor | reseller | integration | collaborator
+status: active                          # prospect | active | dormant | ended
+owner: alice-okafor                     # FK -> Person (relationship owner)
+since: 2025-02-01
+---
+```
+
+Body: relationship history, key contacts, terms, current state.
+
+### Project — *Thing*
+
+In-flight work — an initiative with a goal and an end. A Thing, not an Event: it is a living entity whose current state (`status`) you track and update, not a point-in-time record.
+
+```yaml
+---
+type: project
+name: fraud-detection-v2
+title: Fraud detection v2
+status: active                          # proposed | active | paused | shipped | abandoned
+priority: p1                            # p0 | p1 | p2 | p3
+start_date: 2026-04-01
+target_date: 2026-06-30
+shipped_date: ~
+owner_team: payments-team               # FK -> Team
+sponsor: alice-okafor                   # FK -> Person
+related_decisions: [2026-03-15-fraud-ml-stack]   # FK -> Decision
+related_incidents: [2026-02-04-fraud-bypass]     # FK -> Incident
+---
+```
+
+Body: goals, scope, milestones, current status, blockers, open questions.
+
+### Product — *Thing*
+
+What the organization provides — a product, an offering, a service line, a program.
 
 ```yaml
 ---
@@ -126,423 +228,221 @@ type: product
 name: checkout
 description: "End-to-end purchase flow"
 status: ga                              # proposed | beta | ga | deprecated
-owner_team: payments-team               # FK -> Team.name
-critical_path: true                     # P0 if this breaks, customers cannot transact
-services: [checkout-ui, payment-api, cart-api, inventory-api]   # FK -> Service.name
-slo_targets:
-  availability: "99.95%"
-  p99_latency_ms: 500
-docs_url: https://internal.customer.com/products/checkout
+owner_team: payments-team               # FK -> Team
 ---
 ```
 
-Body: what users see, key flows, success metrics, current concerns.
+Body: what it is, key flows, success measures, current concerns.
 
-### Integration
+### Decision — *Event*
 
-External system endpoint plus auth pointer. One per system per environment when isolation matters.
-
-```yaml
----
-type: integration
-system: sentry                          # sentry | gcp | github | grafana | slack | pagerduty | datadog | stripe | aws | ...
-name: sentry-prod
-description: "Production error monitoring"
-url: https://customer-org.sentry.io
-org: customer-org
-auth_method: api_token                  # api_token | oauth | service_account | webhook
-auth_secret_ref: sentry_token_prod      # name of keychain entry; NEVER the value
-scopes: [project:read, issue:write]
-covers_environments: [production, staging]
-covers_services: all                    # all | [service-name, ...]
-rotation_due: 2026-09-01
-maintainer: platform-team               # FK -> Team.name
----
-```
-
-Body: how to test connectivity, escalation if credentials expire, links to vendor admin console.
-
-### Project
-
-In-flight initiative. The "what are we working on right now" question.
-
-```yaml
----
-type: project
-slug: 2026-q2-fraud-detection-v2
-title: Fraud detection v2
-status: active                          # proposed | active | paused | shipped | abandoned
-priority: p1                            # p0 | p1 | p2 | p3
-start_date: 2026-04-01
-target_date: 2026-06-30
-shipped_date: ~
-owner_team: payments-team               # FK -> Team.name
-sponsor: alice@customer.com
-services_touched: [payment-api, fraud-service]      # FK -> Service.name
-products_affected: [checkout]                       # FK -> Product.name
-linked_decisions: [2026-03-15-fraud-ml-stack]       # FK -> Decision.slug
-linked_incidents: [2026-02-04-fraud-bypass]         # FK -> Incident.slug
-external_tracker: https://linear.app/customer/project/abc123
----
-```
-
-Body: goals, scope, milestones, current status, blockers, open questions.
-
-### Decision
-
-Architectural choice with rationale. Standard ADR shape.
+A choice made at a point in time, with rationale. Standard ADR shape.
 
 ```yaml
 ---
 type: decision
 slug: 2026-03-15-postgres-over-dynamo
-title: Use Postgres for orders table
+title: Use Postgres for the orders table
 date: 2026-03-15
 status: accepted                        # proposed | accepted | superseded | deprecated
-deciders: [alice@customer.com, dave@customer.com]
-context_services: [orders-api]          # FK -> Service.name
-context_products: [checkout]            # FK -> Product.name
-supersedes: ~                           # FK -> Decision.slug
-superseded_by: ~                        # FK -> Decision.slug
+deciders: [alice-okafor, dave-mensah]   # FK -> Person
+supersedes: ~                           # FK -> Decision
+superseded_by: ~                        # FK -> Decision
 ---
 ```
 
-Body: standard ADR sections.
+Body: `## Context`, `## Decision`, `## Consequences`, `## Alternatives considered`.
 
-```markdown
-## Context
-What problem are we solving, what constraints apply.
+### Incident — *Event*
 
-## Decision
-What we chose and why.
-
-## Consequences
-What this enables, what this prevents, what gets harder.
-
-## Alternatives considered
-Options we weighed and why we rejected them.
-```
-
-### Incident
-
-Past failure. Postmortem-lite shape. Authored by humans for serious incidents, by `/sentry-triage` for routine ones.
+A recorded occurrence of something going wrong, with cause and resolution. Domain-neutral: a software outage, a machine breakdown, a missed deadline. Packs extend it — the software-ops pack adds `fix_pr`, `sentry_project`.
 
 ```yaml
 ---
 type: incident
-slug: 2026-03-12-payment-api-redis-outage
-title: payment-api Redis outage
+slug: 2026-03-12-payments-outage
+title: Payments processing outage
 date: 2026-03-12
-duration_min: 47
 severity: p1                            # p0 | p1 | p2 | p3
-services_affected: [payment-api, refunds-api]       # FK -> Service.name
-products_affected: [checkout, refunds]              # FK -> Product.name
-root_cause: "Connection pool exhaustion under traffic spike"
-detection: "Sentry alert on Redis ConnectionTimeoutError"
-resolution: "Increased pool size from 20 to 100, deployed via PR #1234"
-fix_pr: customer-org/payment-api#1234
-related_runbook: payment-api-redis-timeout          # FK -> Runbook.slug
-related_decision: ~                                 # FK -> Decision.slug
-authored_by: librarian                              # human | librarian | sentry-triage
+affected: [payment-api]                 # FK -> any:thing (service, product, machine, …)
+root_cause: "Connection pool exhaustion under a traffic spike"
+resolution: "Pool size raised 20 -> 100"
+related_process: payment-api-oom        # FK -> any:process (a runbook, a deployment, …)
+authored_by: librarian                  # human | librarian | <skill>
 ---
 ```
 
-Body: timeline, impact summary, what went well, what could go better, action items with owners.
+Body: timeline, impact, what went well, what could go better, action items.
 
-### Runbook
+### Convention — *Knowledge*
 
-Operational response procedure. Triggered by symptom, scoped to a service.
-
-```yaml
----
-type: runbook
-slug: payment-api-redis-timeout
-title: Payment API Redis Timeout
-service: payment-api                    # FK -> Service.name
-symptom: "Redis ConnectionTimeoutError on /charge or /refund"
-applies_when: "kind == 'redis.TimeoutError' AND service == 'payment-api'"
-severity_if_unaddressed: p1
-notify: payments-team                   # FK -> Team.name (who to ping while running this)
----
-```
-
-Body: numbered steps. Diagnostic queries first, then decision tree, then mitigation, then escalation. Plain markdown so humans and agents both read it.
-
-### Convention
-
-Engineering standard. Small set, broad applicability. Examples: `pr-review-policy`, `branching-strategy`, `code-style-python`, `deploy-windows`, `secrets-handling`, `dependency-policy`.
+A rule or standard the organization complies with — declarative. (Contrast a Process, which is procedural — steps you execute.)
 
 ```yaml
 ---
 type: convention
 slug: pr-review-policy
 title: PR Review Policy
-applies_to: [code]                      # code | infra | docs | all
+applies_to: [code]                      # domain-defined scope tags
 enforcement: required                   # required | recommended | suggested
-owner_team: platform-team               # FK -> Team.name
+owner_team: platform-team               # FK -> Team
 last_reviewed: 2026-04-28
 ---
 ```
 
-Body: the actual rules. Imperative form so agents follow them when drafting changes.
+Body: the actual rules, imperative form.
 
-### Glossary
+### Glossary — *Knowledge*
 
-One file at vault root. All terms inline, alphabetized. Keeps the vault from accumulating hundreds of two-line files.
-
-`Glossary.md`:
+One file at the vault root, all terms inline and alphabetized. Keeps the vault from accumulating hundreds of two-line files.
 
 ```markdown
 ---
 type: glossary
 last_reviewed: 2026-04-28
-maintainer: docs-team
 ---
 
 # Glossary
 
 ## A
-
-### Authoring service
-The component that ... See [[Services/auth-api]].
-
 ### ARR
-Annual Recurring Revenue. Reported monthly to ...
-
-## B
-
-### BMU
-Billing Management Unit. Internal abstraction representing ...
+Annual Recurring Revenue. …
 ```
 
-Cross-link to Services, Products, and Decisions where relevant. Wikilinks are stable across renames if Obsidian-style.
+---
+
+## Domain packs
+
+A pack is a named set of entity types for a domain. Setup activates packs based on what discovery finds. A pack may also **extend** a core entity with extra fields.
+
+### `software-ops` pack
+
+Activated when discovery finds GitHub / Sentry / a container runtime / etc.
+
+| Entity | Layer | Role |
+|--------|-------|------|
+| `service` | Thing | A deployable software unit. FKs: `repos -> repository`, `team -> team`, `products -> product`, `depends_on -> service`. |
+| `repository` | Thing | Source code. FKs: `services -> service`, `review_team -> team`. |
+| `integration` | Thing | An external system endpoint + auth pointer (`auth_secret_ref` names a keychain entry). FK: `maintainer -> team`. |
+| `runbook` | Process | Incident-response procedure. `trigger: symptom`. FKs: `service -> service`, `notify -> team`. Fields: `symptom`, `failure_modes`, `severity_if_unaddressed`. |
+| `deployment` | Process | How a team ships. `trigger: manual`. FK: `team -> team`. Fields: `environments`, `rollback`, `approval_required`. |
+| `code-review` | Process | `trigger: event`. FK: `team -> team` (or org-wide). |
+| `release` | Process | `trigger: schedule`/`manual`. FK: `team -> team`. |
+
+Extends core: `Incident` gains `fix_pr` and `services_affected`; `Service` is the natural target of `Incident.affected`.
+
+### `communications` pack
+
+Activated when discovery finds Slack / Teams / etc.
+
+| Entity | Layer | Role |
+|--------|-------|------|
+| `channel` | Thing | A conversation venue in a comms tool. Fields: `platform` (slack/teams/…), `purpose`. FKs: `members -> person`, `team -> team`. |
+
+Extends core: `Team` gains `slack_channel`.
+
+Channel is *not* core — it is an artifact of a particular tool, not of an organization. An org on email and phone has no channels.
+
+---
+
+## Custom entities
+
+When a customer has an entity no pack ships — a paper mill's `machine`, a law firm's `matter` — setup defines it for that install. A custom entity is new in its *name and fields*, never in its *structure*: it must obey the meta-schema (a layer, kebab `type`, name/slug identity, FK-by-name, a CATALOG section).
+
+Setup's custom-entity step:
+
+1. **Detect the gap** — a core noun of the business that is neither core nor in a pack.
+2. **Alias or mint** — first ask whether it is genuinely new or a renamed core entity. "Squad" is just Team; "Matter" may be a richer Project or its own type. Do not over-mint: a renamed core entity is an alias, not a new type.
+3. **Define against the meta-schema** — pick the layer, name the `type`, choose fields and FKs, with the operator.
+4. **Record** — write it into `schema.yaml` with `source: custom`.
+
+From that point the custom entity is first-class *in that install*: the validator checks it, the librarian writes it, the catalog indexes it — because it conforms to the meta-schema.
+
+When a custom entity recurs across deployments, that is the signal to promote its cluster into a new pack.
+
+---
 
 ## CATALOG.md
 
-The librarian reads CATALOG.md first on every query. It encodes the most-queried fields per entity so the agent can filter without opening every note.
+The librarian reads CATALOG.md first on every query. It has one section per *active* entity type (read from the manifest), encoding the most-queried fields so an agent can filter without opening every note.
 
 ```markdown
 # Catalog
-
 Last updated: 2026-04-28
 
-## Services
-| Name | Tier | Team | Repos | Products | Sentry project |
-|------|------|------|-------|----------|----------------|
-| payment-api | tier-1 | payments-team | payment-api | checkout, refunds | payment-api-prod |
-
-## Repositories
-| Name | GitHub | Languages | Services |
+## People
+| Name | Role | Team |
 
 ## Teams
-| Name | Slack | On-call | Members |
+| Name | Lead | Members |
 
-## Products
-| Name | Status | Owner | Critical path |
+## Services            (only if the software-ops pack is active)
+| Name | Criticality | Team | Repos |
 
-## Integrations
-| System | Name | URL | Covers environments |
-
-## Projects (active)
-| Slug | Title | Priority | Owner | Target |
-
-## Projects (shipped, last 90 days)
-| Slug | Title | Shipped | Owner |
-
-## Decisions
-| Slug | Title | Status | Date |
-
-## Incidents (last 90 days)
-| Slug | Severity | Services | Date | One-line cause |
-
-## Runbooks
+## Runbooks            (only if the software-ops pack is active)
 | Slug | Service | Symptom |
 
-## Conventions
-| Slug | Applies to | Enforcement |
-
-## Glossary
-1 file. See Glossary.md.
+## Incidents (last 90 days)
+| Slug | Severity | Affected | Date |
 ```
 
-### Catalog rolling windows
-
-Incidents and shipped Projects roll out of CATALOG.md after 90 days. The full notes still exist in `Incidents/` and `Projects/`. Older history is reachable by direct read or by asking the librarian for a longer time window. This bounds CATALOG.md growth without losing data.
+Sections exist only for entity types the manifest declares. Events (Incidents, and shipped Projects' archival rows) roll out of the catalog after 90 days; the full notes remain on disk.
 
 ## Directory layout
 
+Flat-by-type. Each entity type's `directory` comes from the manifest:
+
 ```
 <customer-vault>/
+  schema.yaml                # the assembled schema for this deployment
   CATALOG.md
-  CLAUDE.md                             # operating procedures for the librarian
+  CLAUDE.md                  # operating procedures for the librarian
   Glossary.md
 
-  Services/
-    payment-api.md
-    auth-api.md
-  Repositories/
-    payment-api.md
-  Teams/
-    payments-team.md
-  Products/
-    checkout.md
-  Integrations/
-    sentry-prod.md
-    gcp-prod.md
-    github.md
-
-  Projects/
-    2026-q2-fraud-detection-v2.md
-  Decisions/
-    2026-03-15-postgres-over-dynamo.md
-  Incidents/
-    2026-03-12-payment-api-redis-outage.md
-
-  Runbooks/
-    payment-api-redis-timeout.md
+  People/        Teams/        Customers/     Partners/      Projects/      Products/
+  Decisions/     Incidents/
   Conventions/
-    pr-review-policy.md
-    branching-strategy.md
+  Runbooks/      Deployments/  CodeReviews/                  # software-ops pack
+  Channels/                                                  # communications pack
+  Mills/         Machines/                                   # custom, this install only
 ```
 
-Flat-by-type beats folder-per-service because runbooks and incidents are cross-cutting, each type has its own update cadence, and the catalog stays simpler.
+A vault only has the directories for entity types its manifest activates.
 
 ## Schema invariants
 
-The validator enforces these at write time and on a periodic full sweep.
+The validator enforces these, driven by `schema.yaml` — never a hardcoded list.
 
-### Foreign-key integrity
+- **Foreign-key integrity.** Every FK value resolves to an existing note of the declared target type. No self-reference cycles.
+- **Catalog integrity.** Every CATALOG row points to a real note; every note (except Glossary) has a row; row fields match the note's frontmatter.
+- **Identity integrity.** Names/slugs unique per type; filename matches `name`/`slug`; Event slugs start with `YYYY-MM-DD-`.
+- **Manifest conformance.** Every note's `type` is declared in `schema.yaml`; every note's frontmatter keys are within that type's defined fields + FKs.
 
-| From | Field | Must exist as |
-|------|-------|---------------|
-| Service | repos[*] | Repository |
-| Service | team | Team |
-| Service | products[*] | Product |
-| Service | depends_on[*] | Service (no self-ref, no cycles) |
-| Repository | review_team | Team |
-| Repository | review_policy | Convention |
-| Repository | services[*] | Service, with reverse pointer in Service.repos |
-| Product | owner_team | Team |
-| Product | services[*] | Service, with reverse pointer in Service.products |
-| Integration | covers_services | "all" or list of Services |
-| Integration | maintainer | Team |
-| Project | owner_team | Team |
-| Project | services_touched[*] | Service |
-| Project | products_affected[*] | Product |
-| Project | linked_decisions[*] | Decision |
-| Project | linked_incidents[*] | Incident |
-| Decision | context_services[*] | Service |
-| Decision | context_products[*] | Product |
-| Decision | supersedes / superseded_by | Decision |
-| Incident | services_affected[*] | Service |
-| Incident | products_affected[*] | Product |
-| Incident | related_runbook | Runbook |
-| Incident | related_decision | Decision |
-| Runbook | service | Service |
-| Runbook | notify | Team |
-| Convention | owner_team | Team |
-
-### Catalog integrity
-
-- Every CATALOG row points to a real note.
-- Every note (except Glossary) has a CATALOG row.
-- Catalog row fields match the source note's frontmatter.
-
-### Identity integrity
-
-- Names unique per entity type.
-- Slugs unique per entity type.
-- Filename matches `name` or `slug` field.
-- Event slugs start with `YYYY-MM-DD-`.
-
-### Bidirectional links
-
-- `Service.repos` and `Repository.services` agree.
-- `Service.products` and `Product.services` agree.
-- `Decision.supersedes` and the older Decision's `superseded_by` agree.
-
-The validator runs as `/mindframe:validate-kb` and as a pre-commit hook in the vault repo.
+The validator is a deterministic script — no LLM. It reads `schema.yaml` and checks every note against it. The vault's pre-commit hook runs it, and the librarian runs it before every write.
 
 ## Bootstrap
 
-Customer vaults are populated in three passes.
+Setup populates the vault after it has assembled and written `schema.yaml`. Three passes:
 
-### Pass 1: auto-discovery (setup wizard)
-
-Read what already exists in source systems, write stub notes, present for confirmation.
-
-| Source | Discovers | Produces |
-|--------|-----------|----------|
-| GitHub org | All repos | Repository notes (1 per repo), Service notes inferred 1:1 |
-| Sentry org | All projects | Service notes with `sentry_project` field |
-| GCP project | Services, deployments | Service notes with `gcp_service` field |
-| PagerDuty / opsgenie | Schedules | Team notes with `on_call_schedule` field |
-| Slack workspace | Channels matching team patterns | Team `slack_channel` fields |
-| GitHub teams | Membership | Team `members` and `github_team` fields |
-
-Auto-discovered entries get frontmatter and a body stub: `_[needs description]_`. The wizard then presents results to the user for confirm / edit / delete.
-
-### Pass 2: manual seeding (setup wizard)
-
-Auto-discovery cannot infer these. The wizard prompts for the top 3 to 5 of each:
-
-- Products (customer-facing capabilities)
-- Active Projects
-- Foundational Decisions / ADRs
-- Conventions (link to existing engineering handbook if one exists)
-- Glossary terms (top 10)
-
-### Pass 3: organic growth (post-deploy)
-
-Runbooks and Incidents start empty. Populated by skills as they run:
-
-- `/sentry-triage` writes a thin Incident note on resolution.
-- `/incident-postmortem` upgrades Incidents from "thin" to "full" when a human runs it.
-- `/runbook-from-incident` proposes a Runbook draft after a recurring incident pattern.
-- `/decision-record` prompts during `/sentry-triage` if the fix represents a real architectural choice.
+1. **Auto-discovery** — per-source extraction. Each activated pack/source knows how to read its system into entity notes (GitHub org → `repository` + `service`; Slack workspace → `person` + `channel`; …). Stub notes are presented for confirmation.
+2. **Manual seeding** — what discovery can't infer: top Products, active Projects, foundational Decisions, Conventions, Glossary terms.
+3. **Organic growth** — Events and most Processes start empty; deliverable skills add to them as they run.
 
 ## Authoring discipline
 
-The librarian is the sole writer to the vault. Other agents send change requests through the session-bridge mesh:
-
-```
-sentry-triage  -> librarian: "create Incident with these fields"
-pr-review      -> librarian: "Service X gained a dependency on Service Y"
-on-call-buddy  -> librarian: "Runbook X step 3 was wrong, here's the fix"
-```
-
-The librarian:
-
-1. Validates the change against the schema.
-2. Writes / updates the note.
-3. Updates CATALOG.md.
-4. Updates bidirectional links if applicable.
-5. Commits with a message like `incident: 2026-04-28 payment-api timeout (auto from sentry-triage)`.
-
-This keeps schema enforcement in one place and prevents race conditions between concurrent agents.
+The librarian is the sole writer. Other agents send change requests over the session-bridge mesh; the librarian validates against `schema.yaml`, writes the note, updates CATALOG.md and bidirectional links, and commits per change.
 
 ## What is NOT in the vault
 
 | Out of scope | Where it lives |
 |--------------|----------------|
-| Live alerts, current PRs, deploy status | Sentry, GitHub, deploy system, queried at runtime |
-| Secret values | System keychain, referenced by name in frontmatter |
-| Source code | GitHub repos, vault stores metadata only |
-| Customer / CRM data | Customer's CRM (Salesforce, HubSpot) |
-| Logs, metrics, traces | gcp-logging, Grafana, Sentry, queried at runtime |
-| Personally identifiable information | Anywhere except vault |
+| Live alerts, current PRs, deploy status | source systems, queried at runtime |
+| Secret values | system keychain, referenced by name |
+| Source code, raw documents | their systems; the vault stores metadata |
+| Logs, metrics, traces | observability systems, queried at runtime |
 
-## Versioning and ownership
+## Versioning
 
-- Vault is a git repository, customer-owned (their GitHub or GitLab org).
-- Branch model: writes go to `main` directly. Big restructures use feature branches with human review.
-- Commits are small-grained. The librarian commits per change, not per session.
-- The setup wizard initializes the vault and pushes the first commit. The customer owns the repo from that point.
-
-## Open questions to revisit before implementation
-
-1. Multi-environment Integration: one note per system or one per environment? Current schema supports both (`Integration.covers_environments` list); decide convention during wizard build.
-2. Monorepo handling: when one Repository hosts ten Services, do we want a `paths_per_service` field on Repository to disambiguate? Defer until first monorepo customer hits it.
-3. Glossary pagination: at 500+ terms a single file gets unwieldy. Split-by-letter (`Glossary/A.md`, etc.) when that becomes a problem; not before.
-4. Project to Decision back-pressure: if a Project produces multiple Decisions, the Project's `linked_decisions` list grows. Probably fine; flag if it exceeds 20 on any project.
-5. Schema versioning: when a new entity type or field is added, how do existing customer vaults migrate? A migration tool would need to detect the prior schema version (frontmatter or sentinel file), apply the diff per entity, and re-run the validator. Not present today; design when the second deployment forces the issue.
+- The vault is a customer-owned git repository.
+- `schema.yaml` carries `schema_version`. Because each vault owns its schema, there is no central schema to migrate against — a vault evolves its own `schema.yaml` and re-runs the validator.
+- The librarian commits per change, small-grained.

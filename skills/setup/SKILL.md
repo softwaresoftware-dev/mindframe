@@ -1,17 +1,17 @@
 ---
 name: setup
-description: Onboard a new mindframe deployment. Walk the operator through credentials per data system, validate connections live, bootstrap the customer-domain knowledge base from real source systems (Slack, GitHub, Gmail, Sentry, GCP, and whatever else the environment exposes), wire the deliverable skills, and run an end-to-end smoke test. Use when asked to "set up mindframe", "onboard a customer", "install the bundle", or when starting a new mindframe deployment.
+description: Onboard a new mindframe deployment. Walk the operator through credentials per data system, validate connections live, assemble the per-install knowledge-base schema (core entities + domain packs + custom entities), bootstrap the vault from real source systems (Slack, GitHub, Gmail, Sentry, and whatever else the environment exposes), wire the deliverable skills, and run an end-to-end smoke test. Use when asked to "set up mindframe", "onboard a customer", "install the bundle", or when starting a new mindframe deployment.
 ---
 
 # Mindframe — Setup
 
-You are the mindframe onboarding agent. The bundle has just been installed. Walk the operator through one-time setup, end-to-end, dogfooding the rest of the bundle as you go. The customer-domain KB contract you're populating is in `docs/kb-schema.md` — read it before starting.
+You are the mindframe onboarding agent. The bundle has just been installed. Walk the operator through one-time setup, end-to-end, dogfooding the rest of the bundle as you go. The knowledge-base schema is per-install — `docs/kb-schema.md` is the *library* you assemble a deployment's schema from. Read it before starting.
 
 ## Flow
 
 1. **Collect bundle config — conversationally, don't hard-stop.** Two values are needed:
    - `deployment_name` — labels this deployment. Threads into the vault root, the dashboard breadcrumb, and the grounding prompt's operating envelope. For a vendor onboarding a client this is the client's name; for a self-hosted / dogfood deployment it's just your own infra name (e.g. `local-yocal`).
-   - `vault_path` — where the domain knowledge base lives. Should be a fresh path, separate from any personal project-tracker vault.
+   - `vault_path` — where the knowledge base lives. Should be a fresh path, separate from any personal project-tracker vault.
 
    If either is unset in plugin config (`~/.claude/settings.json` → `pluginConfigs.mindframe.options`), **ask the operator for it directly** — a one-line prompt per value — then write both into settings.json yourself. Do NOT dump a JSON snippet and stop; guide the operator through it.
 
@@ -65,7 +65,7 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
    | GitHub | `gh` on PATH, `gh auth status` → logged in as `<user>` | ready |
    | GCP | `~/.config/gcloud/` present, account `<acct>` | ready |
    | Sentry | `sentry` MCP in settings.local.json; mentioned in 3 recent transcripts | ready |
-   | Kubernetes | `kubectl` context `<ctx>`; 4 `docker-compose.yml` under ~/projects | ready |
+   | Slack | `slack` MCP in settings.json | ready |
    | PagerDuty | no CLI, no MCP, no config, no transcript hits | no signal |
 
    **G. Confirm scope with the operator.** Discovery is a *suggestion*, not a decision. Present the table, then ask which systems to bring in scope. The operator may add a system you found no signal for (a SaaS like PagerDuty often has no local fingerprint) or drop one you did detect. Their answer is final.
@@ -73,11 +73,29 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
 3. **Per in-scope system, gather credentials and validate live.**
    For each system the operator confirmed in step 2, prompt for any credentials not already available (a probed-and-authenticated CLI/MCP may need nothing further), store via the appropriate provider's userConfig path, and run a small probe against the system's API to confirm access. Surface failures clearly — never proceed past a failed probe.
 
-4. **Bootstrap the customer-domain knowledge base.** Use the schema in `docs/kb-schema.md`. Pull real entities from the validated source systems: services and repos from GitHub, on-call rotations from PagerDuty, recent incidents from Sentry, team membership from Slack, container stacks from `docker compose ls`. Write one note per entity into `<vault_path>/<entity-type>/`. Generate the catalog index at the vault root. Commit each pass with a clear message.
+4. **Assemble the deployment's schema.** mindframe's KB schema is per-install. The meta-schema is fixed; the *entity set* is assembled now and written to `<vault_path>/schema.yaml`. Read `docs/kb-schema.md` for the meta-schema, the core entities, the packs, and the manifest format.
 
-5. **Wire the event router.** Configure the dispatcher's webhook ingress URL on each source system (Sentry alert webhook → dispatcher endpoint, etc). Verify the round-trip with a deliberately-injected test event.
+   **a. Core entities — always.** Person, Team, Customer, Partner, Project, Product, Decision, Incident, Convention, Glossary. Every manifest includes these, unchanged.
 
-6. **Smoke test a deliverable skill.** Trigger a synthetic event end-to-end — a Sentry event against the incident-triage skill is the default, since it ships first. Confirm the dispatcher spawns the agent, the agent reads the vault, produces its output, and notifies through the configured channel.
+   **b. Select domain packs from the discovery evidence.** A pack is activated by what step 2 found — not by asking:
+   - `software-ops` (service, repository, integration, runbook, deployment, code-review, release) — activate when discovery found GitHub / Sentry / a container runtime / a language manifest.
+   - `communications` (channel) — activate when discovery found Slack / Teams.
+
+   Tell the operator which packs you activated and why; they may decline one.
+
+   **c. Propose custom entities.** Ask the operator for the core nouns of their business. For each noun that is neither core nor in an activated pack, decide **alias or mint**: a renamed core entity (their "Squad" is your Team, their "Matter" may be a richer Project) is an *alias* — do not over-mint. For a genuinely new entity, define it *against the meta-schema* with the operator: pick its layer, name its `type`, choose its fields and foreign keys.
+
+   **d. Write `schema.yaml`.** Emit the assembled manifest to the vault root in the format in `docs/kb-schema.md` → "The schema manifest". Every entity carries a `source` (`core` | `pack:<name>` | `custom`). This file — not `kb-schema.md` — is the contract for this deployment; the librarian, validator, and skills read it. Commit it as the vault's first commit.
+
+5. **Bootstrap the knowledge base.** Populate the vault per the `schema.yaml` you just wrote. Only ever write notes for entity types the manifest declares.
+
+   - **Auto-discovery — per source.** For each validated system, run its extraction into entity notes, one note per entity into the entity type's directory: a GitHub org → `repository` + `service` notes; a Slack workspace → `person` + `channel` notes; Sentry → recent `incident` notes. Write stub notes and present them to the operator to confirm / edit / drop.
+   - **Manual seeding.** Prompt for what discovery can't infer — top Products, active Projects, foundational Decisions, Conventions, Glossary terms.
+   - Generate `CATALOG.md` (one section per active entity type) at the vault root. Commit each pass with a clear message.
+
+6. **Wire the event router.** Configure the dispatcher's webhook ingress URL on each source system (Sentry alert webhook → dispatcher endpoint, etc). Verify the round-trip with a deliberately-injected test event.
+
+7. **Smoke test a deliverable skill.** Trigger a synthetic event end-to-end — a Sentry event against the incident-triage skill is the default, since it ships first. Confirm the dispatcher spawns the agent, the agent reads the vault, produces its output, and notifies through the configured channel.
 
 ## Dependencies
 
@@ -85,5 +103,5 @@ This skill assumes the bundle's required capabilities are installed: `agent-spaw
 
 ## Reference
 
-- `docs/kb-schema.md` — customer-domain KB contract (11 entity types, FK rules, CATALOG, validator)
-- The bundled providers' own setup skills handle their per-plugin configuration; defer to them for plugin-specific concerns
+- `docs/kb-schema.md` — the KB schema library: the meta-schema, core entities, domain packs, the custom-entity rule, and the `schema.yaml` manifest format.
+- The bundled providers' own setup skills handle their per-plugin configuration; defer to them for plugin-specific concerns.
