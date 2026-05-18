@@ -13,5 +13,19 @@
     "reporting",
     "claude"
   ],
-  "repository": "https://github.com/softwaresoftware-dev/mindframe"
+  "repository": "https://github.com/softwaresoftware-dev/mindframe",
+  "userConfig": {
+    "deployment_name": {
+      "type": "string",
+      "title": "Deployment name",
+      "description": "Names this mindframe deployment — the client's name for a vendor install, or your own infra name for a self-hosted one. Threads into the vault root and grounding prompts.",
+      "required": true
+    },
+    "vault_path": {
+      "type": "directory",
+      "title": "Knowledge-base vault path",
+      "description": "Filesystem path to the customer-domain knowledge base (a git repo). Deliverable skills read it at runtime as CLAUDE_PLUGIN_OPTION_VAULT_PATH. Use a fresh path, separate from any personal project-tracker vault.",
+      "required": true
+    }
+  }
 }
