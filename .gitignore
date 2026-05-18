@@ -6,5 +6,6 @@ __pycache__/
 .env
 
 # Internal-only material — not part of the customer-installable plugin.
-# Reviews, UAT artifacts, and launch/demo-production work.
+# Reviews, UAT artifacts, and launch/demo-production work. Local-only.
 internal/
+launch/
