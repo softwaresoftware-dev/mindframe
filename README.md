@@ -25,6 +25,10 @@ subsystem interfaces.
   data sources, walks the operator through credentials, bootstraps the
   customer-domain knowledge base from real source systems, wires the event
   router, and runs an end-to-end smoke test.
+- `/mindframe:doctor` — diagnose and heal the bundle. Walks every plugin —
+  agent runtime, knowledge base, event router, dashboard, perception MCPs —
+  checks for missing capabilities, dead daemons, broken config, and schema
+  drift, fixes what is safe to fix, and reports the rest with evidence.
 - `/mindframe:sentry-triage`, `/mindframe:k8s-triage` — deliverable skills. One
   kind of work the agents do: investigate an incident against the knowledge
   base, draft a fix or RCA, notify the right team. Incident triage is the first

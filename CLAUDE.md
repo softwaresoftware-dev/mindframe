@@ -66,5 +66,6 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 
 - `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, core entities, domain packs, and the per-install `schema.yaml` manifest format. Read before building setup or deliverable skills.
 - `skills/setup/` — `/mindframe:setup` wizard.
+- `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
 - `skills/sentry-triage/`, `skills/k8s-triage/` — deliverable skills (incident triage). The first entries in the skills library.
 - `dashboard/` — generative-UI web app (vanilla JS frontend in `public/` — no build step; Python/FastAPI backend). The Mindframe agent authors a complete HTML dashboard per instruction; runs locally under Claude Code via a persistent taskpilot agent, opened through browser-bridge. See `dashboard/README.md`.
