@@ -85,7 +85,7 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
 
    **c. Propose custom entities.** Ask the operator for the core nouns of their business. For each noun that is neither core nor in an activated pack, decide **alias or mint**: a renamed core entity (their "Squad" is your Team, their "Matter" may be a richer Project) is an *alias* — do not over-mint. For a genuinely new entity, define it *against the meta-schema* with the operator: pick its layer, name its `type`, choose its fields and foreign keys.
 
-   **d. Write `schema.yaml`.** Emit the assembled manifest to the vault root in the format in `docs/kb-schema.md` → "The schema manifest". Every entity carries a `source` (`core` | `pack:<name>` | `custom`). This file — not `kb-schema.md` — is the contract for this deployment; the librarian, validator, and skills read it. Commit it as the vault's first commit.
+   **d. Write `schema.yaml`.** Emit the assembled manifest to the vault root in the format in `docs/kb-schema.md` → "The schema manifest". Every entity carries a `source` (`core` | `pack:<name>` | `custom`). This file — not `kb-schema.md` — is the contract for this deployment; the librarian and skills read it, and the librarian validates writes against it. Commit it as the vault's first commit.
 
 5. **Bootstrap the knowledge base.** Populate the vault per the `schema.yaml` you just wrote. Only ever write notes for entity types the manifest declares.
 

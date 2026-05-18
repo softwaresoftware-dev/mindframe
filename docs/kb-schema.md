@@ -11,7 +11,7 @@ Different organizations have different entities — a software company has Servi
 - **The meta-schema** — the universal, fixed rules every entity obeys regardless of domain. This *is* the contract, and it never changes without a version bump.
 - **The entity library** — core entities (every install gets them), domain packs (opt-in sets), and custom entities (defined per install). This is a menu.
 
-Each deployment assembles its own schema from the library and records it in the vault's **`schema.yaml` manifest** (see "The schema manifest"). The manifest is the contract *for that vault*. The librarian, the validator, and skills read the manifest — never a hardcoded entity list.
+Each deployment assembles its own schema from the library and records it in the vault's **`schema.yaml` manifest** (see "The schema manifest"). The manifest is the contract *for that vault*. The librarian and skills read the manifest — never a hardcoded entity list.
 
 ## Design principles
 
@@ -68,7 +68,7 @@ Every note carries `type` in its frontmatter. The note does *not* carry its laye
 
 ### Foreign keys
 
-A foreign key names another entity; the validator checks the target exists. An FK declares a **target**, which is one of:
+A foreign key names another entity; its target must resolve to an existing note. An FK declares a **target**, which is one of:
 
 - **A single entity type.** The value must name a note of that type. Written as the bare type name: `team: team`.
 - **A whole layer.** The value may name *any* entity type in that layer. Written `any:<layer>`: `affected: any:thing` means the value may name any Thing — a Service, a Machine, a Product. The four layer names (`thing`, `event`, `knowledge`, `process`) are reserved for this; no entity type may use them.
@@ -81,7 +81,7 @@ Self-referential FKs are allowed (`manager: person`) but must not form cycles.
 
 ## The schema manifest
 
-Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; the librarian, validator, and skills read it.
+Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; the librarian and skills read it.
 
 ```yaml
 schema_version: 2
@@ -356,7 +356,7 @@ Setup's custom-entity step:
 3. **Define against the meta-schema** — pick the layer, name the `type`, choose fields and FKs, with the operator.
 4. **Record** — write it into `schema.yaml` with `source: custom`.
 
-From that point the custom entity is first-class *in that install*: the validator checks it, the librarian writes it, the catalog indexes it — because it conforms to the meta-schema.
+From that point the custom entity is first-class *in that install*: the librarian validates and writes it, the catalog indexes it — because it conforms to the meta-schema.
 
 When a custom entity recurs across deployments, that is the signal to promote its cluster into a new pack.
 
@@ -411,14 +411,17 @@ A vault only has the directories for entity types its manifest activates.
 
 ## Schema invariants
 
-The validator enforces these, driven by `schema.yaml` — never a hardcoded list.
+These hold for every vault, driven by its `schema.yaml` — never a hardcoded list.
 
-- **Foreign-key integrity.** Every FK value resolves to an existing note of the declared target type. No self-reference cycles.
+- **Foreign-key integrity.** Every FK value resolves to an existing note of the declared target type or layer. No self-reference cycles.
 - **Catalog integrity.** Every CATALOG row points to a real note; every note (except Glossary) has a row; row fields match the note's frontmatter.
 - **Identity integrity.** Names/slugs unique per type; filename matches `name`/`slug`; Event slugs start with `YYYY-MM-DD-`.
 - **Manifest conformance.** Every note's `type` is declared in `schema.yaml`; every note's frontmatter keys are within that type's defined fields + FKs.
 
-The validator is a deterministic script — no LLM. It reads `schema.yaml` and checks every note against it. The vault's pre-commit hook runs it, and the librarian runs it before every write.
+Validation has two homes:
+
+- **Runtime — the librarian.** The librarian is the vault's sole writer, so it is the only thing that can introduce a violation. It knows these invariants and checks each note against `schema.yaml` before it commits. Because nothing else writes to the vault, that write-time check is the gate — no separate pre-commit hook is needed.
+- **Development — a plugin test.** The invariants are codified as a test in the knowledge-base plugin: fixture vaults, well-formed and intentionally broken, run through the checks under `make test`. That is where the rules are pinned down precisely and regression-guarded.
 
 ## Bootstrap
 
@@ -444,5 +447,5 @@ The librarian is the sole writer. Other agents send change requests over the ses
 ## Versioning
 
 - The vault is a customer-owned git repository.
-- `schema.yaml` carries `schema_version`. Because each vault owns its schema, there is no central schema to migrate against — a vault evolves its own `schema.yaml` and re-runs the validator.
+- `schema.yaml` carries `schema_version`. Because each vault owns its schema, there is no central schema to migrate against — a vault evolves its own `schema.yaml`, and the librarian validates against the new version.
 - The librarian commits per change, small-grained.

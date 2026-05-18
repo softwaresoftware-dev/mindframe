@@ -243,10 +243,11 @@ The interface, then, is two-layer:
 
 - **Fixed** — the meta-schema in `kb-schema.md`. Never changes without a
   version bump. Contributors build against this.
-- **Per-vault** — the deployment's `schema.yaml`. The librarian, the
-  validator, and skills read *this* to know what entity types exist; they
-  never assume a hardcoded list. A software vault has `service`/`repository`;
-  a paper-mill vault has `machine`/`mill` and neither of those.
+- **Per-vault** — the deployment's `schema.yaml`. The librarian and skills
+  read *this* to know what entity types exist; they never assume a hardcoded
+  list. A software vault has `service`/`repository`; a paper-mill vault has
+  `machine`/`mill` and neither of those. The librarian also enforces the
+  schema invariants against `schema.yaml` as it writes — see `kb-schema.md`.
 
 Deliverable skills depend on the grep contract documented per-vault in its
 `README.md`; the demo vault's contract is pinned by
