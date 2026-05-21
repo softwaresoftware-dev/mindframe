@@ -12,7 +12,7 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 2. **Knowledge base** — customer vault + librarian agent. Markdown + frontmatter, schema in `docs/kb-schema.md`. Persistent memory: services, repos, runbooks, owners, on-call, past incidents.
 3. **Event router** — `dispatcher`. Push-path: public webhook ingress + LLM/direct router + audit. Spawns ephemeral agents on demand.
 4. **Setup wizard** — `/mindframe:setup`. Claude-driven onboarding. Walks user through credentials per data system, validates connections live, bootstraps the vault, configures triggers, runs end-to-end smoke test.
-5. **Deliverable skills** — a library of skills that turn the knowledge base into work: incident triage (`/mindframe:sentry-triage`, `/mindframe:k8s-triage` — RCA → draft fix → notify), reviews and reports, answers about how the org runs. What the customer asks the agents for. New deliverables are added to the library; incident triage is the first.
+5. **Deliverable skills** — a library of skills that turn the knowledge base into work: incident triage (RCA → draft fix → notify), reviews and reports, answers about how the org runs. What the customer asks the agents for. **No deliverable skills currently ship in the bundle** (the prior `sentry-triage` and `k8s-triage` were deleted 2026-05-19 pending redesign). New deliverables are added to the library; incident triage is the first slated entry.
 6. **Dashboard** — `taskboard` (sibling plugin). Pull-path: probes services, agents, daemons, sites, sessions, telemetry and renders status. Pairs with dispatcher — taskboard is the eyes (pull), dispatcher is the ears (push).
 7. **Perception + adopt-first MCPs** — `claude-browser-bridge` + sentry / gcp-logging / github / grafana / slack MCPs. Browser-bridge is general-purpose perception for any web UI; default-install, not opt-in.
 
@@ -23,7 +23,7 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 ```
                            mindframe (this plugin)
                            - /mindframe:setup
-                           - deliverable skills (sentry-triage, k8s-triage, …)
+                           - deliverable skills (none ship currently)
                            - customer-domain KB schema (docs/kb-schema.md)
                                        │
                                        │ requires
@@ -38,17 +38,19 @@ spawning                base         routing    dashboard    automation    (opti
                                                                                 slack
 ```
 
-### Runtime flow (example: a Sentry-triage deliverable)
+### Runtime flow (wire shape for any deliverable skill)
+
+The bundle currently ships no deliverable skill. The wire shape below is what any future deliverable will plug into — preserved here so the dispatcher → taskpilot → mesh → vault → notify path is documented:
 
 ```
-Sentry → dispatcher (webhook) → spawn ephemeral claude → /mindframe:sentry-triage
-                                                          │
-                              ┌───────────────────────────┼──────────────────────┐
-                              ▼                           ▼                      ▼
-                          knowledge-base          browser-bridge MCP     output channel
-                          (vault + librarian)     (Sentry, Grafana, GH)  (Slack, PR, email)
-                              │
-                          taskboard observes everything ← always-on
+external event → dispatcher (webhook) → spawn ephemeral claude → /mindframe:<deliverable>
+                                                                  │
+                                      ┌───────────────────────────┼──────────────────────┐
+                                      ▼                           ▼                      ▼
+                                  knowledge-base          browser-bridge MCP     output channel
+                                  (vault + librarian)     (provider MCPs)        (notification provider)
+                                      │
+                                  taskboard observes everything ← always-on
 ```
 
 ## Invariants
@@ -67,5 +69,4 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 - `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, core entities, domain packs, and the per-install `schema.yaml` manifest format. Read before building setup or deliverable skills.
 - `skills/setup/` — `/mindframe:setup` wizard.
 - `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
-- `skills/sentry-triage/`, `skills/k8s-triage/` — deliverable skills (incident triage). The first entries in the skills library.
-- `dashboard/` — generative-UI web app (vanilla JS frontend in `public/` — no build step; Python/FastAPI backend). The Mindframe agent authors a complete HTML dashboard per instruction; runs locally under Claude Code via a persistent taskpilot agent, opened through browser-bridge. See `dashboard/README.md`.
+- `dashboard/` — FastAPI server that serves the SPA shell, exposes artifact HTML under `artifacts/<sid>/`, and snapshots to `/s/<id>` shares. The persistent dashboard agent was removed 2026-05-21; the next iteration is a merge with the `taskboard` plugin (taskboard supplies the static topology frame; mindframe contributes dispatcher-event-driven ephemeral panes that land in `artifacts/`). SPA is inert until that lands. See `dashboard/README.md`.
