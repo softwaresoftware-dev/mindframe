@@ -29,9 +29,7 @@ subsystem interfaces.
   agent runtime, knowledge base, event router, dashboard, perception MCPs —
   checks for missing capabilities, dead daemons, broken config, and schema
   drift, fixes what is safe to fix, and reports the rest with evidence.
-- `/mindframe:sentry-triage`, `/mindframe:k8s-triage` — deliverable skills. One
-  kind of work the agents do: investigate an incident against the knowledge
-  base, draft a fix or RCA, notify the right team. Incident triage is the first
-  entry in the skills library, not the whole product.
+No deliverable skills ship in the current bundle. The deliverable-skills bucket
+is part of the architecture; first entries pending redesign.
 
 The dashboard component lives in the sibling [`taskboard`](../taskboard/) plugin.

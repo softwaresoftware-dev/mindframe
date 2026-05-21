@@ -1,0 +1,168 @@
+# Mindframe KB pack: Microsoft / Azure stack
+#
+# Activate this pack when the org runs on Microsoft cloud + productivity tools:
+# Azure, Microsoft 365, Teams, SharePoint, Power Platform, Azure DevOps.
+# Co-designed with Flywheel (oil & gas; Microsoft shop) as the first real
+# customer deployment.
+#
+# STATUS: scaffold. Many Microsoft signals are SaaS/web-only — local binary
+# probes find little. Discovery leans on MCP registrations and direct operator
+# elicitation (PHASE 4 step F of install.txt).
+
+name: microsoft-stack
+version: 0.1.0-scaffold
+description: |
+  Microsoft / Azure-shaped organizations. Adds azure-subscription,
+  devops-pipeline, m365-tenant, and teams-channel entity types. Many signals
+  are SaaS/web — leans on MCP registrations and operator elicitation, not
+  local probes. Co-designed with Flywheel as the first deployment.
+
+activation:
+  evidence:
+    - probe: binary-exists
+      binaries: [az, pwsh, dotnet, func, kubelogin]
+      implies: "Microsoft developer-CLI footprint"
+    - probe: mcp-registered
+      mcps: [azure, azure-devops, microsoft-365, teams, sharepoint, power-bi, sentinel, azure-monitor]
+      implies: "Claude Code wired to Microsoft services"
+    - probe: file-exists
+      paths: ["~/.azure/config", "~/.azure/clouds.config"]
+      implies: "Azure CLI configured"
+    - probe: code-root-marker
+      markers:
+        - azure-pipelines.yml
+        - .azuredevops/
+        - bicep/
+        - "*.bicep"
+        - "*.csproj"
+        - "*.sln"
+        - global.json
+      implies: "Microsoft-stack codebase"
+    - probe: operator-mentions
+      values:
+        - azure
+        - microsoft
+        - m365
+        - microsoft 365
+        - office 365
+        - teams
+        - sharepoint
+        - power bi
+        - power automate
+        - power platform
+        - azure devops
+        - sentinel
+        - dynamics
+    - probe: operator-declares
+      value: microsoft-shop
+
+entities:
+
+  azure-subscription:
+    layer: thing
+    identity: name
+    directory: AzureSubscriptions
+    fields:
+      - {name: subscription_id, type: string, required: true}
+      - {name: tenant_id, type: string, required: true}
+      - {name: environment, type: string, enum: [production, staging, dev, sandbox]}
+      - {name: cost_center, type: string}
+    foreign_keys:
+      owners: team
+
+  devops-pipeline:
+    layer: thing
+    identity: name
+    directory: AzureDevOpsPipelines
+    fields:
+      - {name: pipeline_id, type: number}
+      - {name: project, type: string, description: "Azure DevOps project name."}
+      - {name: definition_url, type: string}
+      - {name: triggers, type: string, list: true}
+    foreign_keys:
+      owner_team: team
+
+  m365-tenant:
+    layer: thing
+    identity: name
+    directory: M365Tenants
+    fields:
+      - {name: tenant_id, type: string, required: true}
+      - {name: primary_domain, type: string}
+      - {name: license_sku, type: string, description: "e.g. Microsoft 365 E5"}
+    # No FKs — the tenant is the root.
+
+  teams-channel:
+    layer: thing
+    identity: name
+    directory: TeamsChannels
+    fields:
+      - {name: channel_id, type: string}
+      - {name: team_name, type: string}
+      - {name: purpose, type: string, enum: [notification, oncall, discussion, archived]}
+    foreign_keys:
+      owners: team
+
+extends_core:
+  team:
+    add_fields:
+      - {name: teams_channel, type: ref, target: teams-channel,
+         description: "Default channel to notify for this team."}
+      - {name: azure_ad_group, type: string, description: "AAD group object ID, if used for ownership."}
+  incident:
+    add_fields:
+      - {name: azure_subscription, type: ref, target: azure-subscription}
+      - {name: sentinel_incident_id, type: string,
+         description: "Microsoft Sentinel incident ID, if this incident originated there."}
+
+companions:
+  perception_mcps:
+    - name: azure-mcp
+      reads: [azure-subscription, incident]
+      notes: "Reads Azure Resource Manager + Azure Monitor."
+    - name: azure-devops-mcp
+      reads: [devops-pipeline, code-review]
+    - name: microsoft-365-mcp
+      reads: [person, team, m365-tenant]
+    - name: teams-mcp
+      reads: [teams-channel, person]
+    - name: sentinel-mcp
+      reads: [incident]
+      notes: "Microsoft Sentinel — security incidents."
+    - name: power-bi-mcp
+      reads: [project, product]
+      notes: "Power BI workspace + report inventory."
+
+  # Informational only — example deliverables operators commonly author against
+  # this pack's entities. This pack ships no skills. The operator authors their
+  # own utilities during /mindframe:setup PHASE 7 (guided authoring).
+  example_deliverables:
+    - name: azure-monitor-alert-triage
+      trigger: "Azure Monitor / Application Insights alert webhook."
+      why: "Cross-reference against the affected azure-subscription's services + recent deploys; surface remediation candidates."
+    - name: azure-devops-pr-summary
+      trigger: "Azure DevOps PR-completed webhook."
+      why: "Summarize the change, link to the pipeline that ran, notify the Teams channel of the owning team."
+    - name: sentinel-incident-triage
+      trigger: "Microsoft Sentinel incident."
+      why: "Security workflow — investigate the incident's principals + resources, classify, route to the right responder."
+    - name: power-bi-refresh-watch
+      trigger: "Power BI dataset refresh failure webhook."
+      why: "A common operational headache for Microsoft shops — the dashboard nobody can use because its refresh broke at 3 AM."
+
+vault_layout:
+  - path: "AzureSubscriptions/"
+  - path: "AzureDevOpsPipelines/"
+  - path: "M365Tenants/"
+  - path: "TeamsChannels/"
+
+notes: |
+  Scaffold-quality. Microsoft stacks are large and varied — this pack starts
+  with the entities most relevant to Flywheel's environment (oil & gas operator
+  running on Azure). Other Microsoft shops (e.g. a financial services firm)
+  may need different entities and a follow-on pack version.
+
+  Critical caveat: most Microsoft-stack signals are SaaS/web (Power BI reports,
+  SharePoint sites, Teams channels). Local binary/file probes catch only the
+  developer-tooling slice. Discovery for this pack should weight MCP
+  registrations and direct elicitation heavily.

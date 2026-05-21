@@ -1,0 +1,224 @@
+# Mindframe KB pack: upstream oil & gas
+#
+# A pack is a named set of entity types for a domain. /mindframe:setup
+# reads this file when the pack is activated and merges its entries into
+# the deployment's schema.yaml manifest under source: pack:upstream-oil-gas.
+#
+# Activation evidence (any one is sufficient):
+#   - Postgres reachable with the Ignition Tag Historian schema
+#     (presence of sqlth_drv, sqlth_scinfo, sqlth_te tables)
+#   - HTTP service responding to /v1/leases or /v1/meters (Quorum / FlowCal)
+#   - Postgres with a production-accounting schema (wells, monthly_closes,
+#     state_filings) characteristic of ProCount / Enertia / OGsys
+#   - Operator confirms "upstream oil & gas" at scope confirmation
+
+name: upstream-oil-gas
+version: 0.1.0-demo
+description: |
+  Upstream oil & gas pack. Adds 10 entity types — well, pad, lease, meter,
+  royalty-owner, operator, acquisition, tsa-cutover, freeze-off, workover —
+  plus a post-event variance extension on core incident. Schema scaffolding
+  only; operators author their own utilities during guided setup.
+
+# Activation conditions consulted by /mindframe:setup during pack activation.
+# Each probe is documented so the operator can audit why the pack was offered.
+activation:
+  evidence:
+    - probe: postgres-table-exists
+      tables: [sqlth_drv, sqlth_scinfo, sqlth_te]
+      implies: ignition-historian
+    - probe: http-get
+      path: /v1/leases
+      implies: quorum-on-demand-land
+    - probe: http-get
+      path: /v1/meters
+      implies: quorum-flowcal
+    - probe: postgres-table-exists
+      tables: [wells, monthly_closes, state_filings]
+      implies: production-accounting-procount-shaped
+    - probe: operator-declares
+      value: upstream-oil-gas
+
+# Entity types brought into scope when this pack activates.
+entities:
+
+  well:
+    layer: thing
+    identity: name
+    directory: Wells
+    fields:
+      - {name: api14, type: string, required: false, description: "API-14 well identifier."}
+      - {name: spud_date, type: date}
+      - {name: first_prod, type: date}
+      - {name: lift_type, type: string, enum: [plunger, gas-lift, rod-pump, esp, flowing, other]}
+      - {name: tag_prefix, type: string, description: "SCADA tag path prefix used in the historian."}
+      - {name: tag_gateway, type: string, description: "Name of the Ignition gateway writing this well's history."}
+      - {name: status, type: string, enum: [producing, shut-in, p&a, retired, pa-review]}
+    foreign_keys:
+      pad: pad
+      lease: lease
+      operator: operator
+      meter: meter
+      sellerco_predecessor: well     # self-ref for cross-walk lineage
+
+  pad:
+    layer: thing
+    identity: name
+    directory: Pads
+    fields:
+      - {name: legal_location, type: string}
+      - {name: surface_owner, type: string}
+    foreign_keys:
+      lease: lease
+
+  lease:
+    layer: thing
+    identity: name
+    directory: Leases
+    fields:
+      - {name: lease_number, type: string}
+      - {name: legal_description, type: string, required: true}
+      - {name: state, type: string}
+      - {name: county, type: string}
+      - {name: primary_term_end, type: date}
+      - {name: royalty_decimal, type: number}
+      - {name: tsa_cutover_date, type: date}
+    foreign_keys:
+      operator: operator
+      acquired_in: acquisition
+
+  meter:
+    layer: thing
+    identity: name
+    directory: Meters
+    fields:
+      - {name: pipeline, type: string}
+      - {name: ept_point, type: string, description: "Edit point / custody-transfer ID."}
+      - {name: allocation_method, type: string, enum: [single-well, commingled-percentage, well-test]}
+      - {name: last_calibration, type: date}
+      - {name: calibration_due, type: date}
+    foreign_keys:
+      pad: pad
+      wells_contributing: well   # list FK
+
+  royalty-owner:
+    layer: thing
+    identity: name
+    directory: Owners
+    fields:
+      - {name: owner_id, type: string, required: true}
+      - {name: interest_type, type: string, enum: [royalty, working, override, nonparticipating]}
+      - {name: decimal_interest, type: number}
+      - {name: contact_email, type: string}
+      - {name: contact_channel, type: string}
+    foreign_keys:
+      lease: lease
+
+  operator:
+    layer: thing
+    identity: name
+    directory: Operators
+    fields:
+      - {name: legal_name, type: string}
+      - {name: is_current, type: boolean, default: true}
+    # No foreign keys — operators reference back via wells/leases.
+
+  acquisition:
+    layer: event
+    identity: slug
+    directory: Acquisitions
+    fields:
+      - {name: close_date, type: date, required: true}
+      - {name: tsa_end_date, type: date}
+      - {name: basins, type: string, list: true}
+      - {name: asset_count, type: number}
+    foreign_keys:
+      prior_operator: operator
+      new_operator: operator
+
+  tsa-cutover:
+    layer: event
+    identity: slug
+    directory: Cutovers
+    fields:
+      - {name: scheduled_date, type: date, required: true}
+      - {name: completed_date, type: date}
+      - {name: assets_migrated, type: number}
+    foreign_keys:
+      from_acquisition: acquisition
+      leases_transferred: lease       # list FK
+
+  freeze-off:
+    layer: event
+    identity: slug
+    directory: Incidents
+    description: "Cold-weather production-loss event on one or more wells."
+    fields:
+      - {name: started_at, type: timestamp, required: true}
+      - {name: ended_at, type: timestamp}
+      - {name: duration_min, type: number}
+      - {name: min_wellhead_temp_f, type: number}
+      - {name: min_tubing_psi, type: number}
+      - {name: resolution, type: string}
+      - {name: post_event_variance_pct, type: number}
+      - {name: post_event_variance_month, type: string, description: "YYYY-MM"}
+    foreign_keys:
+      affected: well                  # list FK in practice; one or more wells
+      # Note: a related_runbook FK was here but referenced an entity this pack
+      # doesn't define. Cross-pack FKs (e.g. into pack-software-ops's runbook)
+      # need a cross-pack contract that doesn't exist yet. Operators link to
+      # runbooks from the freeze-off note body for now.
+
+  workover:
+    layer: event
+    identity: slug
+    directory: Workovers
+    fields:
+      - {name: started_at, type: timestamp, required: true}
+      - {name: ended_at, type: timestamp}
+      - {name: scope, type: string}
+      - {name: cost_usd, type: number}
+    foreign_keys:
+      affected: well
+
+# Extends core entity types with extra fields when this pack is active.
+extends_core:
+  incident:
+    add_fields:
+      - {name: post_event_variance_pct, type: number, description: "Net production loss attributable to the incident, as a percentage of expected monthly volume."}
+      - {name: post_event_variance_month, type: string, description: "YYYY-MM of the close that captured the loss."}
+
+# Recommended companions — informational, not hard requires. /mindframe:setup
+# surfaces these to the operator after activation.
+companions:
+  perception_mcps:
+    - name: ignition-historian-mcp
+      reads: [well, freeze-off]
+      notes: "Reads from a Postgres or MSSQL Ignition Tag Historian. Exposes find_threshold_breaches, fetch_samples, annotations_for."
+    - name: quorum-land-mcp
+      reads: [lease, royalty-owner, owner-inquiry]
+      notes: "Reads from Quorum On Demand Land via REST."
+    - name: quorum-flowcal-mcp
+      reads: [meter, allocation, variance]
+      notes: "Reads from Quorum FlowCal via REST."
+    - name: procount-mcp
+      reads: [monthly-close, state-filing, royalty-check]
+      notes: "Reads from ProCount / Enertia / OGsys via SQL."
+
+  # Informational only — example deliverables operators commonly author against
+  # this pack's entities. The pack does not ship any skills. The operator
+  # authors their own utilities during /mindframe:setup PHASE 7 (guided
+  # authoring) — that's where the "aha" lives. Listed here as inspiration.
+  example_deliverables:
+    - name: freeze-off-triage
+      trigger: "SCADA alarm pipeline: wellhead-temp below freeze threshold."
+      why: "Most common cold-weather production loss event. Cross-system context (historian + land + measurement + production accounting) is exactly what this pack's entities expose."
+    - name: monthly-close-variance-triage
+      trigger: "scheduled: 3 days after month end."
+      why: "Catches the discrepancies between expected and actual production volume that drive operator review."
+    - name: royalty-owner-inquiry-response
+      trigger: "inbound email to royalty-owner-portal address."
+      why: "Owners ask the same questions on a cadence; mindframe drafts the response grounded in the royalty-owner + lease + monthly-close entities."
+    - name: state-filing-prep
+      trigger: "scheduled: 10 days before each state's filing deadline."
+      why: "Filing prep pulls the same fields from the same entities each cycle — high-leverage automation."

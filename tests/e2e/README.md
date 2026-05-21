@@ -60,6 +60,8 @@ and wait on a real agent run (~1–2 min).
 - **`/mindframe:setup`** is a Claude-driven wizard, not unit-testable. The
   install contract test covers the dependency graph it resolves; the live
   smoke test covers the event path it wires up.
-- **The triage wedges end-to-end** (`sentry-triage`, `k8s-triage`) need
-  live error sources and a cluster. `test_vault_fixture.py` pins the vault
-  inputs they read; full wedge runs remain manual.
+- **Deliverable skills end-to-end.** No deliverable skill currently ships (the
+  prior `sentry-triage` and `k8s-triage` were deleted 2026-05-19 pending
+  redesign). `test_vault_fixture.py` still pins the vault entity contracts a
+  future incident-triage skill would read; verify it still passes meaningfully
+  when its consumer comes back.

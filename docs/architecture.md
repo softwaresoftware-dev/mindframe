@@ -30,7 +30,7 @@ Each clause is one of the seven buckets.
 | 2 | Knowledge base | customer vault + `librarian` agent | Persistent memory of how the org works: services, projects, decisions, people, past incidents. Markdown + frontmatter; schema in [`kb-schema.md`](kb-schema.md). |
 | 3 | Event router | `dispatcher` | The push path: public webhook ingress, a router, an audit log. Turns events into agent spawns. |
 | 4 | Setup wizard | `/mindframe:setup` | Claude-driven onboarding: discovers the environment, collects credentials, bootstraps the vault, wires triggers, runs a smoke test. |
-| 5 | Deliverable skills | `/mindframe:sentry-triage`, `/mindframe:k8s-triage`, … | The work: a library of skills that ground a request in the knowledge base and produce something a human can use. Incident triage is the first; the library grows. |
+| 5 | Deliverable skills | *(none ship in the current bundle — prior triage skills were deleted 2026-05-19 pending redesign)* | The work: a library of skills that ground a request in the knowledge base and produce something a human can use. Incident triage is the first slated entry; the library grows. |
 | 6 | Dashboard | `taskboard` + the mindframe dashboard app | The pull path: probes everything and renders status. |
 | 7 | Perception + connectors | `claude-browser-bridge` + Sentry / GCP-logging / GitHub / Grafana / Slack MCPs | General-purpose web perception plus adopt-on-install data connectors. |
 
@@ -44,7 +44,7 @@ a provider directly — capabilities are the only contract.
 ```
                          mindframe (this plugin)
                          - /mindframe:setup
-                         - deliverable skills (sentry-triage, k8s-triage, …)
+                         - deliverable skills (none ship currently)
                          - customer-domain KB schema (docs/kb-schema.md)
                          - the dashboard app
                                      │
@@ -96,24 +96,22 @@ separate — they never call each other.
 Keeping them separate means a flood of events can't blind the dashboard, and a
 slow probe can't delay an agent spawn.
 
-## Runtime flow — a deliverable run (example: incident triage)
+## Runtime flow — a deliverable run (wire shape)
 
-The canonical push-path run. Incident triage is the worked example here because
-it is the first deliverable skill that ships; any deliverable follows the same
-shape — receive a request, ground it in the knowledge base, produce output.
+The canonical push-path run. **No deliverable skill currently ships** — this
+section documents the wire shape any future deliverable will reuse.
 
 ```
-Sentry ──webhook──▶ dispatcher-ingress ──▶ route ──▶ spawn ephemeral claude
-                                                          │
-                                                  /mindframe:sentry-triage
-                                                          │
-                    ┌─────────────────────┬───────────────┼────────────────┐
-                    ▼                     ▼               ▼                ▼
-              knowledge base        perception MCPs   recent commits   output channel
-              (vault + librarian)   (Sentry, Grafana, (GitHub)         (Slack, PR, email)
-                                     browser-bridge)
-                    │
-            taskboard observes everything  ◀── always-on, pull path
+external event ──webhook──▶ dispatcher-ingress ──▶ route ──▶ spawn ephemeral claude
+                                                                 │
+                                                       /mindframe:<deliverable>
+                                                                 │
+                          ┌─────────────────────┬────────────────┼────────────────┐
+                          ▼                     ▼                ▼                ▼
+                    knowledge base        perception MCPs    recent commits   output channel
+                    (vault + librarian)   (provider MCPs)    (provider MCPs)  (notification provider)
+                          │
+                  taskboard observes everything  ◀── always-on, pull path
 ```
 
 Step by step:
@@ -128,20 +126,17 @@ Step by step:
 3. **Spawn.** The router invokes the agent runtime to spawn an ephemeral
    `claude` process from a **recipe** — a directory defining the agent's
    starter prompt, the plugins it needs, and a brief template.
-4. **Investigate.** The triage skill reads the customer vault to identify the
-   service, owners, and prior incidents; pulls logs and traces from the
-   observability MCPs; reads recent commits; and falls back to browser
-   automation for any UI the APIs don't cover.
-5. **Decide.** The skill produces one of: a fix PR, a draft RCA, or a clean
-   handoff — each with a prime-suspect commit and a confidence score.
+4. **Investigate.** The deliverable skill reads the customer vault to identify
+   the affected entities (service, owners, prior incidents — depending on the
+   deliverable); pulls signals from the loaded perception MCPs; reads recent
+   commits if relevant; and falls back to browser automation for any UI the
+   APIs don't cover.
+5. **Decide.** The skill produces its output artifact — a fix PR, a draft RCA,
+   a report, an answer — depending on the deliverable shape.
 6. **Notify.** The recommendation goes to whichever channel the customer's
    configuration declares — Slack thread, PR comment, email. The skill uses
    intent-based language; the resolver bound the actual notification provider
    at install time.
-
-The Kubernetes variant (`/mindframe:k8s-triage`) follows the same shape —
-read cluster state, identify the failure mode, grep the vault for a runbook,
-cross-reference commits, recommend — adapted to the pod-failure path.
 
 ## The dashboard
 

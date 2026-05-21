@@ -114,7 +114,7 @@ The dashboard is the one app mindframe owns directly (`dashboard/`, served by a 
 
 ### [check 7/7] deliverable skills & perception
 
-- **Deliverable skills.** For each skill under `skills/` (`setup`, `sentry-triage`, `k8s-triage`, and any added later), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
+- **Deliverable skills.** For each skill under `skills/` (currently `setup`, `doctor`; deliverable skills pending redesign), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
 - **Perception MCPs.** `claude-browser-bridge` plus the adopt-first MCPs (`github`, `sentry`, `gcp-logging`, `grafana`, `slack`). For each, report registered / not-registered from the `mcpServers` keys in settings. These are mostly informational — a deliverable skill degrades gracefully when one is absent (`docs/interfaces.md` §8) — but a `sentry`-triage deployment with no Sentry MCp *and* no Sentry CLI is worth flagging Tier 2.
 - **Hermetic tests.** Optionally run `make test` to confirm the plugin's own manifest/contract tests still pass — a quick regression signal. Report pass/fail; don't heal test failures.
 

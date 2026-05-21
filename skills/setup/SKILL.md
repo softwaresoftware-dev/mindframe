@@ -73,15 +73,15 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
 3. **Per in-scope system, gather credentials and validate live.**
    For each system the operator confirmed in step 2, prompt for any credentials not already available (a probed-and-authenticated CLI/MCP may need nothing further), store via the appropriate provider's userConfig path, and run a small probe against the system's API to confirm access. Surface failures clearly — never proceed past a failed probe.
 
-4. **Assemble the deployment's schema.** mindframe's KB schema is per-install. The meta-schema is fixed; the *entity set* is assembled now and written to `<vault_path>/schema.yaml`. Read `docs/kb-schema.md` for the meta-schema, the core entities, the packs, and the manifest format.
+4. **Assemble the deployment's schema.** mindframe's KB schema is per-install. The meta-schema is fixed; the *entity set* is assembled now and written to `<vault_path>/schema.yaml`. Read `docs/kb-schema.md` for the meta-schema, the core entities, and the manifest format.
 
    **a. Core entities — always.** Person, Team, Customer, Partner, Project, Product, Decision, Incident, Convention, Glossary. Every manifest includes these, unchanged.
 
-   **b. Select domain packs from the discovery evidence.** A pack is activated by what step 2 found — not by asking:
-   - `software-ops` (service, repository, integration, runbook, deployment, code-review, release) — activate when discovery found GitHub / Sentry / a container runtime / a language manifest.
-   - `communications` (channel) — activate when discovery found Slack / Teams.
+   **b. Read bundled packs and evaluate activation.** Packs are domain-knowledge bundles that ship inside mindframe. Each lives at `${CLAUDE_PLUGIN_ROOT}/packs/<pack-name>/pack.yaml` and declares its entity types, field extensions, and activation evidence. List the directory, read every `pack.yaml`, and evaluate each pack's `activation.evidence` block against the discovery findings from step 2 (and any free-text answers from step 2-F). A pack with one or more rules satisfied is *offered for activation*; one with no signal is mentioned but not auto-activated.
 
-   Tell the operator which packs you activated and why; they may decline one.
+   Bundled packs as of v0.x include `software-ops` (service, repository, runbook, deployment, code-review — software companies), `microsoft-stack` (azure-subscription, devops-pipeline, m365-tenant, teams-channel — Microsoft-shaped orgs), `upstream-oil-gas` (well, pad, lease, freeze-off — oil & gas operators; ships with `extraction-hints.md`), and `projects` (extends core project with status/priority/needs — personal vaults). The set is read from disk, not hardcoded. See `packs/README.md` for the full list.
+
+   Tell the operator which packs you offer and why (cite the satisfied evidence rules); they confirm activation per pack. For each activated pack, merge its `entities` and `extends_core` blocks into `schema.yaml`, tagging entries with `source: pack:<pack-name>`.
 
    **c. Propose custom entities.** Ask the operator for the core nouns of their business. For each noun that is neither core nor in an activated pack, decide **alias or mint**: a renamed core entity (their "Squad" is your Team, their "Matter" may be a richer Project) is an *alias* — do not over-mint. For a genuinely new entity, define it *against the meta-schema* with the operator: pick its layer, name its `type`, choose its fields and foreign keys.
 

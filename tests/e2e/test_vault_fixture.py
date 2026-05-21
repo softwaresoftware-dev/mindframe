@@ -118,11 +118,12 @@ def test_incident_service_foreign_keys_resolve():
 
 def test_grep_contract_oomkilled():
     """`grep OOMKilled` returns the OOM runbook, the March incident, and the
-    payments service note (per the k8s-triage README's grep contract).
+    payments service note.
 
     The exactness matters in one direction: the April incidents must NOT
-    match — a false positive there would mislead k8s-triage onto the wrong
-    runbook.
+    match — a false positive there would mislead a triage consumer onto the
+    wrong runbook. (Historical consumer: the deleted k8s-triage skill;
+    contract preserved for any future triage skill that greps the vault.)
     """
     hits = _grep("OOMKilled")
     assert hits == {
