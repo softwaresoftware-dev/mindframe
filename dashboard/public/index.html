@@ -13,15 +13,14 @@
   <header class="topbar">
     <div class="brand">
       <span class="wordmark">MINDFRAME</span>
-      <span class="status">live</span>
+      <span id="conn" class="status">connecting…</span>
     </div>
     <div class="task-strip">
-      <span class="task-label">current task</span>
-      <span id="task" class="task-value">—</span>
+      <span class="task-label">panes</span>
+      <span id="pane-count" class="task-value">0</span>
     </div>
     <div class="meta">
-      <button id="share" class="share-btn" type="button" disabled title="run an instruction first">share</button>
-      session <span id="sid" class="mono">--------</span>
+      <span id="dispatcher-state" class="mono">dispatcher: unknown</span>
     </div>
   </header>
 
@@ -29,36 +28,14 @@
 
   <main id="stage" class="stage">
     <div id="empty" class="empty-state">
-      <h1>No tool loaded.</h1>
-      <p>Type an instruction below, or click a starter:</p>
+      <h1>No investigations yet.</h1>
+      <p>Panes materialize here when the dispatcher receives an event and spawns an agent.</p>
       <p class="starter-row">
-        <button type="button" class="starter" data-cmd="show me payments-api">show me payments-api</button>
-        <button type="button" class="starter" data-cmd="health of the cluster">health of the cluster</button>
-        <button type="button" class="starter" data-cmd="investigate notifications-worker restarts">investigate notifications-worker restarts</button>
+        <code>curl -X POST http://127.0.0.1:8911/api/event -H "Authorization: Bearer $(cat ~/.mindframe/secrets/dispatcher-bearer.token)" -H "Content-Type: application/json" -d '{"source":"manual","event_type":"test","data":{}}'</code>
       </p>
     </div>
-
-    <div id="spinner" class="spinner-overlay" hidden>
-      <div class="spinner">
-        <span></span><span></span><span></span>
-      </div>
-      <div class="spinner-label">building tool…</div>
-      <div class="spinner-sub" id="spinner-sub"></div>
-      <div class="activity-log" id="spinner-activity"></div>
-    </div>
-
-    <iframe id="artifact" class="artifact" hidden title="Mindframe artifact"></iframe>
+    <div id="panes" class="panes"></div>
   </main>
-
-  <form id="composer" class="composer" autocomplete="off">
-    <textarea
-      id="input"
-      placeholder="instruct mindframe…  (enter to run, shift+enter for newline)"
-      rows="1"
-      spellcheck="false"
-    ></textarea>
-    <button type="submit" class="send" aria-label="run">run</button>
-  </form>
 
   <script type="module" src="main.js"></script>
 </body>

@@ -1,24 +1,31 @@
-"""Mindframe dashboard backend — static shell + artifact viewer.
+"""Mindframe dashboard backend — panes feed.
 
-The persistent "dashboard agent" was removed (2026-05-21). The next iteration
-of this dashboard is a merge with the taskboard plugin: taskboard supplies the
-static topology frame; mindframe contributes ephemeral panes spawned by
-dispatcher events, written to artifacts/<sid>/ and served by this backend.
+The persistent "dashboard agent" was removed (2026-05-21). Replaced with a
+push-driven model: dispatcher events spawn per-task agents that write HTML
+into artifacts/<sid>/latest.html; the SPA polls /api/panes and materializes
+each one as an ephemeral pane on a single canvas. Action buttons inside the
+agent-authored HTML POST back to /api/dashboard-event, which proxies to the
+dispatcher with a bearer the server reads from disk (the browser never sees
+the bearer value).
 
-What this server still does:
+The next iteration is a merge with the taskboard plugin: taskboard supplies
+the static topology frame; the panes lane built here gets folded into that
+chassis.
 
-  - Serve the SPA in public/ (no build step).
-  - Serve artifact HTML written by per-event task agents under artifacts/<sid>/.
-  - Snapshot the current artifact to a sharable /s/<id> URL with 60-day retention.
-  - Hourly sweep of expired shares.
+Endpoints:
 
-What it no longer does:
+  - GET  /api/health
+  - GET  /api/panes              — list current artifacts with mtimes
+  - POST /api/dashboard-event    — proxy to dispatcher (server holds the bearer)
+  - GET  /artifacts/<sid>/<path> — serve agent-written HTML
+  - POST /api/save               — snapshot current artifact to /s/<id>
+  - GET  /s/<share_id>           — serve a saved share
+  - GET  /api/share/<share_id>   — share metadata
+  - GET  /<path>                 — SPA fallback
 
-  - Drive a persistent taskpilot dashboard agent.
-  - Compose HTML in response to an instruction-box (no /api/run).
-  - Talk to the taskpilot or session-bridge daemons.
-
-FastAPI + uvicorn. No background workers, no daemons required.
+FastAPI + uvicorn + httpx. The dispatcher daemon is optional — the dashboard
+itself runs fine without it; only /api/dashboard-event fails if dispatcher
+is unreachable.
 """
 
 from __future__ import annotations
@@ -35,11 +42,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # --------------------------- config ---------------------------
 
@@ -50,6 +58,11 @@ SHARES_ROOT = ROOT / "shares"
 WEB_ROOT = ROOT / "public"
 
 PORT = int(os.environ.get("PORT", "5174"))
+
+DISPATCHER_URL = os.environ.get("MINDFRAME_DISPATCHER_URL", "http://127.0.0.1:8911")
+DISPATCHER_BEARER_FILE = Path(
+    os.environ.get("MINDFRAME_DISPATCHER_BEARER_FILE", str(Path.home() / ".mindframe/secrets/dispatcher-bearer.token"))
+)
 
 SHARE_RETENTION_DAYS = int(os.environ.get("MINDFRAME_SHARE_RETENTION_DAYS", "60"))
 SHARE_RETENTION_MS = SHARE_RETENTION_DAYS * 24 * 60 * 60 * 1000
@@ -177,7 +190,112 @@ app.add_middleware(
 
 @app.get("/api/health")
 async def api_health() -> dict[str, Any]:
-    return {"ok": True, "port": PORT}
+    return {
+        "ok": True,
+        "port": PORT,
+        "dispatcher_url": DISPATCHER_URL,
+        "dispatcher_bearer_present": DISPATCHER_BEARER_FILE.is_file(),
+    }
+
+
+# --------------------------- panes feed ---------------------------
+
+
+def _list_panes() -> list[dict[str, Any]]:
+    """Enumerate artifacts/<sid>/latest.html with mtime + size, newest first.
+
+    A pane is identified by its sid (the artifacts subdirectory name). Only
+    sids matching SID_RE are returned — anything else is treated as foreign.
+    """
+    out: list[dict[str, Any]] = []
+    try:
+        entries = list(ARTIFACTS_ROOT.iterdir())
+    except OSError:
+        return out
+    for sid_dir_path in entries:
+        if not sid_dir_path.is_dir():
+            continue
+        sid = sid_dir_path.name
+        if not SID_RE.match(sid):
+            continue
+        latest = sid_dir_path / "latest.html"
+        if not latest.is_file():
+            continue
+        try:
+            st = latest.stat()
+        except OSError:
+            continue
+        out.append({
+            "sid": sid,
+            "url": f"/artifacts/{sid}/latest.html",
+            "mtime_ms": int(st.st_mtime * 1000),
+            "bytes": st.st_size,
+        })
+    out.sort(key=lambda p: p["mtime_ms"], reverse=True)
+    return out
+
+
+@app.get("/api/panes")
+async def api_panes() -> dict[str, Any]:
+    return {"panes": _list_panes()}
+
+
+# --------------------------- dispatcher proxy ---------------------------
+
+
+class DashboardEvent(BaseModel):
+    """Action-button payload from agent-authored HTML.
+
+    The agent embeds `<button onclick="postEvent({...})">` in its pane; the
+    SPA wraps that helper and POSTs here. We forward to the dispatcher's
+    /api/event with our held bearer; the browser never sees the token.
+
+    `event_type` and `data` pass through verbatim. `source` is forced to
+    `dashboard-button` so dispatcher routing can distinguish UI-originated
+    events from external webhooks.
+    """
+    event_type: str = Field(..., min_length=1, max_length=128)
+    data: dict | list | str | int | float | bool | None = None
+
+
+def _read_dispatcher_bearer() -> str | None:
+    try:
+        return DISPATCHER_BEARER_FILE.read_text("utf-8").strip() or None
+    except OSError:
+        return None
+
+
+@app.post("/api/dashboard-event")
+async def api_dashboard_event(body: DashboardEvent) -> Response:
+    bearer = _read_dispatcher_bearer()
+    if not bearer:
+        return JSONResponse(
+            {"error": f"dispatcher bearer not found at {DISPATCHER_BEARER_FILE}"},
+            status_code=503,
+        )
+    payload = {
+        "source": "dashboard-button",
+        "event_type": body.event_type,
+        "data": body.data,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                f"{DISPATCHER_URL}/api/event",
+                json=payload,
+                headers={"Authorization": f"Bearer {bearer}"},
+            )
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"dispatcher unreachable: {e}"}, status_code=502)
+    if not r.is_success:
+        return JSONResponse(
+            {"error": f"dispatcher rejected event (status {r.status_code})", "body": r.text[:500]},
+            status_code=r.status_code,
+        )
+    try:
+        return JSONResponse(r.json())
+    except ValueError:
+        return JSONResponse({"ok": True, "raw": r.text[:500]})
 
 
 @app.get("/s/{share_id}")

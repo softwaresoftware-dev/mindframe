@@ -1,305 +1,159 @@
-// Mindframe shell — instruction box, live activity log, iframe holder.
-// Each user instruction opens an SSE to api/run. The server streams
-// `progress` events (thinking, tool calls, byte counter) while claude works,
-// then a single `done` event with the artifact URL. The shell renders those
-// events as a live activity log under the spinner.
+// Mindframe dashboard SPA — panes feed.
 //
-// No build step: this file is served as-is. All API/asset URLs are relative
-// to APP_BASE — the directory the page is served from — so the same files
-// work whether the page is at / (local) or /demo/ (behind nginx).
+// Polls /api/panes for ephemeral pane artifacts written by dispatcher-spawned
+// agents under artifacts/<sid>/latest.html. Each pane renders as a same-origin
+// iframe. Action buttons inside the agent-authored HTML can call
+// `parent.mindframe.postEvent(event_type, data)` to fire a dispatcher event —
+// the SPA forwards via /api/dashboard-event so the bearer token stays
+// server-side.
 
-const SID_KEY = 'mindframe.sid';
+const POLL_INTERVAL_MS = 3000;
+const HEALTH_POLL_MS = 15000;
 
-// The directory the current page lives in: '/' locally, '/demo/' behind nginx.
-// Every API call and artifact URL is resolved against this.
-const APP_BASE = location.pathname.replace(/[^/]*$/, '');
+const $ = (id) => document.getElementById(id);
 
-function getOrCreateSid() {
-  let sid = localStorage.getItem(SID_KEY);
-  if (!sid) {
-    sid = crypto.randomUUID();
-    localStorage.setItem(SID_KEY, sid);
-  }
-  return sid;
+const panesById = new Map(); // sid -> { mtime_ms, el }
+
+function setConn(state, label) {
+  const el = $("conn");
+  el.textContent = label;
+  el.dataset.state = state;
 }
 
-function el(sel) {
-  const node = document.querySelector(sel);
-  if (!node) throw new Error(`missing element: ${sel}`);
-  return node;
+function showToast(msg, kind = "info") {
+  const t = $("toast");
+  t.textContent = msg;
+  t.dataset.kind = kind;
+  t.hidden = false;
+  clearTimeout(showToast._h);
+  showToast._h = setTimeout(() => { t.hidden = true; }, 3500);
 }
 
-function init() {
-  const stage = el('#stage');
-  const empty = el('#empty');
-  const spinner = el('#spinner');
-  const spinnerSub = el('#spinner-sub');
-  const spinnerActivity = el('#spinner-activity');
-  const iframe = el('#artifact');
-  const input = el('#input');
-  const form = el('#composer');
-  const sidBadge = el('#sid');
-  const taskBadge = el('#task');
-
-  const shareBtn = el('#share');
-  const toast = el('#toast');
-
-  const sid = getOrCreateSid();
-  sidBadge.textContent = sid.slice(0, 8);
-
-  let busy = false;
-  let hasArtifact = false;
-
-  function setShareEnabled(on) {
-    hasArtifact = on;
-    shareBtn.disabled = !on || busy;
-    shareBtn.title = on
-      ? (busy ? 'finishing the current run…' : 'save this page to a sharable URL')
-      : 'run an instruction first';
-  }
-
-  let toastTimer;
-  function showToast(text, kind = 'ok', durationMs = 6000) {
-    toast.textContent = text;
-    toast.dataset.kind = kind;
-    toast.hidden = false;
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => { toast.hidden = true; }, durationMs);
-  }
-  toast.addEventListener('click', () => { toast.hidden = true; });
-
-  async function copyToClipboard(text) {
-    try { await navigator.clipboard.writeText(text); return true; }
-    catch {
-      // Fallback for non-secure contexts: temporary textarea + execCommand.
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      ta.remove();
-      return ok;
-    }
-  }
-
-  async function share() {
-    if (busy || !hasArtifact) return;
-    setShareEnabled(false);
-    shareBtn.textContent = 'saving…';
+function makePaneEl(pane) {
+  const wrap = document.createElement("section");
+  wrap.className = "pane";
+  wrap.dataset.sid = pane.sid;
+  wrap.innerHTML = `
+    <header class="pane-header">
+      <span class="pane-sid mono">${pane.sid}</span>
+      <span class="pane-mtime mono">${new Date(pane.mtime_ms).toLocaleTimeString()}</span>
+      <button class="pane-share" type="button" title="Snapshot this pane">share</button>
+    </header>
+    <iframe class="pane-frame" src="${pane.url}?t=${pane.mtime_ms}" title="pane ${pane.sid}"></iframe>
+  `;
+  wrap.querySelector(".pane-share").addEventListener("click", async () => {
     try {
-      const res = await fetch(APP_BASE + 'api/save', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sid, label: taskBadge.textContent || '' }),
+      const r = await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: pane.sid, label: `pane ${pane.sid}` }),
       });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new Error(body || `server ${res.status}`);
+      const j = await r.json();
+      if (j.url) {
+        await navigator.clipboard?.writeText(location.origin + j.url).catch(() => {});
+        showToast(`saved → ${j.url}`, "ok");
+      } else {
+        showToast(j.error || "save failed", "err");
       }
-      const meta = await res.json();
-      // meta.url is a backend-relative path like /s/<id>; build a full URL.
-      const fullUrl = location.origin + APP_BASE + String(meta.url).replace(/^\//, '');
-      const copied = await copyToClipboard(fullUrl);
-      const expires = new Date(meta.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-      showToast(copied
-        ? `link copied: ${fullUrl}  ·  expires ${expires}`
-        : `saved at ${fullUrl}  ·  expires ${expires}  (copy failed — select manually)`,
-        'ok',
-        10000);
-    } catch (err) {
-      showToast(`save failed: ${err?.message || err}`, 'err', 8000);
-    } finally {
-      shareBtn.textContent = 'share';
-      setShareEnabled(hasArtifact);
+    } catch (e) {
+      showToast(`save failed: ${e}`, "err");
+    }
+  });
+  return wrap;
+}
+
+function updatePaneEl(el, pane) {
+  el.querySelector(".pane-mtime").textContent = new Date(pane.mtime_ms).toLocaleTimeString();
+  const iframe = el.querySelector(".pane-frame");
+  iframe.src = `${pane.url}?t=${pane.mtime_ms}`;
+}
+
+function reconcilePanes(panes) {
+  const container = $("panes");
+  const seen = new Set();
+  // Render newest first — panes already sorted desc by server.
+  for (const pane of panes) {
+    seen.add(pane.sid);
+    const existing = panesById.get(pane.sid);
+    if (!existing) {
+      const el = makePaneEl(pane);
+      panesById.set(pane.sid, { mtime_ms: pane.mtime_ms, el });
+      container.prepend(el);
+    } else if (pane.mtime_ms > existing.mtime_ms) {
+      updatePaneEl(existing.el, pane);
+      existing.mtime_ms = pane.mtime_ms;
+      // Move to top — it just changed.
+      container.prepend(existing.el);
     }
   }
-  shareBtn.addEventListener('click', share);
-
-  let elapsedTimer;
-  let lastActivityLabel = '';
-
-  function setTask(t) {
-    taskBadge.textContent = t || '—';
-  }
-
-  function showSpinner() {
-    empty.hidden = true;
-    spinner.hidden = false;
-    spinnerActivity.replaceChildren();
-    spinnerSub.textContent = '';
-    const started = Date.now();
-    elapsedTimer = window.setInterval(() => {
-      const s = Math.floor((Date.now() - started) / 1000);
-      spinnerSub.textContent = `${s}s elapsed`;
-    }, 250);
-  }
-
-  function hideSpinner() {
-    spinner.hidden = true;
-    if (elapsedTimer) {
-      clearInterval(elapsedTimer);
-      elapsedTimer = undefined;
+  // Remove panes that disappeared.
+  for (const [sid, entry] of panesById) {
+    if (!seen.has(sid)) {
+      entry.el.remove();
+      panesById.delete(sid);
     }
   }
+  $("pane-count").textContent = panes.length;
+  $("empty").hidden = panes.length > 0;
+}
 
-  function appendActivityRow(label, kind) {
-    const row = document.createElement('div');
-    row.className = 'activity-row';
-    row.dataset.kind = kind;
-    row.innerHTML = '<span class="activity-tick">›</span><span class="activity-text"></span>';
-    row.querySelector('.activity-text').textContent = label;
-    spinnerActivity.appendChild(row);
-    // Keep last ~6 rows visible.
-    while (spinnerActivity.children.length > 6) {
-      spinnerActivity.firstElementChild?.remove();
-    }
+async function pollPanes() {
+  try {
+    const r = await fetch("/api/panes");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    reconcilePanes(j.panes || []);
+    setConn("ok", `live · ${j.panes?.length || 0} pane${j.panes?.length === 1 ? "" : "s"}`);
+  } catch (e) {
+    setConn("err", `connection lost (${e.message})`);
   }
+}
 
-  function logActivity(label) {
-    // Skip duplicate consecutive labels.
-    if (label === lastActivityLabel) return;
-    lastActivityLabel = label;
-    appendActivityRow(label, 'event');
-  }
-
-  function updateLastActivityLabel(label) {
-    // Heartbeat ticks update the last row in place — but ONLY if that row is
-    // itself a tick. A tick must never clobber a real event row (e.g. the
-    // "agent picked up the instruction" line); in that case it appends.
-    const last = spinnerActivity.lastElementChild;
-    if (last && last.dataset.kind === 'tick') {
-      const text = last.querySelector('.activity-text');
-      if (text) text.textContent = label;
+async function pollHealth() {
+  try {
+    const r = await fetch("/api/health");
+    const j = await r.json();
+    const ds = $("dispatcher-state");
+    if (j.dispatcher_bearer_present) {
+      ds.textContent = `dispatcher: ${j.dispatcher_url}`;
+      ds.dataset.state = "ok";
     } else {
-      appendActivityRow(label, 'tick');
+      ds.textContent = `dispatcher: no bearer (${j.dispatcher_url})`;
+      ds.dataset.state = "warn";
     }
+  } catch {
+    $("dispatcher-state").textContent = "dispatcher: unknown";
   }
+}
 
-  function showError(msg) {
-    hideSpinner();
-    empty.hidden = false;
-    empty.innerHTML = `<h1 style="color: var(--color-danger)">Error</h1><p>${msg}</p>`;
-  }
-
-  function submit() {
-    if (busy) return;
-    const msg = input.value.trim();
-    if (!msg) return;
-    input.value = '';
-    autoResize();
-    busy = true;
-    setShareEnabled(hasArtifact);   // disables while busy
-    lastActivityLabel = '';
-    setTask(msg.length > 80 ? msg.slice(0, 77) + '…' : msg);
-    showSpinner();
-
-    const url = APP_BASE + 'api/run?sid=' + encodeURIComponent(sid) + '&msg=' + encodeURIComponent(msg);
-    const es = new EventSource(url);
-
-    es.addEventListener('progress', (e) => {
-      try {
-        const evt = JSON.parse(e.data);
-        const label = String(evt.label ?? '');
-        if (!label) return;
-        // Tick events (rapid byte counter) update the last row in place;
-        // everything else appends a new row.
-        if (evt.kind === 'tick') {
-          updateLastActivityLabel(label);
-        } else {
-          logActivity(label);
-        }
-      } catch {}
-    });
-
-    es.addEventListener('done', (e) => {
-      es.close();
-      try {
-        const { url: artifactUrl } = JSON.parse(e.data);
-        // Artifact URL is a backend-relative path; resolve it against APP_BASE.
-        const absolute = String(artifactUrl).startsWith('http')
-          ? artifactUrl
-          : APP_BASE + String(artifactUrl).replace(/^\//, '');
-        iframe.src = `${absolute}?t=${Date.now()}`;
-        iframe.hidden = false;
-        hideSpinner();
-        busy = false;
-        setShareEnabled(true);
-        return;
-      } catch (err) {
-        showError(err?.message || 'bad done payload');
-      }
-      busy = false;
-      setShareEnabled(hasArtifact);
-    });
-
-    es.addEventListener('error', (e) => {
-      const data = (e && 'data' in e) ? e.data : '';
-      es.close();
-      showError(data ? String(data) : 'stream lost');
-      busy = false;
-      setShareEnabled(hasArtifact);
-    });
-  }
-
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    submit();
-  });
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submit();
+// API the agent-authored HTML inside a pane can call via parent.mindframe.*
+window.mindframe = {
+  async postEvent(event_type, data) {
+    if (!event_type || typeof event_type !== "string") {
+      showToast("postEvent: event_type required", "err");
+      return { ok: false, error: "event_type required" };
     }
-  });
-
-  function autoResize() {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 180) + 'px';
-  }
-  input.addEventListener('input', autoResize);
-
-  stage.addEventListener('click', (e) => {
-    const t = e.target;
-    if (t.matches('button.starter[data-cmd]')) {
-      input.value = t.getAttribute('data-cmd') || '';
-      submit();
-    }
-  });
-
-  // Iframe action-button bridge — artifacts can postMessage `{type:"mindframe:run", cmd:"..."}`
-  window.addEventListener('message', (e) => {
-    const data = e.data;
-    if (data && typeof data === 'object' && data.type === 'mindframe:run' && typeof data.cmd === 'string') {
-      input.value = data.cmd;
-      submit();
-    }
-  });
-
-  // Restore the last artifact for this session on reload. The artifact is
-  // persisted server-side at artifacts/<sid>/latest.html; without this a page
-  // refresh drops the user back to the empty state even though their tool is
-  // sitting right there on disk.
-  (async () => {
     try {
-      const probe = APP_BASE + 'artifacts/' + encodeURIComponent(sid) + '/latest.html';
-      const r = await fetch(probe, { method: 'HEAD' });
-      if (r.ok && busy === false && iframe.hidden) {
-        iframe.src = `${probe}?t=${Date.now()}`;
-        iframe.hidden = false;
-        empty.hidden = true;
-        setShareEnabled(true);
+      const r = await fetch("/api/dashboard-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_type, data: data ?? null }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(`event failed: ${j.error || r.statusText}`, "err");
+        return { ok: false, ...j };
       }
-    } catch { /* no prior artifact, or backend down — stay on empty state */ }
-  })();
+      showToast(`event dispatched → ${event_type}`, "ok");
+      return { ok: true, ...j };
+    } catch (e) {
+      showToast(`event failed: ${e}`, "err");
+      return { ok: false, error: String(e) };
+    }
+  },
+};
 
-  input.focus();
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
+pollHealth();
+pollPanes();
+setInterval(pollPanes, POLL_INTERVAL_MS);
+setInterval(pollHealth, HEALTH_POLL_MS);
