@@ -1,18 +1,18 @@
-// Mindframe dashboard SPA — panes feed.
+// Mindframe dashboard SPA — boards-index + per-mindframe detail.
 //
-// Polls /api/panes for ephemeral pane artifacts written by dispatcher-spawned
-// agents under artifacts/<sid>/latest.html. Each pane renders as a same-origin
-// iframe. Action buttons inside the agent-authored HTML can call
-// `parent.mindframe.postEvent(event_type, data)` to fire a dispatcher event —
-// the SPA forwards via /api/dashboard-event so the bearer token stays
-// server-side.
+// Two views, switched by URL:
+//   /        → boards index: compact list of mindframes, click to open
+//   /m/<id>  → one mindframe, focused fullscreen iframe
+//
+// Each mindframe is one piece of work. Operator picks one to work on,
+// switches between them via the index (or browser tabs). The dashboard
+// is the index; the mindframe IS the work.
 
 const POLL_INTERVAL_MS = 3000;
 const HEALTH_POLL_MS = 15000;
 
 const $ = (id) => document.getElementById(id);
-
-const panesById = new Map(); // sid -> { mtime_ms, el }
+const root = () => $("root");
 
 function setConn(state, label) {
   const el = $("conn");
@@ -29,104 +29,20 @@ function showToast(msg, kind = "info") {
   showToast._h = setTimeout(() => { t.hidden = true; }, 3500);
 }
 
-function makePaneEl(pane) {
-  const wrap = document.createElement("section");
-  wrap.className = "pane";
-  wrap.dataset.sid = pane.sid;
-  wrap.innerHTML = `
-    <header class="pane-header">
-      <span class="pane-sid mono">${pane.sid}</span>
-      <span class="pane-mtime mono">${new Date(pane.mtime_ms).toLocaleTimeString()}</span>
-      <button class="pane-share" type="button" title="Snapshot this pane">share</button>
-    </header>
-    <iframe class="pane-frame" src="${pane.url}?t=${pane.mtime_ms}" title="pane ${pane.sid}"></iframe>
-  `;
-  wrap.querySelector(".pane-share").addEventListener("click", async () => {
-    try {
-      const r = await fetch("/api/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sid: pane.sid, label: `pane ${pane.sid}` }),
-      });
-      const j = await r.json();
-      if (j.url) {
-        await navigator.clipboard?.writeText(location.origin + j.url).catch(() => {});
-        showToast(`saved → ${j.url}`, "ok");
-      } else {
-        showToast(j.error || "save failed", "err");
-      }
-    } catch (e) {
-      showToast(`save failed: ${e}`, "err");
-    }
-  });
-  return wrap;
+function relativeTime(mtime_ms) {
+  const ms = Date.now() - mtime_ms;
+  if (ms < 60_000) return "just now";
+  if (ms < 3_600_000) return Math.floor(ms / 60_000) + " min ago";
+  if (ms < 86_400_000) return Math.floor(ms / 3_600_000) + "h ago";
+  return Math.floor(ms / 86_400_000) + "d ago";
 }
 
-function updatePaneEl(el, pane) {
-  el.querySelector(".pane-mtime").textContent = new Date(pane.mtime_ms).toLocaleTimeString();
-  const iframe = el.querySelector(".pane-frame");
-  iframe.src = `${pane.url}?t=${pane.mtime_ms}`;
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
 
-function reconcilePanes(panes) {
-  const container = $("panes");
-  const seen = new Set();
-  // Render newest first — panes already sorted desc by server.
-  for (const pane of panes) {
-    seen.add(pane.sid);
-    const existing = panesById.get(pane.sid);
-    if (!existing) {
-      const el = makePaneEl(pane);
-      panesById.set(pane.sid, { mtime_ms: pane.mtime_ms, el });
-      container.prepend(el);
-    } else if (pane.mtime_ms > existing.mtime_ms) {
-      updatePaneEl(existing.el, pane);
-      existing.mtime_ms = pane.mtime_ms;
-      // Move to top — it just changed.
-      container.prepend(existing.el);
-    }
-  }
-  // Remove panes that disappeared.
-  for (const [sid, entry] of panesById) {
-    if (!seen.has(sid)) {
-      entry.el.remove();
-      panesById.delete(sid);
-    }
-  }
-  $("pane-count").textContent = panes.length;
-  $("empty").hidden = panes.length > 0;
-}
+// ----- API the agent-authored iframe HTML calls (only on /m/<id>) -----
 
-async function pollPanes() {
-  try {
-    const r = await fetch("/api/panes");
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const j = await r.json();
-    reconcilePanes(j.panes || []);
-    setConn("ok", `live · ${j.panes?.length || 0} pane${j.panes?.length === 1 ? "" : "s"}`);
-  } catch (e) {
-    setConn("err", `connection lost (${e.message})`);
-  }
-}
-
-async function pollHealth() {
-  try {
-    const r = await fetch("/api/health");
-    const j = await r.json();
-    const ds = $("dispatcher-state");
-    if (j.dispatcher_bearer_present) {
-      ds.textContent = `dispatcher: ${j.dispatcher_url}`;
-      ds.dataset.state = "ok";
-    } else {
-      ds.textContent = `dispatcher: no bearer (${j.dispatcher_url})`;
-      ds.dataset.state = "warn";
-    }
-  } catch {
-    $("dispatcher-state").textContent = "dispatcher: unknown";
-  }
-}
-
-// API the agent-authored HTML inside a pane can call via parent.mindframe.*
 window.mindframe = {
   async postEvent(event_type, data) {
     if (!event_type || typeof event_type !== "string") {
@@ -153,7 +69,156 @@ window.mindframe = {
   },
 };
 
+// ----- Boards index view -----
+
+async function renderBoardsIndex() {
+  root().innerHTML = `
+    <div class="index-wrap">
+      <p class="index-eyebrow">your work</p>
+      <div class="index-header">
+        <h1>Mindframes</h1>
+        <span id="frame-count" class="count">…</span>
+      </div>
+      <div id="frame-list" class="frame-list">
+        <div class="loading">loading…</div>
+      </div>
+    </div>
+  `;
+
+  async function refresh() {
+    try {
+      const r = await fetch("/api/panes");
+      const j = await r.json();
+      const frames = j.panes || [];
+      setConn("ok", `live · ${frames.length} mindframe${frames.length === 1 ? "" : "s"}`);
+      $("frame-count").textContent = frames.length;
+      const list = $("frame-list");
+      if (!frames.length) {
+        list.innerHTML = `
+          <div class="empty">
+            <p>No mindframes yet.</p>
+            <p class="empty-hint">Fire a dispatcher event to spawn one:</p>
+            <pre>curl -X POST http://127.0.0.1:8911/api/event \\
+  -H "Authorization: Bearer $(cat ~/.mindframe/secrets/dispatcher-bearer.token)" \\
+  -H "Content-Type: application/json" \\
+  -d '{"source":"manual","event_type":"test","data":{}}'</pre>
+          </div>`;
+        return;
+      }
+      list.innerHTML = frames.map(f => `
+        <a class="frame-row" href="/m/${encodeURIComponent(f.sid)}">
+          <span class="frame-marker"></span>
+          <span class="frame-sid">${escapeHtml(f.sid)}</span>
+          <span class="frame-meta">
+            <span class="frame-size">${(f.bytes / 1024).toFixed(1)} KB</span>
+            <span class="frame-time">${relativeTime(f.mtime_ms)}</span>
+          </span>
+          <span class="frame-open">→</span>
+        </a>
+      `).join("");
+    } catch (e) {
+      setConn("err", `connection lost (${e.message})`);
+    }
+  }
+
+  refresh();
+  return setInterval(refresh, POLL_INTERVAL_MS);
+}
+
+// ----- Mindframe detail view -----
+
+async function renderMindframeDetail(sid) {
+  root().innerHTML = `
+    <div class="detail-wrap">
+      <nav class="detail-nav">
+        <a class="back" href="/">← all mindframes</a>
+        <span class="detail-sid mono">${escapeHtml(sid)}</span>
+        <span class="detail-actions">
+          <button id="detail-share" type="button">share</button>
+        </span>
+      </nav>
+      <div class="detail-stage">
+        <iframe id="detail-frame" class="detail-frame"
+                src="/artifacts/${encodeURIComponent(sid)}/latest.html"
+                title="mindframe ${escapeHtml(sid)}"></iframe>
+      </div>
+    </div>
+  `;
+
+  $("detail-share").addEventListener("click", async () => {
+    try {
+      const r = await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid, label: `mindframe ${sid}` }),
+      });
+      const j = await r.json();
+      if (j.url) {
+        await navigator.clipboard?.writeText(location.origin + j.url).catch(() => {});
+        showToast(`shared → ${location.origin}${j.url} (copied)`, "ok");
+      } else {
+        showToast(j.error || "share failed", "err");
+      }
+    } catch (e) {
+      showToast(`share failed: ${e}`, "err");
+    }
+  });
+
+  setConn("ok", "viewing");
+
+  // Refresh iframe periodically by toggling its src; the agent writes
+  // new content in place and we want the operator to see updates.
+  const iframe = $("detail-frame");
+  let lastMtime = 0;
+  async function checkUpdate() {
+    try {
+      const r = await fetch("/api/panes");
+      const j = await r.json();
+      const f = (j.panes || []).find(p => p.sid === sid);
+      if (f && f.mtime_ms !== lastMtime) {
+        if (lastMtime) {
+          // re-load only on subsequent updates (avoid reload-on-first-poll flash)
+          iframe.src = `/artifacts/${encodeURIComponent(sid)}/latest.html?t=${f.mtime_ms}`;
+        }
+        lastMtime = f.mtime_ms;
+      }
+    } catch { /* ignore */ }
+  }
+  checkUpdate();
+  return setInterval(checkUpdate, POLL_INTERVAL_MS);
+}
+
+// ----- Health probe (chrome dispatcher indicator) -----
+
+async function pollHealth() {
+  try {
+    const r = await fetch("/api/health");
+    const j = await r.json();
+    const ds = $("dispatcher-state");
+    if (j.dispatcher_bearer_present) {
+      ds.textContent = `dispatcher: connected`;
+      ds.dataset.state = "ok";
+    } else {
+      ds.textContent = `dispatcher: no bearer`;
+      ds.dataset.state = "warn";
+    }
+  } catch {
+    $("dispatcher-state").textContent = "dispatcher: down";
+  }
+}
+
+// ----- Router -----
+
+function route() {
+  const path = location.pathname;
+  const m = path.match(/^\/m\/([a-zA-Z0-9_-]+)\/?$/);
+  if (m) {
+    renderMindframeDetail(decodeURIComponent(m[1]));
+  } else {
+    renderBoardsIndex();
+  }
+}
+
 pollHealth();
-pollPanes();
-setInterval(pollPanes, POLL_INTERVAL_MS);
 setInterval(pollHealth, HEALTH_POLL_MS);
+route();

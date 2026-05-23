@@ -387,13 +387,14 @@ def serve_spa(full_path: str) -> Response:
     if full_path.startswith("api/"):
         return JSONResponse({"error": "not found"}, status_code=404)
     web = WEB_ROOT.resolve()
+    headers = {"Cache-Control": "no-store, must-revalidate"}
     if full_path:
         candidate = (web / full_path).resolve()
         if (web in candidate.parents) and candidate.is_file():
-            return FileResponse(candidate)
+            return FileResponse(candidate, headers=headers)
     index = web / "index.html"
     if index.is_file():
-        return FileResponse(index)
+        return FileResponse(index, headers=headers)
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
