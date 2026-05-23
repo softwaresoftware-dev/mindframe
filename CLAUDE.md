@@ -75,7 +75,7 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 
 Build the **block-stream renderer**. Spec is at `docs/mindframe-block-stream-api.md` (938 lines, converged across 6 rounds of gap-patching). What to ship in order:
 
-1. `bin/mindframe-write` — Python CLI, ~80 lines, validates a block and appends one JSONL line to `~/.mindframe/frames/<id>/blocks.jsonl` under cross-platform `exclusive_lock`. UUIDv7 ids via stdlib `uuid.uuid7()` (Python 3.14+).
+1. ~~`bin/mindframe-write`~~ — **shipped as an MCP instead** (better than a CLI for the agent's tool surface; see `mcp/server.py`). Two tools: `write_block(block, mindframe_id?)` appends one JSONL line under flock to `~/.mindframe/frames/<id>/blocks.jsonl`; `set_title(title, mindframe_id?)` updates meta.json. UUIDv7 via inline polyfill (swap to stdlib `uuid.uuid7()` once Python 3.14 is universal). Registered via `mcpServers` in plugin.json — auto-loads with the mindframe plugin. 33 hermetic tests passing.
 2. `lib/spawn.py` — the `mindframe.spawn()` primitive that backs all three spawn paths (external event, manual, branch); creates meta.json + seed block synchronously, then launches taskpilot with `--name <id>`.
 3. Dispatcher: add a `spawn-mindframe:<recipe>` target type. Wire it into `channels.yaml` for the demo flow.
 4. SPA block renderer — replace the iframe in `/m/<id>` with a typed component library covering at minimum `text`, `code`, `table`, `button-row`, `summary`. Design-system tokens. Keep `custom-html` as the sandboxed iframe escape hatch.
