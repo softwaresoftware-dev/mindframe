@@ -69,4 +69,24 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 - `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, core entities, domain packs, and the per-install `schema.yaml` manifest format. Read before building setup or deliverable skills.
 - `skills/setup/` — `/mindframe:setup` wizard.
 - `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
-- `dashboard/` — FastAPI server that serves the SPA shell, exposes artifact HTML under `artifacts/<sid>/`, and snapshots to `/s/<id>` shares. The persistent dashboard agent was removed 2026-05-21; the next iteration is a merge with the `taskboard` plugin (taskboard supplies the static topology frame; mindframe contributes dispatcher-event-driven ephemeral panes that land in `artifacts/`). SPA is inert until that lands. See `dashboard/README.md`.
+- `dashboard/` — FastAPI server that serves the SPA shell, exposes artifact HTML under `artifacts/<sid>/`, and snapshots to `/s/<id>` shares. The persistent dashboard agent was removed 2026-05-21. SPA is now a boards-index + per-mindframe detail view, design-system aesthetic. Buttons inside agent-authored HTML fire dispatcher events via `/api/dashboard-event` (server holds the bearer). Still uses iframes for pane content — block-stream renderer is the next slice. See `dashboard/README.md` and `docs/mindframe-block-stream-api.md`.
+
+## Next
+
+Build the **block-stream renderer**. Spec is at `docs/mindframe-block-stream-api.md` (938 lines, converged across 6 rounds of gap-patching). What to ship in order:
+
+1. `bin/mindframe-write` — Python CLI, ~80 lines, validates a block and appends one JSONL line to `~/.mindframe/frames/<id>/blocks.jsonl` under cross-platform `exclusive_lock`. UUIDv7 ids via stdlib `uuid.uuid7()` (Python 3.14+).
+2. `lib/spawn.py` — the `mindframe.spawn()` primitive that backs all three spawn paths (external event, manual, branch); creates meta.json + seed block synchronously, then launches taskpilot with `--name <id>`.
+3. Dispatcher: add a `spawn-mindframe:<recipe>` target type. Wire it into `channels.yaml` for the demo flow.
+4. SPA block renderer — replace the iframe in `/m/<id>` with a typed component library covering at minimum `text`, `code`, `table`, `button-row`, `summary`. Design-system tokens. Keep `custom-html` as the sandboxed iframe escape hatch.
+5. Demo recipe at `~/.dispatcher/recipes/mindframe-demo/` whose CLAUDE.md walks an agent through writing the QBR-prep blocks for an Acme-style customer review.
+6. End-to-end smoke test: dispatcher event → spawn-mindframe → blocks written → SPA renders coherently inside the warm dark chrome.
+
+The home / static-taskboard surface is the slice *after* this — surfaces signals (calendar, sentry, on-call) with "tackle this" buttons that fire spawn-mindframe events. That part is closer to taskboard's domain.
+
+## Current dashboard state (as of 2026-05-23)
+
+- `dashboard/server/server.py` — FastAPI: `/api/health`, `/api/panes`, `/api/dashboard-event` (dispatcher proxy reading `~/.mindframe/secrets/dispatcher-bearer.token`), `/api/save` + `/s/<id>` shares, `/artifacts/<sid>/<path>` artifact serving, SPA fallback for everything else. No taskpilot or session-bridge dependency.
+- `dashboard/public/` — Inter-free design-system stack (Space Grotesk / Source Serif 4 / JetBrains Mono), warm dark palette, gold accent. Two routes: `/` (boards index) and `/m/<id>` (mindframe detail).
+- Bearer file at `~/.mindframe/secrets/dispatcher-bearer.token` (chmod 600); matches the dispatcher daemon's `DISPATCHER_INGEST_TOKEN` env so button events succeed end-to-end.
+- 21 artifacts under `dashboard/artifacts/`: 19 historical (legacy dashboard-agent leftovers, ignore for demos) + `demo-incident-001` (OOMKilled in payments-api) + `demo-customer-review` (Acme QBR prep). Latter two are hand-authored HTML used for visual iteration.
