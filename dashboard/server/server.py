@@ -42,6 +42,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import sys
+
 import httpx
 import uvicorn
 from fastapi import FastAPI, Header, Request
@@ -59,6 +61,10 @@ WEB_ROOT = ROOT / "public"
 FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".mindframe" / "frames")))
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
+
+# lib.frame lives one level above the dashboard, in the plugin root.
+sys.path.insert(0, str(ROOT.parent))
+from lib import frame as frame_lib  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "5174"))
 
@@ -348,6 +354,41 @@ async def api_frame_blocks(mid: str, since: str | None = None) -> Response:
     blocks, _ = _read_blocks(fdir, since_id=since)
     last_id = blocks[-1]["id"] if blocks else None
     return JSONResponse({"frame_id": mid, "blocks": blocks, "last_block_id": last_id})
+
+
+class CreateFrameBody(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    seed_block: dict | None = None
+    spawned_by: dict | None = None
+    tags: list[str] | None = None
+
+
+@app.post("/api/frames")
+async def api_frames_create(body: CreateFrameBody) -> Response:
+    """Manual mindframe creation — used by the home '+ new mindframe' button
+    and any external caller that wants to spawn a frame without going through
+    the dispatcher. Calls lib.frame.create_frame directly (in-process).
+
+    Note: this only creates the frame *shell*. To actually launch an agent
+    against it, the caller (or a subsequent step) needs to spawn taskpilot
+    with name=<id>, cwd=<frame_dir>. The shell alone is useful for testing
+    the renderer and for manual block-stream authoring."""
+    try:
+        result = frame_lib.create_frame(
+            title=body.title,
+            seed_block=body.seed_block,
+            spawned_by=body.spawned_by or {"kind": "manual"},
+            tags=body.tags,
+        )
+    except (ValueError, FileExistsError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
+    return JSONResponse({
+        "id": result["id"],
+        "url": result["url"],
+        "frame_dir": result["frame_dir"],
+    })
 
 
 @app.get("/api/frame/{mid}/stream")
