@@ -75,12 +75,12 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 
 Build the **block-stream renderer**. Spec is at `docs/mindframe-block-stream-api.md` (938 lines, converged across 6 rounds of gap-patching). What to ship in order:
 
-1. ~~`bin/mindframe-write`~~ — **shipped as an MCP instead** (better than a CLI for the agent's tool surface; see `mcp/server.py`). Two tools: `write_block(block, mindframe_id?)` appends one JSONL line under flock to `~/.mindframe/frames/<id>/blocks.jsonl`; `set_title(title, mindframe_id?)` updates meta.json. UUIDv7 via inline polyfill (swap to stdlib `uuid.uuid7()` once Python 3.14 is universal). Registered via `mcpServers` in plugin.json — auto-loads with the mindframe plugin. 33 hermetic tests passing.
-2. `lib/spawn.py` — the `mindframe.spawn()` primitive that backs all three spawn paths (external event, manual, branch); creates meta.json + seed block synchronously, then launches taskpilot with `--name <id>`.
-3. Dispatcher: add a `spawn-mindframe:<recipe>` target type. Wire it into `channels.yaml` for the demo flow.
-4. SPA block renderer — replace the iframe in `/m/<id>` with a typed component library covering at minimum `text`, `code`, `table`, `button-row`, `summary`. Design-system tokens. Keep `custom-html` as the sandboxed iframe escape hatch.
-5. Demo recipe at `~/.dispatcher/recipes/mindframe-demo/` whose CLAUDE.md walks an agent through writing the QBR-prep blocks for an Acme-style customer review.
-6. End-to-end smoke test: dispatcher event → spawn-mindframe → blocks written → SPA renders coherently inside the warm dark chrome.
+1. ~~`bin/mindframe-write`~~ — **shipped as an MCP** (`mcp/server.py`). `write_block` + `set_title`, UUIDv7 inline polyfill, auto-resolves mindframe_id from cwd / `$MINDFRAME_ID`. 33 hermetic tests. Auto-loads via plugin.json `mcpServers`.
+2. ~~SPA block renderer + SSE stream~~ — **done** (2026-05-24). Server: `GET /api/frames`, `/api/frame/<id>`, `/api/frame/<id>/blocks?since=`, and `/api/frame/<id>/stream` (SSE, polling tail @ 250ms, replay-from-Last-Event-ID for free via UUIDv7). SPA: typed renderer per block type (text/markdown, code, table, button-row, input, summary, divider, custom-html, image, url-card, supersedes, redact, close, user-action). Verified end-to-end in the browser — appending a block via MCP appears in the live page without reload. Known rough edges: inline markdown is minimal (no GFM), no test coverage on the SSE endpoint, supersedes/redact visual paths untested, large historical replay isn't paginated.
+3. `lib/spawn.py` — the `mindframe.spawn()` primitive that backs all three spawn paths (external event, manual, branch); creates meta.json + seed block synchronously, then launches taskpilot with `--name <id>` and `cwd=~/.mindframe/frames/<id>/`. **This is the next slice.**
+4. Dispatcher: add a `spawn-mindframe:<recipe>` target type that calls `mindframe.spawn()` instead of the plain `spawn:` path. Wire into `channels.yaml` for the demo flow.
+5. Demo recipe at `~/.dispatcher/recipes/mindframe-demo/` whose CLAUDE.md walks an agent through writing QBR-prep blocks for an Acme-style customer review.
+6. End-to-end smoke test: dispatcher event → spawn-mindframe → blocks written → SPA renders live.
 
 The home / static-taskboard surface is the slice *after* this — surfaces signals (calendar, sentry, on-call) with "tackle this" buttons that fire spawn-mindframe events. That part is closer to taskboard's domain.
 

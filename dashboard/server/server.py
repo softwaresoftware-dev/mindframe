@@ -44,9 +44,9 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 # --------------------------- config ---------------------------
@@ -56,6 +56,9 @@ ROOT = SERVER_DIR.parent
 ARTIFACTS_ROOT = ROOT / "artifacts"
 SHARES_ROOT = ROOT / "shares"
 WEB_ROOT = ROOT / "public"
+FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".mindframe" / "frames")))
+FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
 
 PORT = int(os.environ.get("PORT", "5174"))
 
@@ -238,6 +241,185 @@ def _list_panes() -> list[dict[str, Any]]:
 @app.get("/api/panes")
 async def api_panes() -> dict[str, Any]:
     return {"panes": _list_panes()}
+
+
+# --------------------------- block-stream API ---------------------------
+
+
+def _frame_dir(mid: str) -> Path | None:
+    if not FRAME_ID_RE.match(mid):
+        return None
+    d = FRAMES_ROOT / mid
+    if not d.is_dir():
+        return None
+    return d
+
+
+def _read_meta(fdir: Path) -> dict[str, Any]:
+    meta_path = fdir / "meta.json"
+    if not meta_path.is_file():
+        return {}
+    try:
+        return json.loads(meta_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _read_blocks(fdir: Path, since_id: str | None = None) -> tuple[list[dict[str, Any]], int]:
+    """Read all blocks from blocks.jsonl, optionally filtering to those after
+    `since_id` (UUIDv7 string comparison works because of chronological sort).
+
+    Returns (blocks, file_size_bytes_read). The byte count lets tail loops
+    cheaply detect whether the file has grown since the last read.
+    """
+    bpath = fdir / "blocks.jsonl"
+    if not bpath.is_file():
+        return [], 0
+    try:
+        raw = bpath.read_bytes()
+    except OSError:
+        return [], 0
+    blocks: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            b = json.loads(line)
+        except ValueError:
+            continue
+        if since_id and isinstance(b.get("id"), str) and b["id"] <= since_id:
+            continue
+        blocks.append(b)
+    # Server-side application of supersedes / redact happens at the renderer
+    # for now. Spec calls for server-side resolution; we'll iterate.
+    return blocks, len(raw)
+
+
+@app.get("/api/frames")
+async def api_frames() -> dict[str, Any]:
+    """List mindframes from ~/.mindframe/frames/, newest-activity first."""
+    out: list[dict[str, Any]] = []
+    if not FRAMES_ROOT.is_dir():
+        return {"frames": []}
+    try:
+        entries = list(FRAMES_ROOT.iterdir())
+    except OSError:
+        return {"frames": []}
+    for fdir in entries:
+        if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
+            continue
+        meta = _read_meta(fdir)
+        bpath = fdir / "blocks.jsonl"
+        block_count = 0
+        last_block_at = meta.get("last_block_at") or meta.get("created_at") or 0
+        if bpath.is_file():
+            try:
+                with open(bpath, "rb") as fh:
+                    block_count = sum(1 for line in fh if line.strip())
+                last_block_at = max(last_block_at, int(bpath.stat().st_mtime * 1000))
+            except OSError:
+                pass
+        out.append({
+            "id": fdir.name,
+            "title": meta.get("title") or fdir.name,
+            "status": meta.get("status") or "active",
+            "block_count": block_count,
+            "last_block_at": last_block_at,
+            "tags": meta.get("tags") or [],
+        })
+    out.sort(key=lambda f: f["last_block_at"], reverse=True)
+    return {"frames": out}
+
+
+@app.get("/api/frame/{mid}")
+async def api_frame_meta(mid: str) -> Response:
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "frame not found"}, status_code=404)
+    return JSONResponse(_read_meta(fdir))
+
+
+@app.get("/api/frame/{mid}/blocks")
+async def api_frame_blocks(mid: str, since: str | None = None) -> Response:
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "frame not found"}, status_code=404)
+    blocks, _ = _read_blocks(fdir, since_id=since)
+    last_id = blocks[-1]["id"] if blocks else None
+    return JSONResponse({"frame_id": mid, "blocks": blocks, "last_block_id": last_id})
+
+
+@app.get("/api/frame/{mid}/stream")
+async def api_frame_stream(
+    mid: str,
+    request: Request,
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+) -> Response:
+    """SSE stream of blocks. Replays from Last-Event-ID (if given), then tails.
+
+    Each event is `id: <uuid7>\\ndata: <json>\\n\\n`. The browser's EventSource
+    auto-reconnects with Last-Event-ID set, so resumption is free.
+    """
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "frame not found"}, status_code=404)
+
+    async def gen():
+        # Tell the client our preferred reconnect delay (ms).
+        yield "retry: 2000\n\n"
+
+        seen_id = last_event_id
+        # Initial replay — everything after Last-Event-ID (or all of it).
+        blocks, _ = _read_blocks(fdir, since_id=seen_id)
+        for b in blocks:
+            yield _sse_event(b)
+            seen_id = b["id"]
+
+        # Tail loop — poll file mtime, re-read if it grew.
+        bpath = fdir / "blocks.jsonl"
+        last_size = bpath.stat().st_size if bpath.is_file() else 0
+        last_mtime = bpath.stat().st_mtime if bpath.is_file() else 0
+        keepalive_counter = 0
+        while True:
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(TAIL_POLL_S)
+            try:
+                st = bpath.stat()
+            except OSError:
+                continue
+            if st.st_size != last_size or st.st_mtime != last_mtime:
+                new_blocks, size = _read_blocks(fdir, since_id=seen_id)
+                for b in new_blocks:
+                    yield _sse_event(b)
+                    seen_id = b["id"]
+                last_size = size
+                last_mtime = st.st_mtime
+                keepalive_counter = 0
+            else:
+                keepalive_counter += 1
+                # Send a comment line every ~15s to keep proxies from closing.
+                if keepalive_counter * TAIL_POLL_S >= 15:
+                    yield ": keepalive\n\n"
+                    keepalive_counter = 0
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
+            "Connection": "keep-alive",
+        },
+    )
+
+
+def _sse_event(block: dict[str, Any]) -> str:
+    """Format one block as one SSE event. id field doubles as Last-Event-ID."""
+    bid = block.get("id", "")
+    payload = json.dumps(block, ensure_ascii=False, separators=(",", ":"))
+    return f"id: {bid}\ndata: {payload}\n\n"
 
 
 # --------------------------- dispatcher proxy ---------------------------
