@@ -57,19 +57,24 @@ def public_url_base() -> str:
 # --------------------------- ids ---------------------------
 
 
-# Crockford-style base62 alphabet (digits + upper + lower).
-_BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+# Lowercase-only base36 alphabet. Lowercase is load-bearing: the frame_id
+# threads through taskpilot's slugify (which lowercases) as the task name,
+# and session-bridge mesh routing on button-click events keys off that
+# name. Mixed-case ids cause the frame dir name to drift from the mesh
+# address, breaking the "continue" path. 36^10 ≈ 3.7 quadrillion, plenty
+# of collision headroom for any single deployment.
+_BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 def mint_id(length: int = 10) -> str:
-    """A short URL-safe id for a mindframe. 10 base62 chars ≈ 62^10 ≈ 8e17
-    distinct values — collision-resistant for any single deployment.
+    """A short URL-safe id for a mindframe. Lowercase base36 so the id
+    survives slugify unchanged.
 
     NOT chronological — `mint_id()` calls in sequence produce unrelated ids.
     Block ids inside the frame use UUIDv7 for chronological sort; the frame
-    id itself just needs to be unique and URL-friendly.
+    id itself just needs to be unique, URL-friendly, and slugify-stable.
     """
-    return "".join(_BASE62[b % 62] for b in secrets.token_bytes(length))
+    return "".join(_BASE36[b % 36] for b in secrets.token_bytes(length))
 
 
 def uuid7() -> str:

@@ -1,0 +1,28 @@
+{
+  "objectives": [
+    "Produce a live infrastructure survey of the softwaresoftware.dev stack as a mindframe.",
+    "Cover: docker containers, systemd user services, nginx-deployed sites, Cloudflare HTTPS reachability, GitHub softwaresoftware-dev org activity.",
+    "Narrate progress by writing varied mindframe blocks (summary / text / table / code / button-row / close)."
+  ],
+  "workflows": [
+    "Follow the section order in your starter prompt. Write a one-line summary block before each section.",
+    "Use the mindframe MCP write_block tool — no mindframe_id arg needed; it resolves from your cwd.",
+    "End with a button-row + close block."
+  ],
+  "success_criteria": [
+    "The operator opens /m/<task_id> and sees blocks streaming in roughly real time.",
+    "Every section produces at least one structured block (table, code, or text).",
+    "Failed probes are surfaced as summary blocks tone=warn, not fabricated as healthy."
+  ],
+  "boundaries": [
+    "Read only — no edits to nginx config, no service restarts, no git pushes.",
+    "Do not query Cloudflare API directly — just curl the public hostnames.",
+    "Do not invoke gh actions, only read-only gh queries (repo list, pr list --state open).",
+    "Truncate long lists; the renderer is for humans."
+  ],
+  "context": {
+    "operator": "thatcher",
+    "github_org": "softwaresoftware-dev",
+    "dashboard_base_url": "http://127.0.0.1:5174"
+  }
+}

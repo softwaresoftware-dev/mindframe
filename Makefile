@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-e2e-wire tier1 tier2 tier3 test-e2e e2e-live
+.PHONY: test test-unit test-e2e-wire tier1 tier2 tier3 test-e2e e2e-live install-recipes
 
 # Default: unit tests + Tier 1 wire tests. CI-safe; no real Claude tokens.
 test: test-unit test-e2e-wire
@@ -23,6 +23,21 @@ tier2:
 # attempts to walk install.txt. Slow; gated. See tests/e2e_fresh/README.md.
 tier3:
 	bash tests/e2e_fresh/run.sh
+
+# Copy every example recipe in recipes/ into ~/.dispatcher/recipes/.
+# Idempotent — overwrites if the destination exists. Doesn't touch
+# channels.yaml; the operator still owns routing.
+install-recipes:
+	@mkdir -p $$HOME/.dispatcher/recipes
+	@for d in recipes/*/; do \
+		[ -d "$$d" ] || continue; \
+		[ -f "$$d/recipe.yaml" ] || continue; \
+		name=$$(basename $$d); \
+		echo "  installing $$name → $$HOME/.dispatcher/recipes/$$name"; \
+		mkdir -p "$$HOME/.dispatcher/recipes/$$name"; \
+		cp "$$d"/recipe.yaml "$$d"/brief.json "$$d"/CLAUDE.md "$$HOME/.dispatcher/recipes/$$name/" 2>/dev/null || true; \
+	done
+	@echo "Done. Wire a channels.yaml route with /dispatcher:route or edit ~/.dispatcher/channels.yaml directly."
 
 # Legacy aliases.
 test-e2e: test-e2e-wire

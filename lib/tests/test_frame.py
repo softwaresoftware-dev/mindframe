@@ -35,15 +35,30 @@ def test_mint_id_length_param():
     assert len(frame.mint_id(20)) == 20
 
 
-def test_mint_id_uses_base62_alphabet():
-    valid = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+def test_mint_id_uses_lowercase_base36_alphabet():
+    """Lowercase only — frame_id threads through taskpilot's slugify
+    (which lowercases) so the dir name must already be lowercase to keep
+    session-bridge routing aligned."""
+    valid = set("0123456789abcdefghijklmnopqrstuvwxyz")
     for _ in range(100):
-        assert set(frame.mint_id()) <= valid
+        mid = frame.mint_id()
+        assert set(mid) <= valid, f"mint_id() leaked non-base36 char: {mid!r}"
+        assert mid == mid.lower(), f"mint_id() not lowercase: {mid!r}"
+
+
+def test_mint_id_survives_slugify():
+    """Simulate taskpilot's slugify on a mint_id() output — must round-trip
+    unchanged for the session-bridge routing convention to hold."""
+    import re
+    for _ in range(50):
+        mid = frame.mint_id()
+        slugified = re.sub(r"[^a-z0-9]+", "-", mid.lower()).strip("-")[:50]
+        assert mid == slugified, f"mint_id() {mid!r} drifts under slugify to {slugified!r}"
 
 
 def test_mint_id_collisions_extremely_rare():
-    """100k mint_ids should be unique. 62^10 ≈ 8e17 so collision probability
-    in 100k draws is roughly 1e-8."""
+    """100k mint_ids should be unique. 36^10 ≈ 3.7e15 → collision probability
+    in 100k draws is still vanishingly small."""
     ids = {frame.mint_id() for _ in range(100_000)}
     assert len(ids) == 100_000
 
