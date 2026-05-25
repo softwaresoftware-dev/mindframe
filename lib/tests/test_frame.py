@@ -176,6 +176,7 @@ def test_create_frame_url_uses_public_url_env(fake_root, monkeypatch):
     assert out["url"] == f"https://mindframe.acme.com/m/{out['id']}"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows doesn't honor POSIX chmod modes")
 def test_create_frame_directory_is_chmod_700(fake_root):
     out = frame.create_frame("Permission check")
     mode = oct(Path(out["frame_dir"]).stat().st_mode & 0o777)
