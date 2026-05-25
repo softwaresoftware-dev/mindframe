@@ -80,6 +80,15 @@ def test_uuid7_chronological_string_sort():
     assert ids == sorted(ids)
 
 
+def test_uuid7_monotonic_within_same_ms():
+    """RFC 9562 monotonicity: even when called in a tight loop within a
+    single millisecond, ids must sort chronologically as plain strings.
+    This is the property the SSE ?since=<id> cursor relies on."""
+    ids = [frame.uuid7() for _ in range(500)]
+    assert ids == sorted(ids), "uuid7 lost monotonicity within same ms"
+    assert len(set(ids)) == len(ids), "uuid7 collision in tight loop"
+
+
 # ---------- create_frame ----------
 
 

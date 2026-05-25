@@ -77,18 +77,44 @@ def mint_id(length: int = 10) -> str:
     return "".join(_BASE36[b % 36] for b in secrets.token_bytes(length))
 
 
+import threading
+
+_uuid7_state = {"last_ms": 0, "counter": 0}
+_uuid7_lock = threading.Lock()
+
+
 def uuid7() -> str:
-    """RFC 9562 UUIDv7. Uses stdlib `uuid.uuid7()` on Python 3.14+, falls
-    back to an inline implementation so we run today. Block ids sort
-    chronologically as plain strings, which makes the SSE `?since=<id>`
-    cursor work as pure string comparison."""
+    """RFC 9562 UUIDv7 with per-process monotonicity within the same
+    millisecond. Uses stdlib `uuid.uuid7()` on Python 3.14+; otherwise a
+    polyfill that uses the 12-bit rand_a field as a sub-ms counter.
+
+    Why monotonicity matters: block ids drive the SSE `?since=<id>` cursor
+    and the on-disk JSONL ordering. If two writes land in the same ms and
+    sort backwards, `?since=<id>` returns the wrong tail and the SSE stream
+    drops blocks. This bit us on macOS CI where the polling loop in
+    stub_spawner.py wrote 3 blocks in <1ms.
+    """
     if hasattr(uuid, "uuid7"):
         return str(uuid.uuid7())
-    ms = int(time.time() * 1000) & 0xFFFFFFFFFFFF  # 48 bits
-    rand_a = secrets.randbits(12)                  # 12 bits
-    rand_b = secrets.randbits(62)                  # 62 bits
-    int_uuid = (ms << 80) | (0x7 << 76) | (rand_a << 64) | (0b10 << 62) | rand_b
-    return str(uuid.UUID(int=int_uuid))
+    with _uuid7_lock:
+        ms = int(time.time() * 1000) & 0xFFFFFFFFFFFF  # 48 bits
+        if ms <= _uuid7_state["last_ms"]:
+            # Same-ms or clock-stall: keep the timestamp, bump the counter.
+            # 12 bits of rand_a give 4096 unique ids per ms — far more than
+            # any realistic single-process write rate.
+            ms = _uuid7_state["last_ms"]
+            _uuid7_state["counter"] += 1
+            if _uuid7_state["counter"] > 0xFFF:
+                # Counter overflowed — bump ms forward and reset.
+                ms += 1
+                _uuid7_state["counter"] = 0
+        else:
+            _uuid7_state["counter"] = 0
+        _uuid7_state["last_ms"] = ms
+        rand_a = _uuid7_state["counter"] & 0xFFF      # 12 bits, monotonic
+        rand_b = secrets.randbits(62)                 # 62 bits random
+        int_uuid = (ms << 80) | (0x7 << 76) | (rand_a << 64) | (0b10 << 62) | rand_b
+        return str(uuid.UUID(int=int_uuid))
 
 
 def now_ms() -> int:
