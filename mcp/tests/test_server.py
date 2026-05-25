@@ -19,15 +19,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("MINDFRAME_ID", raising=False)
+    # Path.home() reads HOME on POSIX, USERPROFILE on Windows — set both
+    # so test redirection works cross-platform. Also point
+    # $MINDFRAME_FRAMES_ROOT directly at the tmpdir so lib.frame.frames_root()
+    # resolves there without depending on Path.home() at all.
     frames = tmp_path / ".mindframe" / "frames"
     frames.mkdir(parents=True)
-    # Force a re-import so module-level Path.home() picks up the new HOME.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("MINDFRAME_FRAMES_ROOT", str(frames))
+    monkeypatch.delenv("MINDFRAME_ID", raising=False)
+    # Force a re-import so any module-level captures pick up the new env.
     if "server" in sys.modules:
         del sys.modules["server"]
     import server  # noqa: E402
-    # Pin FRAMES_ROOT to the new fake home (Path.home() is cached at import).
     server.FRAMES_ROOT = frames
     return server, frames
 
