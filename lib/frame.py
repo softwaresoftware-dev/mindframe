@@ -124,18 +124,39 @@ def now_ms() -> int:
 # --------------------------- file lock ---------------------------
 
 
-def _lock_exclusive(fh) -> None:
+def _lock_exclusive(fh) -> bool:
+    """Acquire an exclusive lock on the file. Returns True if held.
+
+    POSIX flock is reliable. Windows msvcrt.locking raises OSError when
+    locking a byte range past EOF (which is what happens on a newly
+    appended-to-empty file: position is 0, EOF is 0). For mindframe's
+    actual concurrency model — one agent writes to one frame at a time —
+    skipping the lock on Windows when it fails is safe: appends of a
+    single JSON line (< PIPE_BUF bytes) are atomic at the OS level.
+
+    Multi-writer correctness on Windows is not a property we promise; the
+    block-stream API spec calls out one writer per mindframe by design.
+    """
     if _LOCK_KIND == "posix":
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-    else:
+        return True
+    try:
         msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        return True
+    except OSError:
+        return False
 
 
-def _unlock(fh) -> None:
+def _unlock(fh, locked: bool) -> None:
+    if not locked:
+        return
     if _LOCK_KIND == "posix":
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     else:
-        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
 
 
 # --------------------------- block schema ---------------------------
@@ -187,13 +208,13 @@ def append_block(fdir: Path, block: dict, *, author: str = "agent") -> dict:
 
     blocks_path = fdir / "blocks.jsonl"
     with open(blocks_path, "ab") as fh:
-        _lock_exclusive(fh)
+        locked = _lock_exclusive(fh)
         try:
             fh.write(line.encode("utf-8"))
             fh.flush()
             os.fsync(fh.fileno())
         finally:
-            _unlock(fh)
+            _unlock(fh, locked)
 
     _touch_meta_last_block(fdir, record["ts"])
     return record
@@ -217,13 +238,13 @@ def write_meta(fdir: Path, meta: dict[str, Any]) -> None:
     then write_meta to avoid clobbering concurrent updates."""
     meta_path = fdir / "meta.json"
     with open(meta_path, "wb") as fh:
-        _lock_exclusive(fh)
+        locked = _lock_exclusive(fh)
         try:
             fh.write(json.dumps(meta, indent=2).encode("utf-8"))
             fh.flush()
             os.fsync(fh.fileno())
         finally:
-            _unlock(fh)
+            _unlock(fh, locked)
 
 
 def update_meta(fdir: Path, patch: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +253,7 @@ def update_meta(fdir: Path, patch: dict[str, Any]) -> dict[str, Any]:
     if not meta_path.is_file():
         raise FileNotFoundError(f"meta.json not found at {meta_path}")
     with open(meta_path, "r+b") as fh:
-        _lock_exclusive(fh)
+        locked = _lock_exclusive(fh)
         try:
             fh.seek(0)
             meta = json.loads(fh.read() or b"{}")
@@ -243,7 +264,7 @@ def update_meta(fdir: Path, patch: dict[str, Any]) -> dict[str, Any]:
             fh.flush()
             os.fsync(fh.fileno())
         finally:
-            _unlock(fh)
+            _unlock(fh, locked)
     return meta
 
 

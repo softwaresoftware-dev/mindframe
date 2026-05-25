@@ -172,7 +172,13 @@ def wire_env(tmp_path: Path) -> WireEnv:
     _write_test_recipe(recipes_dir)
     _write_channels(channels_file)
 
-    # Shared env for both services.
+    # Shared env for both services. Each test isolates state via:
+    #   - MINDFRAME_FRAMES_ROOT → tmpdir mindframe-frames/
+    #   - DISPATCHER_DB_PATH    → tmpdir events.db (avoids dedupe carryover)
+    #   - DISPATCHER_DATA_DIR   → tmpdir (any other on-disk state dispatcher creates)
+    # We deliberately do NOT redirect $HOME because that breaks pip's user-
+    # install site-packages discovery on the dev box. Per-env-var isolation
+    # is enough for the components we care about.
     base_env = os.environ.copy()
     base_env["MINDFRAME_FRAMES_ROOT"] = str(frames_root)
 
@@ -183,6 +189,7 @@ def wire_env(tmp_path: Path) -> WireEnv:
         "DISPATCHER_RECIPES_DIR": str(recipes_dir),
         "DISPATCHER_CHANNELS_FILE": str(channels_file),
         "DISPATCHER_DB_PATH": str(audit_db),
+        "DISPATCHER_DATA_DIR": str(tmp_path / "dispatcher-data"),
         "TASKPILOT_SPAWNER_CLI": str(STUB_SPAWNER),
         "MINDFRAME_SPAWN_CLI": str(MINDFRAME_SPAWN_CLI),
         # Avoid the dispatcher trying to reach the real session-bridge.
