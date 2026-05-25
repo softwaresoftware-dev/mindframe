@@ -28,13 +28,20 @@ docker build -t "$TAG" .
 
 echo
 echo "[run] booting clean container"
-docker run --rm \
+CONTAINER_ID=$(docker create \
     -e MINDFRAME_REF="$MINDFRAME_REF" \
     -e DISPATCHER_REF="$DISPATCHER_REF" \
     -e REPORT_PATH="/tmp/report.json" \
-    -v "$REPORT_HOST_PATH:/tmp/report.json" \
-    "$TAG"
-
-echo
-echo "Report:"
-cat "$REPORT_HOST_PATH" | python3 -m json.tool 2>/dev/null || cat "$REPORT_HOST_PATH"
+    "$TAG")
+trap "docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true" EXIT
+RC=0
+docker start -a "$CONTAINER_ID" || RC=$?
+# Pull the report out via docker cp — avoids the volume-mount-creates-dir trap.
+if docker cp "$CONTAINER_ID:/tmp/report.json" "$REPORT_HOST_PATH" 2>/dev/null; then
+    echo
+    echo "Report:"
+    cat "$REPORT_HOST_PATH" | python3 -m json.tool 2>/dev/null || cat "$REPORT_HOST_PATH"
+else
+    echo "(no report produced — harness crashed before writing it)"
+fi
+exit $RC

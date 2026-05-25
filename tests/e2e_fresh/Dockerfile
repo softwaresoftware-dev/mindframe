@@ -22,9 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Unprivileged user that mirrors a real install — no sudo, no system
 # packages added at runtime.
-RUN useradd -m -s /bin/bash operator
-USER operator
-WORKDIR /home/operator
+RUN useradd -m -s /bin/bash mf
+USER mf
+WORKDIR /home/mf
 
 # The harness clones the repos itself so the image is reusable across
 # branches/commits — pass MINDFRAME_REF / DISPATCHER_REF to docker run
@@ -34,6 +34,6 @@ ENV DISPATCHER_REPO=https://github.com/softwaresoftware-dev/dispatcher.git
 ENV MINDFRAME_REF=main
 ENV DISPATCHER_REF=main
 
-COPY --chown=operator:operator harness.py /home/operator/harness.py
+COPY --chown=mf:mf harness.py /home/mf/harness.py
 
-CMD ["python3", "/home/operator/harness.py"]
+CMD ["python3", "/home/mf/harness.py"]

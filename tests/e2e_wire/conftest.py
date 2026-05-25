@@ -27,7 +27,34 @@ from textwrap import dedent
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
-DISPATCHER_ROOT = PLUGIN_ROOT.parent.parent / "providers" / "dispatcher"
+
+
+def _find_dispatcher_root() -> Path:
+    """Locate the dispatcher checkout. Order:
+      1. $DISPATCHER_ROOT env (explicit override — Tier 3 container uses this)
+      2. Sibling of mindframe ($PLUGIN_ROOT/../dispatcher) — fresh-clone layout
+      3. Same marketplace tree ($PLUGIN_ROOT/../../providers/dispatcher) — dev layout
+    Raises if nothing's found so the fixture fails fast with a useful message.
+    """
+    explicit = os.environ.get("DISPATCHER_ROOT")
+    if explicit:
+        p = Path(explicit)
+        if (p / "app" / "main.py").is_file():
+            return p
+    sibling = PLUGIN_ROOT.parent / "dispatcher"
+    if (sibling / "app" / "main.py").is_file():
+        return sibling
+    monorepo = PLUGIN_ROOT.parent.parent / "providers" / "dispatcher"
+    if (monorepo / "app" / "main.py").is_file():
+        return monorepo
+    raise RuntimeError(
+        "Could not locate the dispatcher repo. Tried $DISPATCHER_ROOT, "
+        f"{sibling}, and {monorepo}. Set DISPATCHER_ROOT to the dispatcher "
+        "checkout's root (the directory containing app/main.py)."
+    )
+
+
+DISPATCHER_ROOT = _find_dispatcher_root()
 
 STUB_SPAWNER = Path(__file__).resolve().parent / "stub_spawner.py"
 MINDFRAME_SPAWN_CLI = PLUGIN_ROOT / "lib" / "spawn.py"

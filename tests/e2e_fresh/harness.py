@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 
 
-HOME = Path(os.environ.get("HOME", "/home/operator"))
+HOME = Path(os.environ.get("HOME", "/home/mf"))
 WORK = HOME / "fresh-install"
 MINDFRAME_REPO = os.environ.get("MINDFRAME_REPO", "https://github.com/softwaresoftware-dev/mindframe.git")
 DISPATCHER_REPO = os.environ.get("DISPATCHER_REPO", "https://github.com/softwaresoftware-dev/dispatcher.git")
