@@ -95,11 +95,34 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
 
 6. **Wire the event router.** Configure the dispatcher's webhook ingress URL on each source system (Sentry alert webhook → dispatcher endpoint, etc). Verify the round-trip with a deliberately-injected test event.
 
-7. **Smoke test a deliverable skill.** Trigger a synthetic event end-to-end — a Sentry event against the incident-triage skill is the default, since it ships first. Confirm the dispatcher spawns the agent, the agent reads the vault, produces its output, and notifies through the configured channel.
+7. **Start the dashboard as a managed daemon.** The dashboard serves the SPA at `/`, the SSE stream at `/api/frame/<id>/stream`, and the manual-spawn `POST /api/frames` endpoint. It needs to outlive any single Claude session — so it's a daemon, not something the operator restarts by hand.
+
+   **Register the dashboard with the daemon capability.** Use an available daemon-management tool with these parameters:
+
+   - **name**: `mindframe-dashboard`
+   - **command**: `python3` (or `python` on Windows — pick what your daemon tool prefers)
+   - **args**: `["${CLAUDE_PLUGIN_ROOT}/dashboard/server/server.py"]`
+   - **cwd**: `${CLAUDE_PLUGIN_ROOT}/dashboard`
+   - **env**:
+     - `PORT` — defaults to 5174; pin if you want a different port
+     - `MINDFRAME_FRAMES_ROOT` — defaults to `~/.mindframe/frames`
+     - `MINDFRAME_DISPATCHER_URL` — defaults to `http://127.0.0.1:8911`
+     - `MINDFRAME_DISPATCHER_BEARER_FILE` — defaults to `~/.mindframe/secrets/dispatcher-bearer.token`
+     - `MINDFRAME_PUBLIC_URL` — set this to the operator's public URL if the dashboard will be exposed externally (else it defaults to `http://127.0.0.1:<PORT>`)
+
+   The daemon tool returns an `ipc_address` and runtime status. After it confirms running, probe `http://127.0.0.1:5174/api/health` and assert `{ok: true, dispatcher_bearer_present: true}`.
+
+   **Wire reboot persistence.** Use an available setup skill (provided by the daemon capability provider) to register `mindframe-dashboard` with the OS service manager — systemd on Linux, launchd on macOS, Task Scheduler on Windows. The daemon's saved config from step above is what the persistence layer uses; the operator doesn't have to re-enter command/args/env.
+
+   Don't run the dashboard as a foreground `python3 server/server.py` from a terminal — that doesn't survive a logout. If for some reason the daemon capability isn't available, fall back to a tmux session and tell the operator that reboot persistence won't work until daemon-management is installed.
+
+8. **Smoke test the end-to-end loop.** Fire a synthetic event at the dispatcher and confirm: dispatcher routes it, mindframe.spawn mints a frame (`~/.mindframe/frames/<id>/meta.json` + seed block), taskpilot launches the agent, the agent writes blocks via the mindframe MCP, and the dashboard SSE stream renders them in the operator's browser.
+
+   The plugin ships `recipes/mindframe-poc/` — a working demo recipe that surveys local infrastructure. `make install-recipes` copies it into `~/.dispatcher/recipes/`. Use it as the first thing to fire if no operator-authored recipe exists yet.
 
 ## Dependencies
 
-This skill assumes the bundle's required capabilities are installed: `agent-spawning`, `session-mesh`, `knowledge-base`, `event-routing`, `status-dashboard`, `browser-automation`. The plugin manifest declares these — installation through `/softwaresoftware:install mindframe` resolves them. If any are absent at runtime, fail with a clear "missing capability X" message rather than improvising.
+This skill assumes the bundle's required capabilities are installed: `agent-spawning`, `session-mesh`, `knowledge-base`, `event-routing`, `status-dashboard`, `browser-automation`, `notification`, `daemon`. The plugin manifest declares these — installation through `/softwaresoftware:install mindframe` resolves them. If any are absent at runtime, fail with a clear "missing capability X" message rather than improvising.
 
 ## Reference
 

@@ -13,7 +13,7 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 3. **Event router** — `dispatcher`. Push-path: public webhook ingress + LLM/direct router + audit. Spawns ephemeral agents on demand.
 4. **Setup wizard** — `/mindframe:setup`. Claude-driven onboarding. Walks user through credentials per data system, validates connections live, bootstraps the vault, configures triggers, runs end-to-end smoke test.
 5. **Deliverable skills** — a library of skills that turn the knowledge base into work: incident triage (RCA → draft fix → notify), reviews and reports, answers about how the org runs. What the customer asks the agents for. **No deliverable skills currently ship in the bundle** (the prior `sentry-triage` and `k8s-triage` were deleted 2026-05-19 pending redesign). New deliverables are added to the library; incident triage is the first slated entry.
-6. **Dashboard** — `taskboard` (sibling plugin). Pull-path: probes services, agents, daemons, sites, sessions, telemetry and renders status. Pairs with dispatcher — taskboard is the eyes (pull), dispatcher is the ears (push).
+6. **Dashboard** — mindframe ships its own dashboard at `dashboard/`. Runs as a managed daemon via `daemon-manager` (the `daemon` capability provider). Reboot-persistent via systemd/launchd/Task Scheduler. Sibling-plugin merger with `taskboard` is future work.
 7. **Perception + adopt-first MCPs** — `claude-browser-bridge` + sentry / gcp-logging / github / grafana / slack MCPs. Browser-bridge is general-purpose perception for any web UI; default-install, not opt-in.
 
 ## Architecture
@@ -27,15 +27,14 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
                            - customer-domain KB schema (docs/kb-schema.md)
                                        │
                                        │ requires
-   ┌──────────────┬────────────┬───────┼────────────┬────────────┬──────────────┐
-   ▼              ▼            ▼       ▼            ▼            ▼              ▼
-agent-       channel    knowledge-   event-     status-      browser-      error-triage
-spawning                base         routing    dashboard    automation    (optional)
-   │              │            │       │            │            │              │
- taskpilot   session-bridge librarian  dispatcher  taskboard   browser-bridge   gh-mcp,
-                                                                                sentry-mcp,
-                                                                                gcp-logging,
-                                                                                slack
+   ┌──────────────┬────────────┬───────┼────────────┬────────────┬──────────┬───────────┐
+   ▼              ▼            ▼       ▼            ▼            ▼          ▼           ▼
+agent-       channel    knowledge-   event-     status-      browser-     daemon    notification
+spawning                base         routing    dashboard    automation
+   │              │            │       │            │            │          │
+ taskpilot   session-bridge librarian  dispatcher  taskboard   browser-bridge  daemon-manager
+                                                                              (runs the dashboard
+                                                                              as a managed service)
 ```
 
 ### Runtime flow (wire shape for any deliverable skill)
@@ -69,20 +68,30 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 - `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, core entities, domain packs, and the per-install `schema.yaml` manifest format. Read before building setup or deliverable skills.
 - `skills/setup/` — `/mindframe:setup` wizard.
 - `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
-- `dashboard/` — FastAPI server that serves the SPA shell, exposes artifact HTML under `artifacts/<sid>/`, and snapshots to `/s/<id>` shares. The persistent dashboard agent was removed 2026-05-21. SPA is now a boards-index + per-mindframe detail view, design-system aesthetic. Buttons inside agent-authored HTML fire dispatcher events via `/api/dashboard-event` (server holds the bearer). Still uses iframes for pane content — block-stream renderer is the next slice. See `dashboard/README.md` and `docs/mindframe-block-stream-api.md`.
+- `dashboard/` — FastAPI server that serves the SPA shell, exposes the block-stream API (`/api/frames`, `/api/frame/<id>`, `/api/frame/<id>/blocks`, `/api/frame/<id>/stream` SSE), and the manual-spawn `POST /api/frames`. Runs as a managed daemon via the `daemon` capability (`daemon-manager`) — reboot-persistent via systemd/launchd/Task Scheduler. SPA: boards-index at `/`, per-mindframe detail at `/m/<id>` with the typed block renderer. See `dashboard/README.md` and `docs/mindframe-block-stream-api.md`.
+- `recipes/mindframe-poc/` — example recipe ships in-tree. `make install-recipes` copies it to `~/.dispatcher/recipes/`.
+- `lib/` — `frame.py` (core storage ops), `spawn.py` (CLI), tests. The block-stream contract.
+- `mcp/` — `server.py` (FastMCP `write_block` + `set_title`), tests.
+- `tests/e2e_wire/` — Tier 1 hermetic integration. `tests/e2e_real/` — Tier 2 live-agent smoke. `tests/e2e_fresh/` — Tier 3 native fresh-install harness.
 
 ## Next
 
-Build the **block-stream renderer**. Spec is at `docs/mindframe-block-stream-api.md` (938 lines, converged across 6 rounds of gap-patching). What to ship in order:
+The bundle is now in **shipping shape**: cross-platform CI matrix green, demo recipe works end-to-end, install path documented. Remaining items in priority order:
 
-1. ~~`bin/mindframe-write`~~ — **shipped as an MCP** (`mcp/server.py`). `write_block` + `set_title`, UUIDv7 inline polyfill, auto-resolves mindframe_id from cwd / `$MINDFRAME_ID`. 33 hermetic tests. Auto-loads via plugin.json `mcpServers`.
-2. ~~SPA block renderer + SSE stream~~ — **done** (2026-05-24). Server: `GET /api/frames`, `/api/frame/<id>`, `/api/frame/<id>/blocks?since=`, and `/api/frame/<id>/stream` (SSE, polling tail @ 250ms, replay-from-Last-Event-ID for free via UUIDv7). SPA: typed renderer per block type (text/markdown, code, table, button-row, input, summary, divider, custom-html, image, url-card, supersedes, redact, close, user-action). Verified end-to-end in the browser — appending a block via MCP appears in the live page without reload. Known rough edges: inline markdown is minimal (no GFM), no test coverage on the SSE endpoint, supersedes/redact visual paths untested, large historical replay isn't paginated.
-3. ~~Spawn primitive + dispatcher integration~~ — **done** (2026-05-24). Mindframe is *not* a runtime; it's a storage/UI convention plus a thin "prep before spawn" function. `lib/frame.py` is the single source of truth for frame ops (create, append, set_title, mint id, uuid7) — used by the MCP, the dashboard's `POST /api/frames`, and the spawn CLI. `lib/spawn.py` is a thin CLI wrapper. Dispatcher reads a `frame:` block from recipe.yaml; if present, it shells out to `lib/spawn.py` to mint the frame, then passes `--name=<id> --cwd=<frame_dir>` to taskpilot's spawner_cli. **Zero taskpilot changes** — `--cwd` already existed. 49 dispatcher tests + 67 mindframe tests passing.
-4. Recipe convention: a recipe becomes a mindframe recipe by adding `frame: {title, seed_block, tags}` to its recipe.yaml. Title/seed_block fields go through the same `{{placeholder}}` composer as brief.json (so `frame.title: "OOM in {{service}}"` works alongside `brief.context.service: "{{service}}"`).
-5. End-to-end smoke test from an *actual* webhook → dispatcher → frame → live SPA. (Dispatcher's frame-spawn wire is integration-tested against the real CLI; the agent-writes-real-blocks-from-vault-context loop is the next thing to prove.)
-6. Home surface — signals + "tackle this" buttons that fire spawn-mindframe events. Closer to taskboard's domain.
+1. **Diagnose the live-agent crash at block ~10** (gap #6). The mindframe-poc spawn died early in the live demo. State dir was empty — taskpilot's lifecycle hooks may not have fired. Needs another live spawn with hook instrumentation.
+2. **Real end-to-end fresh-install dry-run** against a clean Linux box (Tier 3 covers the deterministic surface; the Claude-driven phases of install.txt — PHASE 3–8 — still need a human-in-the-loop pass).
+3. **Home surface** — signals + "tackle this" buttons that spawn mindframes. Closer to taskboard's domain.
+4. **Block-stream renderer polish** — supersedes/redact visual paths untested, inline markdown is minimal (no GFM tables/strikethrough), large historical replay isn't paginated.
 
-The home / static-taskboard surface is the slice *after* this — surfaces signals (calendar, sentry, on-call) with "tackle this" buttons that fire spawn-mindframe events. That part is closer to taskboard's domain.
+### Shipped this slice (chronological)
+
+- ~~`bin/mindframe-write`~~ → MCP server (write_block, set_title)
+- ~~SPA block renderer + SSE stream~~ → live in browser
+- ~~`mindframe.spawn()` primitive~~ → `lib/frame.py` + `lib/spawn.py` CLI, dispatcher reads `frame:` from recipe.yaml
+- ~~Demo recipe~~ → ships in `recipes/mindframe-poc/`, `make install-recipes` installs to `~/.dispatcher/`
+- ~~3-tier testing stack~~ → Tier 1 wire (hermetic), Tier 2 real-agent smoke (manual), Tier 3 fresh-install (native, no Docker)
+- ~~CI matrix Linux/macOS/Windows~~ — caught and fixed 6 cross-platform bugs on first run
+- ~~Dashboard as managed daemon~~ — `daemon` capability declared, setup skill + install.txt updated to register via daemon-manager (intent-based, not tool-hardcoded)
 
 ## Current dashboard state (as of 2026-05-23)
 
