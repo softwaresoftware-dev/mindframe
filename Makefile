@@ -1,16 +1,29 @@
-.PHONY: test test-e2e e2e-live
+.PHONY: test test-unit test-e2e-wire tier1 tier2 tier3 test-e2e e2e-live
 
-# Hermetic tests — pytest, no daemons, no credentials, CI-safe.
-# Includes the hermetic e2e suite under tests/e2e/.
-test:
-	python3 -m pytest tests/ -v
+# Default: unit tests + Tier 1 wire tests. CI-safe; no real Claude tokens.
+test: test-unit test-e2e-wire
 
-# Just the hermetic end-to-end suite.
-test-e2e:
-	python3 -m pytest tests/e2e/ -v
+# Plain unit tests — lib + mcp.
+test-unit:
+	python3 -m pytest lib/tests/ mcp/tests/ -v
 
-# Live layer — talks to the running bundle daemons. NOT for CI.
-# See tests/e2e/README.md for the env vars it honors.
-e2e-live:
-	bash tests/e2e/live/healthcheck.sh
-	bash tests/e2e/live/smoke.sh
+# Tier 1 — wire integration tests. Spawns a real dispatcher + dashboard
+# pair on OS-assigned ports against tmpdir state; stub spawner stands in
+# for taskpilot so no LLM tokens are spent. ~10s wall clock. CI-safe.
+test-e2e-wire tier1:
+	python3 -m pytest tests/e2e_wire/ -v
+
+# Tier 2 — real-agent smoke. Fires the demo recipe at the running local
+# dispatcher with a real claude spawn. Burns tokens, requires the live
+# bundle daemons. Not for CI; invoke explicitly.
+tier2:
+	python3 tests/e2e_real/smoke.py
+
+# Tier 3 — fresh-install dry-run. Boots a clean Linux container and
+# attempts to walk install.txt. Slow; gated. See tests/e2e_fresh/README.md.
+tier3:
+	bash tests/e2e_fresh/run.sh
+
+# Legacy aliases.
+test-e2e: test-e2e-wire
+e2e-live: tier2
