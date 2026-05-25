@@ -594,15 +594,36 @@ def api_save(body: SaveBody) -> Response:
 
 @app.get("/artifacts/{sid}/{path:path}")
 def serve_artifact(sid: str, path: str) -> Response:
-    if not SID_RE.match(sid):
+    """Serve files from a frame's directory.
+
+    Resolution order (first hit wins):
+      1. Legacy panes path: dashboard/artifacts/<sid>/<path>
+         (kept for the old artifact pipeline + saved demo HTML)
+      2. Mindframe frame path: <FRAMES_ROOT>/<sid>/<path>
+         (this is what the block-stream spec calls for — custom-html
+         blocks point at sibling files inside the frame directory)
+
+    Each lookup is sandbox-checked so `..` traversal can't escape.
+    """
+    if not (SID_RE.match(sid) or FRAME_ID_RE.match(sid)):
         return PlainTextResponse("not found", status_code=404)
-    base = ARTIFACTS_ROOT / sid
-    target = (base / path).resolve()
-    if base.resolve() not in target.parents and target != base.resolve():
-        return PlainTextResponse("not found", status_code=404)
-    if not target.is_file():
-        return PlainTextResponse("not found", status_code=404)
-    return FileResponse(target, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    for root in (ARTIFACTS_ROOT, FRAMES_ROOT):
+        if not root.is_dir():
+            continue
+        base = root / sid
+        try:
+            base_resolved = base.resolve()
+            target = (base / path).resolve()
+        except (OSError, ValueError):
+            continue
+        # Containment check — `..` traversal is rejected here.
+        if base_resolved not in target.parents and target != base_resolved:
+            continue
+        if target.is_file():
+            return FileResponse(target, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    return PlainTextResponse("not found", status_code=404)
 
 
 @app.get("/{full_path:path}")
