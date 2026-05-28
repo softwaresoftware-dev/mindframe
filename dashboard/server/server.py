@@ -62,6 +62,15 @@ FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".m
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
 
+# Vault path is provided by the mindframe plugin's userConfig.
+VAULT_PATH = Path(
+    os.environ.get("CLAUDE_PLUGIN_OPTION_VAULT_PATH")
+    or os.environ.get("MINDFRAME_VAULT_PATH", "")
+).expanduser() if (
+    os.environ.get("CLAUDE_PLUGIN_OPTION_VAULT_PATH")
+    or os.environ.get("MINDFRAME_VAULT_PATH")
+) else None
+
 # lib.frame lives one level above the dashboard, in the plugin root.
 sys.path.insert(0, str(ROOT.parent))
 from lib import frame as frame_lib  # noqa: E402
@@ -388,6 +397,183 @@ async def api_frames_create(body: CreateFrameBody) -> Response:
         "id": result["id"],
         "url": result["url"],
         "frame_dir": result["frame_dir"],
+    })
+
+
+def _scan_vault_targets(limit_per_kind: int = 5) -> dict[str, list[str]]:
+    """Pull a handful of names out of the vault to seed suggested mindframes.
+
+    Reads file basenames (without `.md`) from the canonical KB folders. Any
+    folder that doesn't exist is skipped. Falls back to an empty dict if the
+    vault path isn't configured or unreachable.
+    """
+    targets: dict[str, list[str]] = {"services": [], "repos": [], "products": []}
+    if not VAULT_PATH or not VAULT_PATH.is_dir():
+        return targets
+    for kind, subdir in (
+        ("services", "services"),
+        ("repos", "repos"),
+        ("products", "products"),
+    ):
+        d = VAULT_PATH / subdir
+        if not d.is_dir():
+            continue
+        entries = sorted(
+            f.stem for f in d.glob("*.md") if f.is_file() and not f.name.startswith("_")
+        )
+        targets[kind] = entries[:limit_per_kind]
+    return targets
+
+
+def _build_suggestions(targets: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Return suggested mindframes the user can spawn from the home screen.
+
+    Each suggestion is a starting prompt plus a title. We weave in vault
+    entries when we have them so the suggestions feel grounded — "review PRs
+    on payments-api" beats "review your team's PRs". If the vault is empty,
+    we fall back to generic placeholders.
+    """
+    services = targets.get("services") or []
+    repos = targets.get("repos") or []
+    products = targets.get("products") or []
+
+    primary_repo = repos[0] if repos else (services[0] if services else None)
+    primary_product = products[0] if products else None
+    primary_service = services[0] if services else None
+
+    def s(title: str, prompt: str, tag: str) -> dict[str, Any]:
+        return {"title": title, "prompt": prompt, "tag": tag}
+
+    out: list[dict[str, Any]] = []
+    out.append(s(
+        title=f"Review PRs on {primary_repo}" if primary_repo else "Review your team's PRs",
+        prompt=(
+            f"Create an agent that reviews open pull requests on {primary_repo} "
+            "every weekday morning, flags risky changes, and posts a summary."
+            if primary_repo else
+            "Create an agent that reviews open pull requests across our repos "
+            "every weekday morning, flags risky changes, and posts a summary."
+        ),
+        tag="engineering",
+    ))
+    out.append(s(
+        title=f"E2E test {primary_product} weekly" if primary_product else "Weekly E2E browser test",
+        prompt=(
+            f"Create an agent that does a full end-to-end browser test of {primary_product} "
+            "once a week. Walk the golden path, capture screenshots, report any regressions."
+            if primary_product else
+            "Create an agent that does a full end-to-end browser test of our product "
+            "once a week. Walk the golden path, capture screenshots, report any regressions."
+        ),
+        tag="product",
+    ))
+    out.append(s(
+        title=(
+            f"Investigate {primary_service} infrastructure"
+            if primary_service else "Investigate our infrastructure"
+        ),
+        prompt=(
+            f"Investigate the health and cost of {primary_service}'s infrastructure — "
+            "logs, metrics, alerts, recent deploys. Surface anything that looks off."
+            if primary_service else
+            "Investigate the health and cost of our production infrastructure — "
+            "logs, metrics, alerts, recent deploys. Surface anything that looks off."
+        ),
+        tag="infra",
+    ))
+    out.append(s(
+        title="Weekly customer-feedback digest",
+        prompt=(
+            "Create an agent that scans support tickets, sales call notes, and "
+            "Slack #feedback every Monday morning and writes a digest of what "
+            "customers are asking for."
+        ),
+        tag="business",
+    ))
+    return out
+
+
+@app.get("/api/suggestions")
+async def api_suggestions() -> Response:
+    """Suggested mindframes for the home screen.
+
+    Pulls service / repo / product names from the configured vault (if any)
+    and threads them into a small library of starter prompts. Generic fallbacks
+    when the vault isn't reachable.
+    """
+    targets = _scan_vault_targets()
+    suggestions = _build_suggestions(targets)
+    return JSONResponse({
+        "vault_present": bool(VAULT_PATH and VAULT_PATH.is_dir()),
+        "vault_path": str(VAULT_PATH) if VAULT_PATH else None,
+        "targets": targets,
+        "suggestions": suggestions,
+    })
+
+
+class PromptBody(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+    source: str | None = None
+
+
+@app.post("/api/prompt")
+async def api_prompt(body: PromptBody) -> Response:
+    """Human-typed prompt from the home chatbox.
+
+    Creates a frame shell with the user's prompt as the seed block, then fires
+    a `mindframe.create` dashboard event so the dispatcher can spawn an agent
+    to fulfil the prompt. Returns the new frame's id so the SPA can navigate
+    to it.
+
+    The dispatcher event is best-effort — if dispatcher is unreachable, the
+    frame still exists and the user can attach an agent manually.
+    """
+    title = body.text.strip().split("\n", 1)[0][:120]
+    try:
+        result = frame_lib.create_frame(
+            title=title,
+            seed_block={"type": "text", "markdown": body.text},
+            spawned_by={"kind": "dashboard-prompt", "source": body.source or "home"},
+            tags=["user-prompt"],
+        )
+    except (ValueError, FileExistsError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except OSError as e:
+        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
+
+    bearer = _read_dispatcher_bearer()
+    dispatcher_status = "skipped"
+    dispatcher_error: str | None = None
+    if bearer:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.post(
+                    f"{DISPATCHER_URL}/api/event",
+                    headers={"Authorization": f"Bearer {bearer}"},
+                    json={
+                        "event_type": "mindframe.create",
+                        "source": "dashboard-prompt",
+                        "data": {
+                            "frame_id": result["id"],
+                            "prompt": body.text,
+                            "title": title,
+                        },
+                    },
+                )
+                if r.status_code < 300:
+                    dispatcher_status = "queued"
+                else:
+                    dispatcher_status = "rejected"
+                    dispatcher_error = f"status {r.status_code}: {r.text[:200]}"
+        except httpx.HTTPError as e:
+            dispatcher_status = "unreachable"
+            dispatcher_error = str(e)
+
+    return JSONResponse({
+        "id": result["id"],
+        "url": result["url"],
+        "dispatcher_status": dispatcher_status,
+        "dispatcher_error": dispatcher_error,
     })
 
 

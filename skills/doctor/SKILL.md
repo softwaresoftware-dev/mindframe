@@ -76,7 +76,13 @@ For each `[FAIL]` daemon, **heal Tier 1**: restart it. Use the `daemon` capabili
 Then check the agent runtime itself:
 
 - **taskpilot** — list running tasks (intent: "list taskpilot tasks and their status"). A `service`-kind agent in a crash-loop is a finding; report its task id and last log lines. Stale task dirs under `~/.taskpilot/` for tasks that exited cleanly are cosmetic — note, don't heal.
-- **session mesh** — confirm this session can see the mesh (intent: "list mesh sessions"). An empty or unreachable mesh when `session-bridge` reported listening means the daemon is up but the bridge is wedged — Tier 1: restart `session-bridge`, re-probe.
+- **session mesh** — three failure modes, three different fixes. Probe in order; stop at the first that triggers.
+
+  1. **Daemon not installed.** No `session-bridge` entry from `daemon_list`, and `curl -sf http://127.0.0.1:8910/health` fails (connection refused). The plugin is enabled but the bundled daemon was never registered with `daemon-manager`. This is the new-install footgun: channel.mjs loads, then silently fails every mesh call. **Tier 2** — the right fix is `/session-bridge:setup`, which creates the daemon venv, registers with `daemon-manager`, and installs autostart. Calling `daemon_start` blind without the venv will crash on the next reboot, so do *not* heal automatically. Report this, point to `/session-bridge:setup`, and stop healing the mesh.
+  2. **Daemon installed but not running.** `daemon_list` shows a `session-bridge` row with `running=false`. **Tier 1** — call `daemon_start` (the on-disk config from a prior install is reused; no args needed). Re-probe `/health`; if it still fails, capture the last 30 lines of `~/.claude/daemons/session-bridge.err.log` into the finding and downgrade to Tier 2.
+  3. **Daemon running but the mesh is empty when this session is in it.** `/health` returns 200, `daemon_list` shows running, but listing sessions returns nothing or omits this one. The daemon is wedged or this session's channel registration was dropped. **Tier 1** — bounce it: `daemon_stop` then `daemon_start`; channel.mjs's 30s heartbeat will re-register. If the mesh is still empty after one heartbeat cycle, ask the operator to `/reload-plugins`.
+
+  Independent of which branch fires, treat `has_autostart=false` on an otherwise-healthy `session-bridge` row as a **Tier 2 warning** — the mesh works now but will be dead after the next reboot. Fix: `daemon_install_autostart(daemon_name="session-bridge")`. Same treatment for any other bundle daemon (`mindframe-dashboard`, `dispatcher-ingress`) with `has_autostart=false`.
 
 ### [check 4/7] knowledge base — vault & librarian
 

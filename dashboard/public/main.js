@@ -332,19 +332,120 @@ function appendBlock(block, stream) {
 
 // ----- Boards index view -----
 
+async function submitPrompt(text) {
+  text = (text || "").trim();
+  if (!text) {
+    showToast("type a prompt first", "warn");
+    return;
+  }
+  try {
+    const r = await fetch("/api/prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, source: "home-chatbox" }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      showToast(`couldn't create mindframe: ${j.error || r.statusText}`, "err");
+      return;
+    }
+    if (j.dispatcher_status === "unreachable") {
+      showToast("mindframe created (dispatcher offline — attach an agent manually)", "warn");
+    } else if (j.dispatcher_status === "skipped") {
+      showToast("mindframe created (no dispatcher bearer — frame is empty until an agent attaches)", "warn");
+    } else if (j.dispatcher_status === "rejected") {
+      showToast(`mindframe created, but dispatcher rejected the spawn (${j.dispatcher_error || "see logs"})`, "warn");
+    } else {
+      showToast("mindframe created — spinning up an agent", "ok");
+    }
+    history.pushState({}, "", `/m/${encodeURIComponent(j.id)}`);
+    route();
+  } catch (e) {
+    showToast(`network error: ${e.message}`, "err");
+  }
+}
+
 async function renderBoardsIndex() {
   root().innerHTML = `
     <div class="index-wrap">
-      <p class="index-eyebrow">your work</p>
-      <div class="index-header">
-        <h1>Mindframes</h1>
-        <span id="frame-count" class="count">…</span>
-      </div>
-      <div id="frame-list" class="frame-list">
-        <div class="loading">loading…</div>
-      </div>
+      <section class="home-chat">
+        <p class="home-eyebrow">tell mindframe what you want to know</p>
+        <h1 class="home-headline">What should I look into?</h1>
+        <form id="chat-form" class="chat-form" autocomplete="off">
+          <textarea
+            id="chat-input"
+            class="chat-input"
+            rows="3"
+            placeholder="e.g. review my team's PRs every morning, or investigate why checkout latency spiked last week."
+          ></textarea>
+          <div class="chat-form-row">
+            <span class="chat-hint">⌘/Ctrl + Enter to submit</span>
+            <button type="submit" class="btn btn-primary chat-submit">Create mindframe</button>
+          </div>
+        </form>
+        <div id="suggestions" class="suggestions">
+          <div class="loading">loading suggestions…</div>
+        </div>
+      </section>
+
+      <section class="frame-section">
+        <div class="index-header">
+          <h2>Your mindframes</h2>
+          <span id="frame-count" class="count">…</span>
+        </div>
+        <div id="frame-list" class="frame-list">
+          <div class="loading">loading…</div>
+        </div>
+      </section>
     </div>
   `;
+
+  const form = $("chat-form");
+  const input = $("chat-input");
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    submitPrompt(input.value);
+  });
+  input.addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+      ev.preventDefault();
+      submitPrompt(input.value);
+    }
+  });
+
+  // Suggestions — pulled once on render; vault contents rarely change mid-session.
+  try {
+    const r = await fetch("/api/suggestions");
+    const j = await r.json();
+    const wrap = $("suggestions");
+    const cards = (j.suggestions || []).map((s, i) => `
+      <button class="suggest-card" type="button" data-i="${i}">
+        <span class="suggest-tag tag-${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>
+        <span class="suggest-title">${escapeHtml(s.title)}</span>
+        <span class="suggest-prompt">${escapeHtml(s.prompt)}</span>
+      </button>
+    `).join("");
+    const groundedNote = j.vault_present
+      ? `<p class="suggest-source">suggestions grounded in your vault at <code>${escapeHtml(j.vault_path || "")}</code></p>`
+      : `<p class="suggest-source suggest-source-warn">no vault configured — suggestions are generic. Run <code>/mindframe:setup</code> to ground them in your org.</p>`;
+    wrap.innerHTML = `
+      <p class="suggest-eyebrow">try one of these</p>
+      <div class="suggest-grid">${cards}</div>
+      ${groundedNote}
+    `;
+    wrap.querySelectorAll(".suggest-card").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.dataset.i, 10);
+        const s = (j.suggestions || [])[idx];
+        if (!s) return;
+        input.value = s.prompt;
+        input.focus();
+        input.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  } catch {
+    $("suggestions").innerHTML = `<p class="suggest-source suggest-source-warn">couldn't load suggestions.</p>`;
+  }
 
   async function refresh() {
     try {
@@ -357,15 +458,7 @@ async function renderBoardsIndex() {
       if (!frames.length) {
         list.innerHTML = `
           <div class="empty">
-            <p>No mindframes yet.</p>
-            <p class="empty-hint">Create one via the MCP:</p>
-            <pre>python3 -c "
-import sys, os
-sys.path.insert(0, '<path>/mindframe/mcp')
-os.environ['MINDFRAME_ID'] = 'my-frame'
-import server
-server.write_block({'type': 'text', 'markdown': 'hello'})
-"</pre>
+            <p>No mindframes yet — type a prompt above, or pick one of the suggestions.</p>
           </div>`;
         return;
       }

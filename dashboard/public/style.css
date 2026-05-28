@@ -237,6 +237,176 @@ a:hover { color: var(--color-accent-hover); }
   line-height: 1.6;
 }
 
+/* ---------- home chatbox + suggestions ---------- */
+
+.home-chat {
+  margin-bottom: var(--space-2xl);
+}
+
+.home-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: var(--space-md);
+}
+
+.home-headline {
+  font-family: var(--font-heading);
+  font-size: 2.25rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  margin-bottom: var(--space-lg);
+}
+
+.chat-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-xl);
+}
+
+.chat-input {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  min-height: 4.5rem;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.55;
+  color: var(--color-text);
+}
+.chat-input::placeholder {
+  color: var(--color-text-faint);
+}
+
+.chat-form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.chat-hint {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-faint);
+}
+
+.chat-submit {
+  min-width: 9rem;
+}
+
+.suggestions {
+  margin-top: var(--space-lg);
+}
+
+.suggest-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: var(--space-md);
+}
+
+.suggest-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: var(--space-md);
+}
+
+.suggest-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  text-align: left;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: var(--space-lg);
+  cursor: pointer;
+  font: inherit;
+  color: var(--color-text);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.suggest-card:hover {
+  border-color: var(--color-accent);
+  transform: translateY(-1px);
+}
+.suggest-card:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.suggest-tag {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+.suggest-tag.tag-engineering { color: var(--color-accent); }
+.suggest-tag.tag-product { color: #6fb1ff; }
+.suggest-tag.tag-infra { color: #ffb86c; }
+.suggest-tag.tag-business { color: #c792ea; }
+
+.suggest-title {
+  font-family: var(--font-heading);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.suggest-prompt {
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--color-text-muted);
+}
+
+.suggest-source {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--color-text-faint);
+  margin-top: var(--space-md);
+}
+.suggest-source code {
+  color: var(--color-text-muted);
+}
+.suggest-source-warn {
+  color: var(--color-text-muted);
+}
+
+.frame-section .index-header h2 {
+  font-family: var(--font-heading);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text);
+}
+
+.toast[data-kind="warn"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
 .frame-row {
   display: grid;
   grid-template-columns: auto 1fr auto auto;
