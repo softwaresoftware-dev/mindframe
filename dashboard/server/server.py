@@ -168,8 +168,23 @@ def artifact_path(sid: str) -> Path:
 # --------------------------- app ---------------------------
 
 
+def _configure_logging() -> None:
+    """Surface library log messages (httpx, asyncio, frame_lib, etc.) to
+    journald / launchd's StandardOutPath. The dashboard's own log() helper
+    print()s with flush=True and doesn't need this, but anything that uses
+    the standard logging library (fastapi internals, httpx, frame_lib) goes
+    silent without it. See dispatcher's main.py for the full rationale.
+    """
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _configure_logging()
     ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
     SHARES_ROOT.mkdir(parents=True, exist_ok=True)
     log(f"server on http://127.0.0.1:{PORT}")
