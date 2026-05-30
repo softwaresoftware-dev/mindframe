@@ -25,6 +25,21 @@ Produces: nothing on disk. Sets the agent's frame for everything below.
 
 ---
 
+## PHASE 0.W — Windows operators only (skip if Linux or macOS)
+
+Mindframe runs on Linux + macOS natively. **Windows operators run it inside WSL2.** Native Windows is not supported because taskpilot's agent spawner currently depends on tmux. Everything else in the bundle is cross-platform; the WSL hop only affects the install agent at runtime.
+
+Before going to PHASE 1, verify the operator is in the right environment:
+
+- **0.W.1 — In WSL already?** Probe `$WSL_DISTRO_NAME` and `uname -r` (contains `microsoft`). If yes, proceed to PHASE 1 like Linux.
+- **0.W.2 — Native Windows preflight.** Tell the operator they need WSL2: `wsl --install Ubuntu` from PowerShell, then `sudo apt install -y curl tmux git python3 python3-pip nodejs`, then `npm install -g @anthropic-ai/claude-code`, then re-launch Claude Code inside the WSL session and re-paste install.txt.
+- **0.W.3 — Keep WSL alive for daemons.** WSL2 shuts down ~8s after the last shell exits, which kills daemons. Tell the operator (note for later, do not enforce now): leave one terminal open, OR enable systemd in `/etc/wsl.conf` + `wsl --shutdown-timeout` in `%USERPROFILE%/.wslconfig`, OR add `wsl ~` to Windows startup.
+- **0.W.4 — Notifications.** `notify-send` doesn't work in WSL without WSLg + a display server. When PHASE 5 resolves the notification capability, prefer `notify-slack` or `notify-email` over `notify-linux` for WSL deployments.
+
+Produces: a Linux-shaped runtime environment (either native Linux/macOS, or WSL2 on Windows) ready for PHASE 1.
+
+---
+
 ## PHASE 1 — Bootstrap the marketplace + resolver
 
 The operator launched `claude` and pasted this doc. Agent drives via Bash.
@@ -364,6 +379,27 @@ The merge with the taskboard plugin lands after the POC stands up. taskboard own
 - Pane lifecycle: auto-archive on completion. Long-term retention, deep-linking, share permissions all deferred.
 - Static-frame storage: file-based. DB + version control deferred.
 - Pane materialization mechanism (poll vs SSE-on-mtime): defer to whichever ships first when wiring up the new SPA.
+
+---
+
+## PHASE 9.5 — Install the automated knowledge-capture loop
+
+Mindframe (v0.6+) ships two long-running agents that close the loop between the operator's Claude Code working sessions and the vault:
+
+- **vault-keeper** — write side. Scans Claude Code session transcripts on a schedule, extracts substantive work, writes schema-valid vault entries with FK references. Honors the freshness contract (git pull, read schema fresh, read catalog fresh) on every write.
+- **vault-query** — read side. Receives questions, walks the catalog, reads relevant entries, composes wikilink-cited answers. Refuses to substitute training knowledge for vault content.
+
+Same shape as the bundle's other service agents (email-triage, dispatcher).
+
+**9.5.1 — Spawn vault-keeper** as a taskpilot service-kind task, pointed at `${CLAUDE_PLUGIN_ROOT}/vault_keeper/agent/CLAUDE.md` for its operating instructions. Registers in the mesh as `vault-keeper`. Same shape as email-triage.
+
+**9.5.2 — Spawn vault-query** the same way, pointed at `${CLAUDE_PLUGIN_ROOT}/vault_query/agent/CLAUDE.md`. Read-only. Registers as `vault-query`.
+
+**9.5.3 — Register the scheduler as a managed daemon.** `vault_keeper/scheduler.py` is a small wrapper that loops `keeper.py` + sleeps. Register it with the daemon capability the same way PHASE 9 registered the dashboard. Default tick is 1h (`VAULT_KEEPER_INTERVAL_S`); idle ticks are cheap because keeper.py exits in milliseconds when nothing's new.
+
+**9.5.4 — Smoke test.** Run `keeper.py --dry-run` (no agent message sent), then a real run, then a single `query.py --question "..." --wait`. Confirm a vault entry landed and the query returns a cited answer. If anything fails, log with the literal probe output and stop — don't continue silently to PHASE 10.
+
+Produces: capture loop running on the operator's machine. Working sessions get captured into the vault on a schedule. Questions get answered against the vault on demand.
 
 ---
 
