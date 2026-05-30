@@ -116,7 +116,40 @@ You are the mindframe onboarding agent. The bundle has just been installed. Walk
 
    Don't run the dashboard as a foreground `python3 server/server.py` from a terminal — that doesn't survive a logout. If for some reason the daemon capability isn't available, fall back to a tmux session and tell the operator that reboot persistence won't work until daemon-management is installed.
 
-8. **Smoke test the end-to-end loop.** Fire a synthetic event at the dispatcher and confirm: dispatcher routes it, mindframe.spawn mints a frame (`~/.mindframe/frames/<id>/meta.json` + seed block), taskpilot launches the agent, the agent writes blocks via the mindframe MCP, and the dashboard SSE stream renders them in the operator's browser.
+8. **Install the automated knowledge-capture loop.** The bundle ships two long-running agents that close the loop between the operator's Claude Code sessions and the vault: `vault-keeper` (write side) reads session transcripts on a tick and captures substantive work into schema-valid vault entries; `vault-query` (read side) answers questions against the vault with wikilink-cited responses.
+
+   Both are taskpilot service-kind agents — spawned once, supervised forever. Same shape as the bundle's other service agents (email-triage, dispatcher).
+
+   **a. Spawn vault-keeper.** Use an available agent-spawning tool to create a `kind=service` task with these parameters:
+   - **name**: `vault-keeper`
+   - **model**: `sonnet`
+   - **description**: a short brief that tells the agent to read its detailed operating instructions from `${CLAUDE_PLUGIN_ROOT}/vault_keeper/agent/CLAUDE.md` and follow them. The agent registers itself in the session mesh as `vault-keeper` and idles waiting for channel messages.
+
+   After spawn, confirm registration by listing the mesh (intent: "show sessions in the mesh") and verify `vault-keeper` is present with a channel port.
+
+   **b. Spawn vault-query.** Same shape, but pointed at `${CLAUDE_PLUGIN_ROOT}/vault_query/agent/CLAUDE.md`:
+   - **name**: `vault-query`
+   - **model**: `sonnet`
+   - **description**: read instructions from that path. Read-only against the vault. Registers as `vault-query`.
+
+   **c. Register the vault-keeper scheduler as a managed daemon.** The agent only reacts to channel messages; something has to fire those messages on a schedule. `${CLAUDE_PLUGIN_ROOT}/vault_keeper/scheduler.py` is a small wrapper that loops `keeper.py` every `VAULT_KEEPER_INTERVAL_S` seconds (default 3600). Register it with the daemon capability:
+
+   - **name**: `vault-keeper-scheduler`
+   - **command**: `python3`
+   - **args**: `["${CLAUDE_PLUGIN_ROOT}/vault_keeper/scheduler.py"]`
+   - **cwd**: `${CLAUDE_PLUGIN_ROOT}/vault_keeper`
+   - **env**: `VAULT_KEEPER_INTERVAL_S` (optional; pin if 1h is wrong)
+
+   Use the daemon capability's autostart setup so the scheduler survives reboots — same pattern step 7 used for the dashboard.
+
+   **d. Smoke test the capture loop.** Fire one job manually so the operator sees it work end-to-end:
+   - Use `vault_keeper/keeper.py --dry-run --since <now-minus-15min>` to confirm the trigger sees Claude Code transcripts and would dispatch
+   - Drop `--dry-run` to send a real job; verify by listing the vault git log a moment later for a `vault-keeper:` commit
+   - Run one query via `vault_query/query.py --question "<a question about content the agent just captured>" --vault-path <vault_path> --wait` and confirm a cited response comes back
+
+   If any step fails: log the failure with the literal probe output (which tool, which exit code, which channel response), do not proceed silently. The next step depends on this loop working.
+
+9. **Smoke test the dispatcher event loop.** Fire a synthetic event at the dispatcher and confirm: dispatcher routes it, mindframe.spawn mints a frame (`~/.mindframe/frames/<id>/meta.json` + seed block), taskpilot launches the agent, the agent writes blocks via the mindframe MCP, and the dashboard SSE stream renders them in the operator's browser.
 
    The plugin ships `recipes/mindframe-poc/` — a working demo recipe that surveys local infrastructure. `make install-recipes` copies it into `~/.dispatcher/recipes/`. Use it as the first thing to fire if no operator-authored recipe exists yet.
 
