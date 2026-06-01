@@ -1038,6 +1038,29 @@ def vault_graph(name: str, limit: int = 500) -> Response:
         return JSONResponse({"error": f"vault path does not exist: {path}"},
                             status_code=404)
 
+    # Load the vault's schema so we can build edges from frontmatter
+    # foreign_keys. Relationships live in frontmatter (owner:, sponsor:,
+    # service: …); body [[wikilinks]] are only one of two edge sources, and
+    # the writer stores most relationships as FKs. dir_to_type maps each
+    # entity's on-disk directory -> its schema type; fk_by_type maps a type
+    # -> {field: target_type}.
+    dir_to_type: dict[str, str] = {}
+    fk_by_type: dict[str, dict] = {}
+    try:
+        import yaml as _yaml
+        schema_path = path / "schema.yaml"
+        if schema_path.is_file():
+            _schema = _yaml.safe_load(schema_path.read_text(errors="ignore")) or {}
+            for tname, tdef in (_schema.get("entities") or {}).items():
+                if not isinstance(tdef, dict):
+                    continue
+                dir_to_type[tdef.get("directory") or tname] = tname
+                fks = tdef.get("foreign_keys") or {}
+                if isinstance(fks, dict):
+                    fk_by_type[tname] = fks
+    except Exception:
+        pass  # no schema / unparseable -> fall back to body-wikilink edges only
+
     # Walk all .md files under top-level type dirs (skip dotfiles + .git)
     raw_nodes = []
     for type_dir in path.iterdir():
@@ -1060,14 +1083,30 @@ def vault_graph(name: str, limit: int = 500) -> Response:
                 "body": body,
             })
 
-    # Parse frontmatter title (best-effort) for nicer labels
+    # Parse frontmatter (best-effort) for nicer labels + FK edges
     import re
+    try:
+        import yaml as _yaml
+    except Exception:
+        _yaml = None
+    fm_block_re = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
     fm_title_re = re.compile(r"^title:\s*(.+)$", re.MULTILINE)
     for n in raw_nodes:
+        n["fm"] = {}
+        mb = fm_block_re.match(n["body"])
+        if mb and _yaml is not None:
+            try:
+                parsed = _yaml.safe_load(mb.group(1))
+                if isinstance(parsed, dict):
+                    n["fm"] = parsed
+            except Exception:
+                n["fm"] = {}
         head = n["body"][:1024]
         m = fm_title_re.search(head)
         if m:
             n["title"] = m.group(1).strip().strip("\"'")
+        elif n["fm"].get("display_name"):
+            n["title"] = str(n["fm"]["display_name"])
 
     # Cap by mtime if over limit
     raw_nodes.sort(key=lambda n: n["mtime"], reverse=True)
@@ -1105,6 +1144,36 @@ def vault_graph(name: str, limit: int = 500) -> Response:
                 targets_seen.add(resolved)
             elif not resolved:
                 dangling_per_node.setdefault(n["id"], []).append(target_raw)
+
+    # FK edges from frontmatter foreign_keys. The writer stores most
+    # relationships here (owner -> person, service -> service, …) rather than
+    # as body wikilinks, so these are the bulk of a vault's real structure.
+    edge_keys = {(e["source"], e["target"]) for e in edges}
+    for n in raw_nodes:
+        etype = dir_to_type.get(n["type"])
+        if not etype:
+            continue
+        fm = n.get("fm") or {}
+        for field in (fk_by_type.get(etype) or {}):
+            val = fm.get(field)
+            if val is None:
+                continue
+            for v in (val if isinstance(val, list) else [val]):
+                vs = str(v).strip() if v is not None else ""
+                if not vs or vs == "~":
+                    continue
+                resolved = None
+                for c in (vs, vs.split("/")[-1]):
+                    if c.lower() in stem_index:
+                        resolved = stem_index[c.lower()]
+                        break
+                if not resolved or resolved == n["id"]:
+                    continue
+                key = (n["id"], resolved)
+                if key in edge_keys:
+                    continue
+                edge_keys.add(key)
+                edges.append({"source": n["id"], "target": resolved, "kind": "fk", "field": field})
 
     # Build payload — strip body before sending (kept in raw_nodes only for parse)
     nodes = []

@@ -58,6 +58,7 @@ entities:
       repository: repository
       owners: team           # list FK
       runbook: runbook       # list FK
+      owner: person          # accountable person (graph hub edge)
 
   repository:
     layer: thing
@@ -70,6 +71,7 @@ entities:
       - {name: language, type: string}
     foreign_keys:
       service: service       # list FK — a repo may host multiple services
+      owner: person          # accountable person (graph hub edge)
 
   runbook:
     layer: knowledge

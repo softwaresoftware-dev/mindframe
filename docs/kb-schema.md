@@ -77,6 +77,8 @@ Layer-wide targets exist because some relationships are inherently polymorphic â
 
 Self-referential FKs are allowed (`manager: person`) but must not form cycles.
 
+**The `owner` convention.** Most Thing and Knowledge entities carry an `owner: person` FK naming the person accountable for the entry. This is what makes the knowledge graph a connected hub-and-spoke rather than a dust cloud of orphan notes â€” every repo, product, service, decision, convention, and glossary term links back to a person, and in a single-operator deployment that person is the gravitational center of the graph (the dashboard's first-run view seeds on exactly this node). Writers must fill `owner` whenever the type defines it; an entity with no resolvable FK is an orphan. The graph builds edges from frontmatter FKs *and* body `[[wikilinks]]`, so a relationship asserted either way connects.
+
 ---
 
 ## The schema manifest
@@ -229,6 +231,7 @@ name: checkout
 description: "End-to-end purchase flow"
 status: ga                              # proposed | beta | ga | deprecated
 owner_team: payments-team               # FK -> Team
+owner: alice-okafor                     # FK -> Person (accountable owner)
 ---
 ```
 
@@ -246,6 +249,7 @@ title: Use Postgres for the orders table
 date: 2026-03-15
 status: accepted                        # proposed | accepted | superseded | deprecated
 deciders: [alice-okafor, dave-mensah]   # FK -> Person
+owner: alice-okafor                     # FK -> Person (accountable owner)
 supersedes: ~                           # FK -> Decision
 superseded_by: ~                        # FK -> Decision
 ---
@@ -286,6 +290,7 @@ title: PR Review Policy
 applies_to: [code]                      # domain-defined scope tags
 enforcement: required                   # required | recommended | suggested
 owner_team: platform-team               # FK -> Team
+owner: alice-okafor                     # FK -> Person (accountable owner)
 last_reviewed: 2026-04-28
 ---
 ```

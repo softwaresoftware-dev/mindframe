@@ -74,10 +74,12 @@ Re-read schema + catalog before every batch of writes if you're writing multiple
      - `date-prefix-slug`: `<TypeCapitalized>/YYYY-MM-DD-<kebab-name>.md`
      - `single-file`: append to `<TypeCapitalized>.md` (one file, not a dir)
    - **Frontmatter** MUST include the type plus every field in the schema's `required` list. May include `optional` fields when you have them.
-   - **FK fields** (`references` in the schema) must reference entities that exist in CATALOG. If a needed FK target doesn't exist:
+   - **FK fields** (the type's `foreign_keys` in the schema) must reference entities that exist in CATALOG. If a needed FK target doesn't exist:
      - If the transcript has enough info to create the target entity: write IT first, then the entry that references it
      - Otherwise: omit the reference rather than create a dangling FK
+   - **Fill every FK you can resolve — empty FKs are the #1 cause of a disconnected graph.** In particular, set `owner` (the person accountable for the entry) whenever the type defines it. When the deployment has a single authoritative operator (their Person note says so), `owner` is that person unless the transcript names someone else. A note with no resolvable FK is an orphan node — avoid leaving one when a real relationship exists.
    - **Body**: markdown prose. Lead with the substantive fact or decision. Use the persona's specific names from the transcript, not generic placeholders.
+   - **Link relationships in the body too.** For every other entity this note relates to — its FK targets, plus anything it mentions that has (or should have) its own note — write a `[[wikilink]]` to it in the prose (e.g. "owned by [[thatcher]], deploys [[payments-api]]"). The graph draws edges from both frontmatter FKs and body wikilinks, and wikilinks make the note navigable. Prefer the target's exact filename stem inside the brackets.
 
 5. **Filename collision**: if your chosen filename already exists in the vault, suffix with `-2`, `-3` etc. until unique. CATALOG entries get the same suffix.
 
