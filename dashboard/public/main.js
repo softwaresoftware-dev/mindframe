@@ -533,6 +533,36 @@ function openShareDialog(vaultName) {
   });
 }
 
+// Type → color palette for graph nodes. Stable per type so the same kind
+// of entity always looks the same across vaults.
+const TYPE_COLORS = [
+  "#ffb86c", "#6fb1ff", "#c792ea", "#90ee90", "#ff79c6",
+  "#8be9fd", "#f1fa8c", "#ff6e6e", "#bd93f9", "#50fa7b",
+];
+function colorForType(type, allTypes) {
+  const idx = allTypes.indexOf(type);
+  return TYPE_COLORS[(idx >= 0 ? idx : 0) % TYPE_COLORS.length];
+}
+
+// Lazy-load vis-network from CDN once; cache the promise.
+let _visLoaderPromise = null;
+function loadVisNetwork() {
+  if (_visLoaderPromise) return _visLoaderPromise;
+  _visLoaderPromise = new Promise((resolve, reject) => {
+    if (window.vis && window.vis.Network) return resolve(window.vis);
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "https://unpkg.com/vis-network/styles/vis-network.css";
+    document.head.appendChild(css);
+    const s = document.createElement("script");
+    s.src = "https://unpkg.com/vis-network/standalone/umd/vis-network.min.js";
+    s.onload = () => resolve(window.vis);
+    s.onerror = () => reject(new Error("failed to load vis-network from CDN"));
+    document.head.appendChild(s);
+  });
+  return _visLoaderPromise;
+}
+
 async function openBrowseDialog(vaultName) {
   const existing = document.getElementById("browse-dialog");
   if (existing) existing.remove();
@@ -540,41 +570,133 @@ async function openBrowseDialog(vaultName) {
   dialog.id = "browse-dialog";
   dialog.className = "modal-overlay";
   dialog.innerHTML = `
-    <div class="modal modal-wide">
-      <h3 class="modal-title">Recent entries: ${escapeHtml(vaultName)}</h3>
-      <div id="browse-content" class="browse-content"><div class="loading">loading…</div></div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-default" id="browse-close">close</button>
+    <div class="modal modal-graph">
+      <div class="modal-graph-header">
+        <h3 class="modal-title">Vault graph: ${escapeHtml(vaultName)}</h3>
+        <div class="modal-graph-meta" id="graph-meta">loading…</div>
+        <button type="button" class="btn btn-default btn-sm" id="browse-close">close</button>
       </div>
+      <div id="graph-legend" class="graph-legend"></div>
+      <div id="graph-canvas" class="graph-canvas"></div>
+      <div id="graph-detail" class="graph-detail">click a node to see details</div>
     </div>
   `;
   document.body.appendChild(dialog);
   dialog.querySelector("#browse-close").addEventListener("click", () => dialog.remove());
-  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
+  // ESC to close
+  const escHandler = (e) => { if (e.key === "Escape") { dialog.remove(); document.removeEventListener("keydown", escHandler); }};
+  document.addEventListener("keydown", escHandler);
+
   try {
-    const r = await fetch(`/api/vaults/${encodeURIComponent(vaultName)}/entries?limit=30`);
-    const j = await r.json();
-    const entries = j.entries || [];
-    const content = dialog.querySelector("#browse-content");
-    if (!entries.length) {
-      content.innerHTML = `<p class="empty">no entries yet. vault-keeper writes here on its next tick.</p>`;
+    const [g, vis] = await Promise.all([
+      fetch(`/api/vaults/${encodeURIComponent(vaultName)}/graph`).then(r => r.json()),
+      loadVisNetwork(),
+    ]);
+
+    if (g.error) {
+      dialog.querySelector("#graph-canvas").innerHTML =
+        `<p class="empty">graph error: ${escapeHtml(g.error)}</p>`;
       return;
     }
-    content.innerHTML = `
-      <p class="browse-meta">${j.total} total entries · showing latest ${entries.length}</p>
-      <ul class="browse-list">
-        ${entries.map(e => `
-          <li class="browse-entry">
-            <span class="browse-type">${escapeHtml(e.type)}</span>
-            <span class="browse-title">${escapeHtml(e.title)}</span>
-            <span class="browse-touched">${relativeTime(new Date(e.modified_at).getTime())}</span>
-          </li>
-        `).join("")}
-      </ul>
-    `;
+
+    const allTypes = (g.types || []).map(([t]) => t);
+    $("graph-meta").textContent =
+      `${g.node_count} nodes · ${g.edge_count} edges${g.truncated ? " (truncated)" : ""}`;
+
+    // Legend
+    const legend = $("graph-legend");
+    legend.innerHTML = allTypes.map(t => {
+      const count = (g.types.find(([type]) => type === t) || [])[1] || 0;
+      return `<span class="graph-legend-item">
+        <span class="graph-legend-swatch" style="background:${colorForType(t, allTypes)}"></span>
+        ${escapeHtml(t)} (${count})
+      </span>`;
+    }).join("");
+
+    if (!g.nodes.length) {
+      $("graph-canvas").innerHTML =
+        `<p class="empty">vault is empty. vault-keeper writes here on its next tick.</p>`;
+      return;
+    }
+
+    const nodes = new vis.DataSet(g.nodes.map(n => ({
+      id: n.id,
+      label: n.label,
+      group: n.type,
+      color: colorForType(n.type, allTypes),
+      title: `${n.type} · ${n.label}${n.dangling_count ? ` · ${n.dangling_count} dangling` : ""}`,
+      font: { color: "#e8e8e8", size: 11, face: "JetBrains Mono, monospace" },
+      borderWidth: 1.5,
+      _meta: n,
+    })));
+    const edges = new vis.DataSet(g.edges.map((e, i) => ({
+      id: `e${i}`,
+      from: e.source, to: e.target,
+      color: { color: "rgba(232,232,232,0.18)", highlight: "#ffb86c" },
+      width: 0.8,
+      smooth: { type: "continuous" },
+      arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+    })));
+
+    const network = new vis.Network($("graph-canvas"), { nodes, edges }, {
+      nodes: { shape: "dot", size: 10 },
+      edges: { selectionWidth: 2 },
+      interaction: { hover: true, dragNodes: true, zoomView: true, navigationButtons: false },
+      physics: {
+        solver: "forceAtlas2Based",
+        forceAtlas2Based: { gravitationalConstant: -80, centralGravity: 0.005, springLength: 80, springConstant: 0.18, avoidOverlap: 0.6 },
+        stabilization: { iterations: 200, fit: true },
+      },
+    });
+
+    network.on("click", (params) => {
+      if (params.nodes.length === 0) {
+        $("graph-detail").innerHTML = "click a node to see details";
+        return;
+      }
+      const nodeId = params.nodes[0];
+      const node = g.nodes.find(n => n.id === nodeId);
+      if (!node) return;
+      const inboundEdges = g.edges.filter(e => e.target === nodeId);
+      const outboundEdges = g.edges.filter(e => e.source === nodeId);
+      $("graph-detail").innerHTML = `
+        <div class="graph-detail-header">
+          <span class="browse-type">${escapeHtml(node.type)}</span>
+          <strong>${escapeHtml(node.label)}</strong>
+        </div>
+        <div class="graph-detail-meta">
+          <span>id: <code>${escapeHtml(node.id)}</code></span>
+          <span>→ ${outboundEdges.length} outbound</span>
+          <span>← ${inboundEdges.length} inbound</span>
+          ${node.dangling_count ? `<span class="graph-dangling">${node.dangling_count} dangling links</span>` : ""}
+        </div>
+        ${outboundEdges.length ? `
+          <div class="graph-detail-section">
+            <p class="graph-detail-label">links to:</p>
+            <ul class="graph-detail-list">
+              ${outboundEdges.slice(0, 10).map(e => `<li>→ ${escapeHtml(e.target)}</li>`).join("")}
+              ${outboundEdges.length > 10 ? `<li>… ${outboundEdges.length - 10} more</li>` : ""}
+            </ul>
+          </div>
+        ` : ""}
+        ${inboundEdges.length ? `
+          <div class="graph-detail-section">
+            <p class="graph-detail-label">linked from:</p>
+            <ul class="graph-detail-list">
+              ${inboundEdges.slice(0, 10).map(e => `<li>← ${escapeHtml(e.source)}</li>`).join("")}
+              ${inboundEdges.length > 10 ? `<li>… ${inboundEdges.length - 10} more</li>` : ""}
+            </ul>
+          </div>
+        ` : ""}
+      `;
+    });
+
+    network.on("stabilizationIterationsDone", () => {
+      network.setOptions({ physics: { enabled: false } });
+    });
   } catch (e) {
-    dialog.querySelector("#browse-content").innerHTML =
-      `<p class="empty">browse error: ${escapeHtml(String(e))}</p>`;
+    dialog.querySelector("#graph-canvas").innerHTML =
+      `<p class="empty">graph error: ${escapeHtml(String(e))}</p>`;
   }
 }
 

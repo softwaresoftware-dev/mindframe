@@ -62,14 +62,39 @@ FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".m
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
 
-# Vault path is provided by the mindframe plugin's userConfig.
-VAULT_PATH = Path(
-    os.environ.get("CLAUDE_PLUGIN_OPTION_VAULT_PATH")
-    or os.environ.get("MINDFRAME_VAULT_PATH", "")
-).expanduser() if (
-    os.environ.get("CLAUDE_PLUGIN_OPTION_VAULT_PATH")
-    or os.environ.get("MINDFRAME_VAULT_PATH")
-) else None
+# Vault path resolution — same priority order the rest of the bundle uses:
+#   1. CLAUDE_PLUGIN_OPTION_VAULT_PATH env var (set by Claude Code when plugin
+#      runs inside a session; absent when dashboard runs as a daemon)
+#   2. MINDFRAME_VAULT_PATH env var (operator override)
+#   3. The default vault from ~/.mindframe/vaults.yaml (which itself falls
+#      back to pluginConfigs.mindframe.options.vault_path in settings.json)
+def _resolve_default_vault_path() -> Path | None:
+    env_val = (os.environ.get("CLAUDE_PLUGIN_OPTION_VAULT_PATH")
+               or os.environ.get("MINDFRAME_VAULT_PATH"))
+    if env_val:
+        return Path(env_val).expanduser()
+    # Try vaults.yaml (handles single-vault legacy via settings.json too).
+    try:
+        import importlib.util as _ilu
+        plugin_root = Path(__file__).resolve().parent.parent.parent
+        spec = _ilu.spec_from_file_location(
+            "_vy_default", plugin_root / "lib" / "vaults_yaml.py")
+        if spec is None or spec.loader is None:
+            return None
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        name = mod.default_vault_name()
+        if not name:
+            return None
+        v = mod.get_vault(name)
+        if not v or not v.get("path"):
+            return None
+        return Path(v["path"]).expanduser()
+    except Exception:
+        return None
+
+
+VAULT_PATH = _resolve_default_vault_path()
 
 # lib.frame lives one level above the dashboard, in the plugin root.
 sys.path.insert(0, str(ROOT.parent))
@@ -987,6 +1012,125 @@ def vault_entries(name: str, limit: int = 50) -> Response:
     entries.sort(key=lambda e: e["modified_at"], reverse=True)
     return JSONResponse({"vault": name, "entries": entries[:limit],
                          "total": len(entries)})
+
+
+@app.get("/api/vaults/{name}/graph")
+def vault_graph(name: str, limit: int = 500) -> Response:
+    """Return a node-link graph of the vault.
+
+    Nodes: one per .md entry. Each carries id (relative path), label
+    (frontmatter title or stem), type (parent dir), mtime, slug.
+    Edges: one per [[wikilink]] in entry body. Resolves wikilinks to
+    existing entries by exact stem match (case-insensitive). Unresolved
+    wikilinks become dangling-edge hints attached to the source node.
+
+    Cap at `limit` nodes (default 500) so a 10k-entry vault doesn't
+    explode the payload. Sampled by mtime (newest first) on overflow.
+    """
+    vyl = _load_mindframe_lib("vaults_yaml")
+    if vyl is None:
+        return JSONResponse({"error": "vaults_yaml lib not found"}, status_code=500)
+    v = vyl.get_vault(name)
+    if not v:
+        return JSONResponse({"error": f"vault '{name}' not found"}, status_code=404)
+    path = Path(v.get("path", "")).expanduser()
+    if not path.is_dir():
+        return JSONResponse({"error": f"vault path does not exist: {path}"},
+                            status_code=404)
+
+    # Walk all .md files under top-level type dirs (skip dotfiles + .git)
+    raw_nodes = []
+    for type_dir in path.iterdir():
+        if not (type_dir.is_dir() and not type_dir.name.startswith(("." , "_"))):
+            continue
+        for md in type_dir.glob("*.md"):
+            try:
+                st = md.stat()
+                body = md.read_text(errors="ignore")
+            except OSError:
+                continue
+            raw_nodes.append({
+                "id": f"{type_dir.name}/{md.stem}",
+                "stem": md.stem,
+                "type": type_dir.name,
+                "label": md.stem,
+                "title": md.stem,
+                "mtime": st.st_mtime,
+                "size": st.st_size,
+                "body": body,
+            })
+
+    # Parse frontmatter title (best-effort) for nicer labels
+    import re
+    fm_title_re = re.compile(r"^title:\s*(.+)$", re.MULTILINE)
+    for n in raw_nodes:
+        head = n["body"][:1024]
+        m = fm_title_re.search(head)
+        if m:
+            n["title"] = m.group(1).strip().strip("\"'")
+
+    # Cap by mtime if over limit
+    raw_nodes.sort(key=lambda n: n["mtime"], reverse=True)
+    truncated = len(raw_nodes) > limit
+    if truncated:
+        raw_nodes = raw_nodes[:limit]
+
+    # Build stem -> id map for wikilink resolution (case-insensitive)
+    stem_index: dict[str, str] = {}
+    for n in raw_nodes:
+        # Both bare stem and full-path forms commonly appear in wikilinks
+        stem_index[n["stem"].lower()] = n["id"]
+        stem_index[n["id"].lower()] = n["id"]
+
+    # Wikilink scan: [[target]] or [[target|display]] or [[path/target|display]]
+    wikilink_re = re.compile(r"\[\[([^\]\|#]+)(?:#[^\]\|]*)?(?:\|[^\]]*)?\]\]")
+    edges = []
+    dangling_per_node: dict[str, list[str]] = {}
+    for n in raw_nodes:
+        targets_seen = set()
+        for m in wikilink_re.finditer(n["body"]):
+            target_raw = m.group(1).strip()
+            if not target_raw:
+                continue
+            # Try the exact form, then strip leading subdirs, then bare stem
+            candidates = [target_raw, target_raw.split("/")[-1]]
+            resolved = None
+            for c in candidates:
+                k = c.lower()
+                if k in stem_index:
+                    resolved = stem_index[k]
+                    break
+            if resolved and resolved != n["id"] and resolved not in targets_seen:
+                edges.append({"source": n["id"], "target": resolved})
+                targets_seen.add(resolved)
+            elif not resolved:
+                dangling_per_node.setdefault(n["id"], []).append(target_raw)
+
+    # Build payload — strip body before sending (kept in raw_nodes only for parse)
+    nodes = []
+    for n in raw_nodes:
+        dangling = dangling_per_node.get(n["id"], [])
+        nodes.append({
+            "id": n["id"], "label": n["title"], "type": n["type"],
+            "mtime": int(n["mtime"]),
+            "dangling_links": dangling[:5],  # cap per-node for payload size
+            "dangling_count": len(dangling),
+        })
+
+    # Count distinct types for legend
+    type_counts: dict[str, int] = {}
+    for n in nodes:
+        type_counts[n["type"]] = type_counts.get(n["type"], 0) + 1
+
+    return JSONResponse({
+        "vault": name,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "truncated": truncated,
+        "types": sorted(type_counts.items(), key=lambda x: -x[1]),
+        "nodes": nodes,
+        "edges": edges,
+    })
 
 
 class VaultShareBody(BaseModel):
