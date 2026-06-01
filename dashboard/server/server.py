@@ -1037,13 +1037,24 @@ def vault_graph(name: str, limit: int = 500) -> Response:
     if not path.is_dir():
         return JSONResponse({"error": f"vault path does not exist: {path}"},
                             status_code=404)
+    return JSONResponse(build_vault_graph(path, name, limit))
 
+
+def build_vault_graph(path: Path, name: str, limit: int = 500) -> dict:
+    """Pure graph builder: walk a vault dir, return its node-link payload.
+
+    Edges come from TWO sources, both resolved against existing nodes:
+      1. body [[wikilinks]] in each note
+      2. frontmatter foreign_keys (per the vault's schema.yaml) — this is
+         where the writer stores most relationships (owner -> person, …),
+         so without it the graph renders as disconnected orphan nodes.
+
+    Kept import-pure (no FastAPI / vault lookup) so it can be unit-tested
+    against a tmp vault.
+    """
     # Load the vault's schema so we can build edges from frontmatter
-    # foreign_keys. Relationships live in frontmatter (owner:, sponsor:,
-    # service: …); body [[wikilinks]] are only one of two edge sources, and
-    # the writer stores most relationships as FKs. dir_to_type maps each
-    # entity's on-disk directory -> its schema type; fk_by_type maps a type
-    # -> {field: target_type}.
+    # foreign_keys. dir_to_type maps each entity's on-disk directory -> its
+    # schema type; fk_by_type maps a type -> {field: target_type}.
     dir_to_type: dict[str, str] = {}
     fk_by_type: dict[str, dict] = {}
     try:
@@ -1191,7 +1202,7 @@ def vault_graph(name: str, limit: int = 500) -> Response:
     for n in nodes:
         type_counts[n["type"]] = type_counts.get(n["type"], 0) + 1
 
-    return JSONResponse({
+    return {
         "vault": name,
         "node_count": len(nodes),
         "edge_count": len(edges),
@@ -1199,7 +1210,7 @@ def vault_graph(name: str, limit: int = 500) -> Response:
         "types": sorted(type_counts.items(), key=lambda x: -x[1]),
         "nodes": nodes,
         "edges": edges,
-    })
+    }
 
 
 class VaultShareBody(BaseModel):

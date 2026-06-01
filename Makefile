@@ -3,9 +3,9 @@
 # Default: unit tests + Tier 1 wire tests. CI-safe; no real Claude tokens.
 test: test-unit test-e2e-wire
 
-# Plain unit tests — lib + mcp.
+# Plain unit tests — lib + mcp + dashboard graph builder.
 test-unit:
-	python3 -m pytest lib/tests/ mcp/tests/ -v
+	python3 -m pytest lib/tests/ mcp/tests/ dashboard/tests/ -v
 
 # Tier 1 — wire integration tests. Spawns a real dispatcher + dashboard
 # pair on OS-assigned ports against tmpdir state; stub spawner stands in
