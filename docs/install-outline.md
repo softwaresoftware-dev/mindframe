@@ -389,11 +389,13 @@ Mindframe (v0.6+) ships two long-running agents that close the loop between the 
 - **vault-keeper** — write side. Scans Claude Code session transcripts on a schedule, extracts substantive work, writes schema-valid vault entries with FK references. Honors the freshness contract (git pull, read schema fresh, read catalog fresh) on every write.
 - **vault-query** — read side. Receives questions, walks the catalog, reads relevant entries, composes wikilink-cited answers. Refuses to substitute training knowledge for vault content.
 
-Same shape as the bundle's other service agents (email-triage, dispatcher).
+Same shape as the bundle's other service agents (email-triage, dispatcher). (install.txt ships a third agent here too — `vault-sharing` — for GitHub-backed vault sharing; treat it the same way.)
 
-**9.5.1 — Spawn vault-keeper** as a taskpilot service-kind task, pointed at `${CLAUDE_PLUGIN_ROOT}/vault_keeper/agent/CLAUDE.md` for its operating instructions. Registers in the mesh as `vault-keeper`. Same shape as email-triage.
+**Idempotency — create-or-respawn.** taskpilot's `create_task` is strict: it errors if a task by that name already exists (leftover from a prior install or a partial teardown). For each agent, first list existing tasks; if one with the target name exists, `respawn_task` it (respawn works on any non-running status — completed, crashed, killed, pending — reusing the original config); if it's already `running`, leave it. Only `create_task` + `spawn_task` when no task with that name exists. This is what keeps a re-install from dead-ending at "Task 'vault-keeper' already exists".
 
-**9.5.2 — Spawn vault-query** the same way, pointed at `${CLAUDE_PLUGIN_ROOT}/vault_query/agent/CLAUDE.md`. Read-only. Registers as `vault-query`.
+**9.5.1 — Spawn vault-keeper** (create-or-respawn) as a taskpilot service-kind task, pointed at `${CLAUDE_PLUGIN_ROOT}/vault_keeper/agent/CLAUDE.md` for its operating instructions. Registers in the mesh as `vault-keeper`. Same shape as email-triage.
+
+**9.5.2 — Spawn vault-query** (create-or-respawn) the same way, pointed at `${CLAUDE_PLUGIN_ROOT}/vault_query/agent/CLAUDE.md`. Read-only. Registers as `vault-query`.
 
 **9.5.3 — Register the scheduler as a managed daemon.** `vault_keeper/scheduler.py` is a small wrapper that loops `keeper.py` + sleeps. Register it with the daemon capability the same way PHASE 9 registered the dashboard. Default tick is 1h (`VAULT_KEEPER_INTERVAL_S`); idle ticks are cheap because keeper.py exits in milliseconds when nothing's new.
 
