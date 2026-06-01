@@ -332,6 +332,253 @@ function appendBlock(block, stream) {
 
 // ----- Boards index view -----
 
+// ----- Vaults panel (v0.8.0) -----
+
+function vaultLastTouched(v) {
+  if (!v.last_commit?.committed_at) return "no commits yet";
+  return relativeTime(new Date(v.last_commit.committed_at).getTime());
+}
+
+async function refreshVaults() {
+  try {
+    const r = await fetch("/api/vaults");
+    const j = await r.json();
+    const vaults = j.vaults || [];
+    $("vault-count").textContent = vaults.length;
+    const list = $("vault-list");
+    if (!vaults.length) {
+      list.innerHTML = `<div class="empty"><p>No vaults configured yet.
+        Run <code>/mindframe:setup</code> to create one.</p></div>`;
+      return;
+    }
+    list.innerHTML = vaults.map(v => {
+      const typeCounts = Object.entries(v.entry_counts || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([t, n]) => `<span class="vault-type-chip">${escapeHtml(t)}: ${n}</span>`)
+        .join("");
+      const remoteBadge = v.remote
+        ? `<span class="vault-remote-badge" title="${escapeHtml(v.remote)}">⇄ shared</span>`
+        : `<span class="vault-remote-badge vault-remote-local">● local only</span>`;
+      const defaultBadge = v.is_default
+        ? `<span class="vault-default-badge">default</span>` : "";
+      return `
+        <div class="vault-tile" data-vault="${escapeHtml(v.name)}">
+          <div class="vault-tile-header">
+            <span class="vault-name">${escapeHtml(v.name)}</span>
+            ${defaultBadge}
+            ${remoteBadge}
+          </div>
+          <div class="vault-tile-meta">
+            <span class="vault-total">${v.total_entries} entries</span>
+            <span class="vault-touched">last touched ${vaultLastTouched(v)}</span>
+          </div>
+          <div class="vault-type-chips">${typeCounts || '<span class="vault-empty-note">empty</span>'}</div>
+          <div class="vault-tile-actions">
+            <button class="btn btn-sm btn-default vault-action-browse" type="button">browse</button>
+            <button class="btn btn-sm btn-default vault-action-share" type="button">share</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // Wire share buttons
+    list.querySelectorAll(".vault-action-share").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const tile = e.target.closest(".vault-tile");
+        openShareDialog(tile.dataset.vault);
+      });
+    });
+    list.querySelectorAll(".vault-action-browse").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const tile = e.target.closest(".vault-tile");
+        openBrowseDialog(tile.dataset.vault);
+      });
+    });
+  } catch (e) {
+    $("vault-list").innerHTML = `<div class="empty"><p>vault list error: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function refreshIncomingShares() {
+  try {
+    const r = await fetch("/api/shares/incoming");
+    const j = await r.json();
+    const invites = j.invitations || [];
+    const el = $("incoming-shares");
+    if (!invites.length) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.innerHTML = `
+      <p class="incoming-eyebrow">pending invitations (${invites.length})</p>
+      <div class="incoming-list">
+        ${invites.map(inv => `
+          <div class="incoming-tile ${inv.looks_like_vault ? '' : 'incoming-non-vault'}">
+            <div class="incoming-header">
+              <span class="incoming-repo">${escapeHtml(inv.repo)}</span>
+              ${inv.looks_like_vault ? '<span class="incoming-vault-badge">vault</span>' : '<span class="incoming-other-badge">non-vault repo</span>'}
+            </div>
+            <div class="incoming-meta">
+              from <strong>${escapeHtml(inv.inviter || '?')}</strong> ·
+              ${escapeHtml(inv.permissions || '?')} ·
+              ${inv.created_at ? relativeTime(new Date(inv.created_at).getTime()) : ''}
+            </div>
+            <div class="incoming-actions">
+              ${inv.looks_like_vault
+                ? `<button class="btn btn-sm btn-primary" data-invite-accept="${inv.id}">accept</button>`
+                : `<span class="incoming-note">not a mindframe vault — accept via GitHub if you want it</span>`}
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    el.querySelectorAll("[data-invite-accept]").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        const id = parseInt(e.target.dataset.inviteAccept, 10);
+        e.target.disabled = true;
+        e.target.textContent = "accepting…";
+        try {
+          const r = await fetch("/api/shares/accept", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ invitation_id: id }),
+          });
+          const j = await r.json();
+          if (r.ok) {
+            showToast(`accepted: ${j.vault_name} (${j.repo})`, "ok");
+            setTimeout(refreshIncomingShares, 8000);
+            setTimeout(refreshVaults, 8000);
+          } else {
+            showToast(`accept failed: ${j.error || r.statusText}`, "err");
+            e.target.disabled = false;
+            e.target.textContent = "accept";
+          }
+        } catch (err) {
+          showToast(`network error: ${err.message}`, "err");
+          e.target.disabled = false;
+          e.target.textContent = "accept";
+        }
+      });
+    });
+  } catch (e) {
+    /* silent — incoming is best-effort */
+  }
+}
+
+function openShareDialog(vaultName) {
+  const existing = document.getElementById("share-dialog");
+  if (existing) existing.remove();
+  const dialog = document.createElement("div");
+  dialog.id = "share-dialog";
+  dialog.className = "modal-overlay";
+  dialog.innerHTML = `
+    <div class="modal">
+      <h3 class="modal-title">Share vault: ${escapeHtml(vaultName)}</h3>
+      <form id="share-form" class="modal-form">
+        <label class="modal-label">Recipient (email or GitHub username)</label>
+        <input name="recipient" type="text" required class="modal-input" placeholder="e.g. friend@team.com or githubuser" autofocus>
+        <label class="modal-label">Permission</label>
+        <select name="permission" class="modal-input">
+          <option value="push">read + write</option>
+          <option value="pull">read-only</option>
+          <option value="admin">admin</option>
+        </select>
+        <label class="modal-label">GitHub owner (optional — defaults to your gh user)</label>
+        <input name="owner" type="text" class="modal-input" placeholder="leave blank for default">
+        <div class="modal-actions">
+          <button type="button" class="btn btn-default" id="share-cancel">cancel</button>
+          <button type="submit" class="btn btn-primary" id="share-submit">share</button>
+        </div>
+        <p class="modal-hint">Creates a private GitHub repo under the owner, pushes the vault contents, and sends the recipient a collaborator invite. They never see git/ssh — agent handles it.</p>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  dialog.querySelector("#share-cancel").addEventListener("click", () => dialog.remove());
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
+  dialog.querySelector("#share-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const body = {
+      recipient: form.recipient.value.trim(),
+      permission: form.permission.value,
+    };
+    if (form.owner.value.trim()) body.owner = form.owner.value.trim();
+    const submitBtn = form.querySelector("#share-submit");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "queuing…";
+    try {
+      const r = await fetch(`/api/vaults/${encodeURIComponent(vaultName)}/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (r.ok) {
+        showToast(`share queued → ${j.repo}; waiting on agent`, "ok");
+        dialog.remove();
+        setTimeout(refreshVaults, 12000);  // agent typically takes ~10s
+      } else {
+        showToast(`share failed: ${j.error || r.statusText}`, "err");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "share";
+      }
+    } catch (err) {
+      showToast(`network error: ${err.message}`, "err");
+      submitBtn.disabled = false;
+      submitBtn.textContent = "share";
+    }
+  });
+}
+
+async function openBrowseDialog(vaultName) {
+  const existing = document.getElementById("browse-dialog");
+  if (existing) existing.remove();
+  const dialog = document.createElement("div");
+  dialog.id = "browse-dialog";
+  dialog.className = "modal-overlay";
+  dialog.innerHTML = `
+    <div class="modal modal-wide">
+      <h3 class="modal-title">Recent entries: ${escapeHtml(vaultName)}</h3>
+      <div id="browse-content" class="browse-content"><div class="loading">loading…</div></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-default" id="browse-close">close</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  dialog.querySelector("#browse-close").addEventListener("click", () => dialog.remove());
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
+  try {
+    const r = await fetch(`/api/vaults/${encodeURIComponent(vaultName)}/entries?limit=30`);
+    const j = await r.json();
+    const entries = j.entries || [];
+    const content = dialog.querySelector("#browse-content");
+    if (!entries.length) {
+      content.innerHTML = `<p class="empty">no entries yet. vault-keeper writes here on its next tick.</p>`;
+      return;
+    }
+    content.innerHTML = `
+      <p class="browse-meta">${j.total} total entries · showing latest ${entries.length}</p>
+      <ul class="browse-list">
+        ${entries.map(e => `
+          <li class="browse-entry">
+            <span class="browse-type">${escapeHtml(e.type)}</span>
+            <span class="browse-title">${escapeHtml(e.title)}</span>
+            <span class="browse-touched">${relativeTime(new Date(e.modified_at).getTime())}</span>
+          </li>
+        `).join("")}
+      </ul>
+    `;
+  } catch (e) {
+    dialog.querySelector("#browse-content").innerHTML =
+      `<p class="empty">browse error: ${escapeHtml(String(e))}</p>`;
+  }
+}
+
+
 async function submitPrompt(text) {
   text = (text || "").trim();
   if (!text) {
@@ -388,6 +635,17 @@ async function renderBoardsIndex() {
         </div>
       </section>
 
+      <section class="vaults-section">
+        <div class="index-header">
+          <h2>Your vaults</h2>
+          <span id="vault-count" class="count">…</span>
+        </div>
+        <div id="vault-list" class="vault-list">
+          <div class="loading">loading vaults…</div>
+        </div>
+        <div id="incoming-shares" class="incoming-shares" hidden></div>
+      </section>
+
       <section class="frame-section">
         <div class="index-header">
           <h2>Your mindframes</h2>
@@ -399,6 +657,9 @@ async function renderBoardsIndex() {
       </section>
     </div>
   `;
+
+  refreshVaults();
+  refreshIncomingShares();
 
   const form = $("chat-form");
   const input = $("chat-input");

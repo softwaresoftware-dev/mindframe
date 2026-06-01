@@ -827,6 +827,347 @@ def serve_artifact(sid: str, path: str) -> Response:
     return PlainTextResponse("not found", status_code=404)
 
 
+# --------------------------- vaults panel (v0.8.0) ---------------------------
+#
+# Surfaces the multi-vault catalog (~/.mindframe/vaults.yaml) to the UI:
+# list vaults, browse recent entries, share via vault-sharing agent, see
+# inbound GitHub invites, accept. All operations route through the existing
+# vault-sharing taskpilot agent (which uses gh CLI under the hood) — the
+# dashboard server is a thin proxy.
+
+import importlib.util
+import subprocess
+from datetime import datetime, timezone
+
+
+def _load_mindframe_lib(module_name: str):
+    """Import a module from the bundle's lib/ at runtime.
+
+    The dashboard server doesn't sit inside the mindframe Python package
+    namespace, but the bundle ships ${CLAUDE_PLUGIN_ROOT}/lib/*.py. We
+    locate the lib relative to this file (dashboard/server/server.py →
+    plugin root → lib/<name>.py).
+    """
+    plugin_root = Path(__file__).resolve().parent.parent.parent
+    lib_path = plugin_root / "lib" / f"{module_name}.py"
+    if not lib_path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location(
+        f"_mf_lib_{module_name}", lib_path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _count_entries_per_type(vault_path: Path) -> dict[str, int]:
+    """Count *.md files per top-level entity-type directory."""
+    out: dict[str, int] = {}
+    if not vault_path.is_dir():
+        return out
+    for child in vault_path.iterdir():
+        if child.is_dir() and not child.name.startswith(("."  , "_")):
+            md_count = len(list(child.glob("*.md")))
+            if md_count > 0:
+                out[child.name] = md_count
+    return out
+
+
+def _vault_last_commit(vault_path: Path) -> dict | None:
+    """Latest git commit metadata, or None if not a repo."""
+    if not (vault_path / ".git").exists():
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(vault_path), "log", "-1",
+             "--format=%H%n%cI%n%s%n%an"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        parts = r.stdout.strip().split("\n", 3)
+        if len(parts) < 4:
+            return None
+        return {"sha": parts[0][:8], "committed_at": parts[1],
+                "subject": parts[2], "author": parts[3]}
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _vault_remote(vault_path: Path) -> str | None:
+    if not (vault_path / ".git").exists():
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(vault_path), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.stdout.strip() or None if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+@app.get("/api/vaults")
+def vaults_list() -> Response:
+    """List all vaults from vaults.yaml, with entry counts + recent activity.
+
+    Falls back to the legacy single-vault config (pluginConfigs.mindframe.
+    options.vault_path) if vaults.yaml is missing — same behavior as the
+    lib/vaults_yaml.py readers.
+    """
+    vyl = _load_mindframe_lib("vaults_yaml")
+    if vyl is None:
+        return JSONResponse({"error": "vaults_yaml lib not found"}, status_code=500)
+    try:
+        raw_vaults = vyl.list_vaults()
+        default = vyl.default_vault_name()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"vaults.yaml read failed: {e}"}, status_code=500)
+    out = []
+    for v in raw_vaults:
+        path = Path(v.get("path", "")).expanduser()
+        out.append({
+            "name": v.get("name"),
+            "path": str(path),
+            "exists": path.is_dir(),
+            "is_default": v.get("name") == default,
+            "added_via": v.get("added_via", "manual"),
+            "entry_counts": _count_entries_per_type(path) if path.is_dir() else {},
+            "total_entries": sum(_count_entries_per_type(path).values()) if path.is_dir() else 0,
+            "remote": _vault_remote(path) if path.is_dir() else None,
+            "last_commit": _vault_last_commit(path) if path.is_dir() else None,
+        })
+    return JSONResponse({"vaults": out, "default_vault": default})
+
+
+@app.get("/api/vaults/{name}/entries")
+def vault_entries(name: str, limit: int = 50) -> Response:
+    """Recent entries in one vault, grouped by entity-type, ordered by mtime.
+
+    Returns a flat list (name, type, path, modified_at, title from frontmatter
+    if available) for the home view's "recent activity" feed.
+    """
+    vyl = _load_mindframe_lib("vaults_yaml")
+    if vyl is None:
+        return JSONResponse({"error": "vaults_yaml lib not found"}, status_code=500)
+    v = vyl.get_vault(name)
+    if not v:
+        return JSONResponse({"error": f"vault '{name}' not found"}, status_code=404)
+    path = Path(v.get("path", "")).expanduser()
+    if not path.is_dir():
+        return JSONResponse({"error": f"vault path does not exist: {path}"}, status_code=404)
+    entries = []
+    for child in path.iterdir():
+        if not (child.is_dir() and not child.name.startswith(("." , "_"))):
+            continue
+        for md in child.glob("*.md"):
+            try:
+                st = md.stat()
+            except OSError:
+                continue
+            # Best-effort title from frontmatter
+            title = md.stem
+            try:
+                head = md.read_text()[:1024]
+                import re
+                m = re.search(r"^title:\s*(.+)$", head, re.MULTILINE)
+                if m:
+                    title = m.group(1).strip().strip("\"'")
+            except (OSError, UnicodeDecodeError):
+                pass
+            entries.append({
+                "name": md.stem, "type": child.name,
+                "path": str(md.relative_to(path)),
+                "title": title,
+                "modified_at": datetime.fromtimestamp(
+                    st.st_mtime, tz=timezone.utc).isoformat(),
+                "size_bytes": st.st_size,
+            })
+    entries.sort(key=lambda e: e["modified_at"], reverse=True)
+    return JSONResponse({"vault": name, "entries": entries[:limit],
+                         "total": len(entries)})
+
+
+class VaultShareBody(BaseModel):
+    recipient: str = Field(..., min_length=3, max_length=128)
+    permission: str = Field("push", pattern=r"^(pull|push|admin)$")
+    owner: str | None = None
+
+
+@app.post("/api/vaults/{name}/share")
+async def vault_share(name: str, body: VaultShareBody) -> Response:
+    """Fire a share job at the vault-sharing agent. Fire-and-forget; the
+    UI polls /api/vaults/{name} or watches the agent's outgoing.json for
+    completion status.
+    """
+    vyl = _load_mindframe_lib("vaults_yaml")
+    if vyl is None or not vyl.vault_exists(name):
+        return JSONResponse({"error": f"vault '{name}' not found"}, status_code=404)
+
+    # Resolve gh user as default owner
+    owner = body.owner
+    if not owner:
+        try:
+            r = subprocess.run(["gh", "api", "user", "--jq", ".login"],
+                                capture_output=True, text=True, timeout=5)
+            owner = r.stdout.strip() if r.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            owner = None
+    if not owner:
+        return JSONResponse({
+            "error": "no GitHub owner — run `gh auth login` or pass `owner`",
+        }, status_code=400)
+
+    # Drop the job file in the agent's queue + message via session-bridge
+    queue = Path.home() / ".mindframe" / "vault-sharing" / "queue"
+    responses = Path.home() / ".mindframe" / "vault-sharing" / "responses"
+    queue.mkdir(parents=True, exist_ok=True)
+    responses.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex[:12]
+    response_path = responses / f"share-{job_id}.json"
+    vault = vyl.get_vault(name)
+    job = {
+        "job_id": job_id, "kind": "share",
+        "vault_name": name, "vault_path": vault.get("path"),
+        "recipient": body.recipient, "permission": body.permission,
+        "github_owner": owner, "response_path": str(response_path),
+    }
+    job_path = queue / f"{job_id}.json"
+    job_path.write_text(json.dumps(job, indent=2))
+
+    bridge = "http://127.0.0.1:8910"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{bridge}/sessions/vault-sharing/message",
+                json={"text": f"vault-sharing job: {job_path}"},
+            )
+            if r.status_code >= 400:
+                return JSONResponse({
+                    "error": f"agent dispatch failed: {r.status_code} {r.text[:200]}",
+                    "hint": "is vault-sharing agent spawned via taskpilot?",
+                }, status_code=502)
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"session-bridge unreachable: {e}"},
+                             status_code=502)
+
+    return JSONResponse({
+        "ok": True, "job_id": job_id,
+        "vault": name, "recipient": body.recipient,
+        "repo": f"{owner}/vault-{name}",
+        "response_path": str(response_path),
+        "status": "queued",
+    })
+
+
+@app.get("/api/shares/incoming")
+def shares_incoming() -> Response:
+    """List pending GitHub repository invitations (potential vaults to accept)."""
+    try:
+        r = subprocess.run(
+            ["gh", "api", "/user/repository_invitations"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return JSONResponse({"error": "gh CLI not installed"}, status_code=500)
+    if r.returncode != 0:
+        return JSONResponse({
+            "error": "gh api failed",
+            "stderr": r.stderr[:300],
+        }, status_code=502)
+    try:
+        invites = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        invites = []
+    out = []
+    for inv in invites:
+        repo = inv.get("repository", {}).get("full_name", "")
+        # Heuristic: looks like a mindframe vault if name starts with vault-
+        is_vault_shaped = repo.split("/")[-1].startswith("vault-")
+        out.append({
+            "id": inv.get("id"),
+            "repo": repo,
+            "inviter": inv.get("inviter", {}).get("login"),
+            "permissions": inv.get("permissions"),
+            "created_at": inv.get("created_at"),
+            "html_url": inv.get("html_url"),
+            "looks_like_vault": is_vault_shaped,
+        })
+    return JSONResponse({"invitations": out})
+
+
+class AcceptBody(BaseModel):
+    invitation_id: int
+    vault_name: str | None = None
+    vaults_root: str | None = None
+
+
+@app.post("/api/shares/accept")
+async def shares_accept(body: AcceptBody) -> Response:
+    """Tell vault-sharing agent to accept a GitHub invite, clone, register."""
+    # Fetch the invitation to derive a default vault name + repo
+    try:
+        r = subprocess.run(
+            ["gh", "api", "/user/repository_invitations"],
+            capture_output=True, text=True, timeout=10,
+        )
+        invites = json.loads(r.stdout) if r.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        invites = []
+    match = next((i for i in invites if i.get("id") == body.invitation_id), None)
+    if not match:
+        return JSONResponse({
+            "error": f"invitation {body.invitation_id} not in pending list. "
+                     "If already accepted on GitHub, accept via CLI: "
+                     "vault_sharing/accept.py --invitation <id> --repo <owner/name> --vault <name>",
+        }, status_code=404)
+
+    repo_full = match["repository"]["full_name"]
+    vault_name = body.vault_name or repo_full.split("/")[-1].replace("vault-", "", 1)
+    vaults_root = Path(body.vaults_root or str(
+        Path.home() / "mindframe-vaults")).expanduser()
+    vaults_root.mkdir(parents=True, exist_ok=True)
+
+    queue = Path.home() / ".mindframe" / "vault-sharing" / "queue"
+    responses = Path.home() / ".mindframe" / "vault-sharing" / "responses"
+    queue.mkdir(parents=True, exist_ok=True)
+    responses.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex[:12]
+    response_path = responses / f"accept-{job_id}.json"
+    job = {
+        "job_id": job_id, "kind": "accept",
+        "invitation_id": body.invitation_id,
+        "repo_full_name": repo_full,
+        "vault_name": vault_name,
+        "vaults_root": str(vaults_root),
+        "response_path": str(response_path),
+    }
+    job_path = queue / f"{job_id}.json"
+    job_path.write_text(json.dumps(job, indent=2))
+
+    bridge = "http://127.0.0.1:8910"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{bridge}/sessions/vault-sharing/message",
+                json={"text": f"vault-sharing job: {job_path}"},
+            )
+            if r.status_code >= 400:
+                return JSONResponse({
+                    "error": f"agent dispatch failed: {r.status_code} {r.text[:200]}",
+                }, status_code=502)
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"session-bridge unreachable: {e}"},
+                             status_code=502)
+
+    return JSONResponse({
+        "ok": True, "job_id": job_id, "vault_name": vault_name,
+        "repo": repo_full, "response_path": str(response_path),
+        "status": "queued",
+    })
+
+
 @app.get("/{full_path:path}")
 def serve_spa(full_path: str) -> Response:
     if full_path.startswith("api/"):
