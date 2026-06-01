@@ -1531,6 +1531,93 @@ def disconnect_source(source_id: str) -> Response:
     return JSONResponse({"status": "not-connected", "source_id": source_id})
 
 
+# --------------------------- connections (live discovery) ---------------------------
+#
+# Replaces the hardcoded KNOWN_SOURCES catalog with REAL discovery of what this
+# machine can reach: MCPs Claude is connected to (`claude mcp list`) + authed
+# CLIs (gh/gcloud/aws/az), minus mindframe's own runtime MCPs. See
+# docs/onboarding-ux.md. Cached briefly so the probes don't run every poll.
+
+# mindframe's own runtime — the installer brought these; never user-facing.
+_BUNDLE_RUNTIME = {
+    "daemon-manager", "claude-browser-bridge", "softwaresoftware",
+    "tmux-session", "taskpilot", "session-bridge", "tokenboard",
+    "mindframe", "email-triage", "desktop-channel",
+}
+_CONN_DISPLAY = {
+    "gmail-organizer": "Gmail", "google-calendar": "Google Calendar",
+    "slack": "Slack", "finance": "Finance", "stripe": "Stripe",
+}
+_conn_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_CONN_TTL_S = 30.0
+
+
+def _conn_run(cmd: list[str], timeout: float = 20.0):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+def _discover_connections() -> dict:
+    conns: list[dict] = []
+
+    # MCPs Claude is connected to.
+    r = _conn_run(["claude", "mcp", "list"], timeout=45)
+    for line in (r.stdout if r else "").splitlines():
+        line = line.strip()
+        if ": " not in line or " - " not in line:
+            continue
+        name_part, rest = line.split(": ", 1)
+        status = rest.rsplit(" - ", 1)[-1].strip()
+        base = name_part.split(":")[-1] if name_part.startswith("plugin:") else name_part
+        if base in _BUNDLE_RUNTIME:
+            continue
+        state = ("connected" if "Connected" in status
+                 else "needs-auth" if "auth" in status.lower() else "unknown")
+        conns.append({"id": base, "kind": "mcp", "state": state,
+                      "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title())})
+
+    # Authed CLIs (inherited identity).
+    def add_cli(cmd, name, idd, check, acct=None):
+        if not shutil.which(cmd):
+            return
+        rr = _conn_run(check)
+        ok = bool(rr) and rr.returncode == 0
+        c = {"id": idd, "name": name, "kind": "cli",
+             "state": "connected" if ok else "needs-auth"}
+        if ok and acct:
+            a = _conn_run(acct)
+            if a and a.returncode == 0 and a.stdout.strip():
+                c["account"] = a.stdout.strip().splitlines()[0]
+        conns.append(c)
+
+    add_cli("gh", "GitHub", "github",
+            ["gh", "auth", "status"], ["gh", "api", "user", "-q", ".login"])
+    add_cli("gcloud", "GCP", "gcp",
+            ["bash", "-c", "gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q ."],
+            ["bash", "-c", "gcloud auth list --filter=status:ACTIVE --format='value(account)'"])
+    add_cli("aws", "AWS", "aws", ["aws", "sts", "get-caller-identity"])
+    add_cli("az", "Azure", "azure", ["az", "account", "show"])
+
+    # connected first, CLIs before MCPs within a state, then by name
+    conns.sort(key=lambda c: (c["state"] != "connected", c["kind"] != "cli", c["name"]))
+    return {"connections": conns,
+            "reachable": sum(1 for c in conns if c["state"] == "connected")}
+
+
+@app.get("/api/connections")
+def list_connections() -> Response:
+    """Live-discovered connections (MCPs + authed CLIs), minus mindframe's own
+    runtime. Cached for _CONN_TTL_S so the auth probes stay cheap. This is the
+    real replacement for the hardcoded /api/sources catalog."""
+    now = time.time()
+    if _conn_cache["data"] is None or (now - _conn_cache["at"]) > _CONN_TTL_S:
+        _conn_cache["data"] = _discover_connections()
+        _conn_cache["at"] = now
+    return JSONResponse(_conn_cache["data"])
+
+
 @app.get("/api/shares/incoming")
 def shares_incoming() -> Response:
     """List pending GitHub repository invitations (potential vaults to accept)."""
