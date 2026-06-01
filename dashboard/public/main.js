@@ -467,7 +467,143 @@ async function refreshIncomingShares() {
   }
 }
 
-function openShareDialog(vaultName) {
+// ----- Data sources panel (v0.8.2) -----
+//
+// Mirrors the vaults panel. Each tile shows a known source mindframe can
+// ingest from — connected sources first, then the catalog of "you could
+// connect this." The connect/disconnect flow is intentionally minimal: a
+// connect click pops a modal with the exact slash command to run in Claude
+// Code, because OAuth/credential flows are agent-driven and shouldn't
+// be re-implemented in the dashboard JS.
+
+async function refreshSources() {
+  try {
+    const r = await fetch("/api/sources");
+    const j = await r.json();
+    const sources = j.sources || [];
+    $("source-count").textContent = `${j.connected}/${j.total} connected`;
+    const list = $("source-list");
+    if (!sources.length) {
+      list.innerHTML = `<div class="empty"><p>No data sources defined.</p></div>`;
+      return;
+    }
+    // Connected first, then catalog.
+    sources.sort((a, b) => (b.connected ? 1 : 0) - (a.connected ? 1 : 0));
+    list.innerHTML = sources.map(s => {
+      const statusBadge = s.connected
+        ? `<span class="source-status source-connected">● connected</span>`
+        : `<span class="source-status source-disconnected">○ not connected</span>`;
+      const accountLine = s.account
+        ? `<div class="source-account">${escapeHtml(s.account)}</div>`
+        : "";
+      const touched = s.credential_mtime
+        ? `<span class="source-touched">creds: ${relativeTime(new Date(s.credential_mtime).getTime())}</span>`
+        : "";
+      const action = s.connected
+        ? `<button class="btn btn-sm btn-default source-action-disconnect" type="button">disconnect</button>`
+        : `<button class="btn btn-sm btn-primary source-action-connect" type="button">connect</button>`;
+      return `
+        <div class="source-tile ${s.connected ? 'source-tile-on' : 'source-tile-off'}" data-source="${escapeHtml(s.id)}">
+          <div class="source-tile-header">
+            <span class="source-name">${escapeHtml(s.name)}</span>
+            ${statusBadge}
+          </div>
+          ${accountLine}
+          <div class="source-tile-desc">${escapeHtml(s.description)}</div>
+          <div class="source-tile-meta">${touched}</div>
+          <div class="source-tile-actions">${action}</div>
+        </div>
+      `;
+    }).join("");
+
+    list.querySelectorAll(".source-action-connect").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const tile = e.target.closest(".source-tile");
+        openConnectSourceDialog(tile.dataset.source);
+      });
+    });
+    list.querySelectorAll(".source-action-disconnect").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        const tile = e.target.closest(".source-tile");
+        const id = tile.dataset.source;
+        if (!confirm(`Disconnect ${id}? This removes the stored credentials but does not revoke remote-side access.`)) return;
+        e.target.disabled = true;
+        e.target.textContent = "disconnecting…";
+        try {
+          const r = await fetch(`/api/sources/${encodeURIComponent(id)}/disconnect`, { method: "POST" });
+          const j = await r.json();
+          if (r.ok) {
+            showToast(`disconnected ${id}`, "ok");
+            refreshSources();
+          } else {
+            showToast(`disconnect failed: ${j.error || r.statusText}`, "err");
+            e.target.disabled = false;
+            e.target.textContent = "disconnect";
+          }
+        } catch (err) {
+          showToast(`network error: ${err.message}`, "err");
+        }
+      });
+    });
+  } catch (e) {
+    $("source-list").innerHTML = `<div class="empty"><p>source list error: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function openConnectSourceDialog(sourceId) {
+  const existing = document.getElementById("connect-dialog");
+  if (existing) existing.remove();
+  const dialog = document.createElement("div");
+  dialog.id = "connect-dialog";
+  dialog.className = "modal-overlay";
+  dialog.innerHTML = `
+    <div class="modal">
+      <h3 class="modal-title">Connect ${escapeHtml(sourceId)}</h3>
+      <div class="modal-form">
+        <p class="modal-hint">Loading connect instructions…</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-default" id="connect-close">close</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+  dialog.querySelector("#connect-close").addEventListener("click", () => dialog.remove());
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
+  try {
+    const r = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/connect`, { method: "POST" });
+    const j = await r.json();
+    const body = dialog.querySelector(".modal-form");
+    if (r.ok) {
+      body.innerHTML = `
+        <p class="modal-hint">The agent-driven OAuth flow for <strong>${escapeHtml(j.source.name)}</strong> isn't shipped yet. For now, create this file manually:</p>
+        <pre class="modal-codeblock">${escapeHtml(j.credential_path || '')}</pre>
+        <p class="modal-hint">…with this shape:</p>
+        <pre class="modal-codeblock">${escapeHtml(j.example_blob || '{}')}</pre>
+        <p class="modal-hint">Then click <em>refresh</em>.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-default" id="connect-close">close</button>
+          <button type="button" class="btn btn-primary" id="connect-refresh">refresh</button>
+        </div>
+      `;
+      dialog.querySelector("#connect-close").addEventListener("click", () => dialog.remove());
+      dialog.querySelector("#connect-refresh").addEventListener("click", () => {
+        refreshSources();
+        dialog.remove();
+      });
+    } else {
+      body.innerHTML = `<p class="modal-hint">Error: ${escapeHtml(j.error || r.statusText)}</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-default" id="connect-close">close</button>
+        </div>`;
+      dialog.querySelector("#connect-close").addEventListener("click", () => dialog.remove());
+    }
+  } catch (err) {
+    dialog.querySelector(".modal-form").innerHTML = `<p class="modal-hint">Network error: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function openShareDialog(vaultName) {
   const existing = document.getElementById("share-dialog");
   if (existing) existing.remove();
   const dialog = document.createElement("div");
@@ -485,19 +621,48 @@ function openShareDialog(vaultName) {
           <option value="pull">read-only</option>
           <option value="admin">admin</option>
         </select>
-        <label class="modal-label">GitHub owner (optional — defaults to your gh user)</label>
-        <input name="owner" type="text" class="modal-input" placeholder="leave blank for default">
+        <label class="modal-label">Where should this vault live?</label>
+        <select name="owner" id="share-owner-select" class="modal-input" disabled>
+          <option>loading your GitHub accounts…</option>
+        </select>
         <div class="modal-actions">
           <button type="button" class="btn btn-default" id="share-cancel">cancel</button>
           <button type="submit" class="btn btn-primary" id="share-submit">share</button>
         </div>
-        <p class="modal-hint">Creates a private GitHub repo under the owner, pushes the vault contents, and sends the recipient a collaborator invite. They never see git/ssh — agent handles it.</p>
+        <p class="modal-hint">Creates a private GitHub repo at <code id="share-repo-preview">…</code>, pushes the vault, and invites the recipient as a collaborator. They never touch git/ssh — the agent handles it.</p>
       </form>
     </div>
   `;
   document.body.appendChild(dialog);
   dialog.querySelector("#share-cancel").addEventListener("click", () => dialog.remove());
   dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
+
+  // Populate the owner dropdown with the operator's GitHub accounts.
+  const ownerSelect = dialog.querySelector("#share-owner-select");
+  const repoPreview = dialog.querySelector("#share-repo-preview");
+  const renderPreview = () => {
+    const owner = ownerSelect.value || "<your-account>";
+    repoPreview.textContent = `${owner}/vault-${vaultName}`;
+  };
+  try {
+    const r = await fetch("/api/github/owners");
+    const j = await r.json();
+    if (!r.ok) {
+      ownerSelect.innerHTML = `<option value="">${escapeHtml(j.error || "couldn't load accounts")}</option>`;
+    } else if (!j.owners || j.owners.length === 0) {
+      ownerSelect.innerHTML = `<option value="">no GitHub accounts found</option>`;
+    } else {
+      ownerSelect.innerHTML = j.owners.map(o =>
+        `<option value="${escapeHtml(o.login)}"${o.login === j.default ? " selected" : ""}>${escapeHtml(o.label)}</option>`
+      ).join("");
+      ownerSelect.disabled = false;
+    }
+  } catch (err) {
+    ownerSelect.innerHTML = `<option value="">network error loading accounts</option>`;
+  }
+  renderPreview();
+  ownerSelect.addEventListener("change", renderPreview);
+
   dialog.querySelector("#share-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -505,7 +670,7 @@ function openShareDialog(vaultName) {
       recipient: form.recipient.value.trim(),
       permission: form.permission.value,
     };
-    if (form.owner.value.trim()) body.owner = form.owner.value.trim();
+    if (form.owner.value) body.owner = form.owner.value;
     const submitBtn = form.querySelector("#share-submit");
     submitBtn.disabled = true;
     submitBtn.textContent = "queuing…";
@@ -619,16 +784,22 @@ async function openBrowseDialog(vaultName) {
       return;
     }
 
-    const nodes = new vis.DataSet(g.nodes.map(n => ({
-      id: n.id,
-      label: n.label,
-      group: n.type,
-      color: colorForType(n.type, allTypes),
-      title: `${n.type} · ${n.label}${n.dangling_count ? ` · ${n.dangling_count} dangling` : ""}`,
-      font: { color: "#e8e8e8", size: 11, face: "JetBrains Mono, monospace" },
-      borderWidth: 1.5,
-      _meta: n,
-    })));
+    const nodes = new vis.DataSet(g.nodes.map(n => {
+      const c = colorForType(n.type, allTypes);
+      return {
+        id: n.id,
+        label: n.label,
+        // No `group:` — vis assigns auto-colors per group that fight our
+        // explicit color, leaving stray red/green/etc. dots that don't
+        // appear in the legend. Full color object pins background +
+        // border + highlight states so vis never falls back to defaults.
+        color: { background: c, border: c, highlight: { background: c, border: "#ffd166" }, hover: { background: c, border: "#ffd166" } },
+        title: `${n.type} · ${n.label}${n.dangling_count ? ` · ${n.dangling_count} dangling` : ""}`,
+        font: { color: "#e8e8e8", size: 11, face: "JetBrains Mono, monospace" },
+        borderWidth: 1.5,
+        _meta: n,
+      };
+    }));
     const edges = new vis.DataSet(g.edges.map((e, i) => ({
       id: `e${i}`,
       from: e.source, to: e.target,
@@ -768,6 +939,16 @@ async function renderBoardsIndex() {
         <div id="incoming-shares" class="incoming-shares" hidden></div>
       </section>
 
+      <section class="sources-section">
+        <div class="index-header">
+          <h2>Data sources</h2>
+          <span id="source-count" class="count">…</span>
+        </div>
+        <div id="source-list" class="source-list">
+          <div class="loading">loading sources…</div>
+        </div>
+      </section>
+
       <section class="frame-section">
         <div class="index-header">
           <h2>Your mindframes</h2>
@@ -782,6 +963,7 @@ async function renderBoardsIndex() {
 
   refreshVaults();
   refreshIncomingShares();
+  refreshSources();
 
   const form = $("chat-form");
   const input = $("chat-input");

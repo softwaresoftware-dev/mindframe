@@ -968,7 +968,77 @@ a:hover { color: var(--color-accent-hover); }
 
 /* ---------- vaults panel (v0.8.0) ---------- */
 
-.vaults-section { margin-top: var(--space-2xl); }
+.modal-codeblock {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 3px);
+  padding: var(--space-sm) var(--space-md);
+  margin: 0.5rem 0;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+.vaults-section, .sources-section { margin-top: var(--space-2xl); }
+.source-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: var(--space-md);
+}
+.source-tile {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  transition: border-color 0.15s, opacity 0.15s;
+}
+.source-tile:hover { border-color: var(--color-accent); }
+.source-tile-off { opacity: 0.7; }
+.source-tile-off:hover { opacity: 1; }
+.source-tile-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-heading);
+  font-size: 1rem;
+  font-weight: 600;
+}
+.source-name { color: var(--color-text); }
+.source-status {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+.source-connected { color: var(--color-accent); }
+.source-disconnected { color: var(--color-text-faint); }
+.source-account {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  word-break: break-all;
+}
+.source-tile-desc {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+.source-tile-meta {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--color-text-faint);
+  min-height: 0.9rem;
+}
+.source-tile-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
 .vault-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));

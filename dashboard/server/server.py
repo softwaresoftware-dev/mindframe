@@ -1205,6 +1205,252 @@ async def vault_share(name: str, body: VaultShareBody) -> Response:
     })
 
 
+@app.get("/api/github/owners")
+def github_owners() -> Response:
+    """List places the operator can create a repo under: their personal
+    account + every org they're a member of. Drives the 'where should
+    this vault live?' dropdown in the share dialog.
+    """
+    try:
+        me = subprocess.run(
+            ["gh", "api", "user", "--jq", "{login,name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        orgs = subprocess.run(
+            ["gh", "api", "user/orgs", "--jq", ".[] | {login,description}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return JSONResponse({"error": "gh CLI not installed"}, status_code=500)
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "gh CLI timed out"}, status_code=504)
+
+    if me.returncode != 0:
+        return JSONResponse({
+            "error": "gh CLI not authenticated — run `gh auth login`",
+            "stderr": me.stderr[:300],
+        }, status_code=401)
+
+    try:
+        user = json.loads(me.stdout)
+    except json.JSONDecodeError:
+        user = {"login": None}
+
+    org_list = []
+    if orgs.returncode == 0:
+        # gh returns one JSON object per line
+        for line in orgs.stdout.strip().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    org_list.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    owners = []
+    if user.get("login"):
+        owners.append({
+            "login": user["login"],
+            "kind": "personal",
+            "label": f"{user['login']} (your personal account)",
+        })
+    for o in org_list:
+        owners.append({
+            "login": o["login"],
+            "kind": "org",
+            "label": f"{o['login']} (org)" + (f" — {o['description']}" if o.get("description") else ""),
+        })
+    return JSONResponse({
+        "owners": owners,
+        "default": user.get("login"),
+    })
+
+
+# --------------------------- data sources panel ---------------------------
+#
+# Mirror of the vaults panel. Surfaces every event-source the operator could
+# connect — what's wired up, what's pending creds, when each last pulled
+# successfully. Reads from:
+#
+#   - ~/.mindframe/credentials/<source>.json         — connected accounts
+#   - ~/.dispatcher/channels.yaml                    — static routes
+#   - dispatcher /sources/status (when running)      — live sync state
+#
+# The known-source catalog is intentionally hardcoded for now: it's the
+# user-facing menu of "things you can connect," not a live discovery of
+# what dispatcher adapters happen to be loaded. Adding a new source means
+# adding a row here AND building an adapter — the registry is for humans.
+
+KNOWN_SOURCES = [
+    {
+        "id": "github",
+        "name": "GitHub",
+        "icon": "github",
+        "description": "Repos, issues, PRs, releases, webhooks.",
+        "credential_kinds": ["gh-cli", "pat"],
+    },
+    {
+        "id": "google-drive",
+        "name": "Google Drive",
+        "icon": "drive",
+        "description": "Docs, Sheets, Slides, meeting recordings + transcripts (via Meet).",
+        "credential_kinds": ["oauth"],
+    },
+    {
+        "id": "google-calendar",
+        "name": "Google Calendar",
+        "icon": "calendar",
+        "description": "Meetings, attendees, recurrence.",
+        "credential_kinds": ["oauth"],
+    },
+    {
+        "id": "slack",
+        "name": "Slack",
+        "icon": "slack",
+        "description": "Channel messages, threads, reactions, files.",
+        "credential_kinds": ["bot-token", "oauth"],
+    },
+    {
+        "id": "confluence",
+        "name": "Confluence",
+        "icon": "confluence",
+        "description": "Pages, spaces, comments — Atlassian wiki.",
+        "credential_kinds": ["api-token"],
+    },
+    {
+        "id": "sentry",
+        "name": "Sentry",
+        "icon": "sentry",
+        "description": "Errors, performance, releases — incident triage.",
+        "credential_kinds": ["auth-token"],
+    },
+    {
+        "id": "pagerduty",
+        "name": "PagerDuty",
+        "icon": "pagerduty",
+        "description": "Incidents, on-call rotations, schedules.",
+        "credential_kinds": ["api-key"],
+    },
+    {
+        "id": "gmail",
+        "name": "Gmail",
+        "icon": "gmail",
+        "description": "Inbox, labels, filters — email triage signal.",
+        "credential_kinds": ["oauth"],
+    },
+]
+
+
+def _credentials_dir() -> Path:
+    return Path.home() / ".mindframe" / "credentials"
+
+
+def _source_status(source_id: str) -> dict:
+    """Per-source connection + sync status. Cheap, side-effect-free."""
+    creds_dir = _credentials_dir()
+    cred_path = creds_dir / f"{source_id}.json"
+    connected = cred_path.exists()
+    status: dict = {
+        "connected": connected,
+        "credential_path": str(cred_path) if connected else None,
+    }
+    if connected:
+        try:
+            stat = cred_path.stat()
+            status["credential_mtime"] = datetime.fromtimestamp(
+                stat.st_mtime, tz=timezone.utc
+            ).isoformat()
+            # Peek for an account label without leaking the token.
+            try:
+                blob = json.loads(cred_path.read_text())
+                for key in ("account", "user", "email", "login", "workspace"):
+                    if key in blob and isinstance(blob[key], str):
+                        status["account"] = blob[key]
+                        break
+                if "scope" in blob and isinstance(blob["scope"], str):
+                    # Drive OAuth stores space-separated scopes
+                    status["scopes"] = blob["scope"].split()
+            except (json.JSONDecodeError, OSError):
+                pass
+        except OSError:
+            pass
+    # TODO: when dispatcher exposes /sources/status, fold last_sync + lag
+    # in here. For now we only know "do creds exist."
+    return status
+
+
+@app.get("/api/sources")
+def list_sources() -> Response:
+    """Catalog of data sources mindframe can ingest from + per-source connection state."""
+    creds_dir = _credentials_dir()
+    creds_dir.mkdir(parents=True, exist_ok=True)
+    sources = []
+    for src in KNOWN_SOURCES:
+        sources.append({**src, **_source_status(src["id"])})
+    connected_count = sum(1 for s in sources if s["connected"])
+    return JSONResponse({
+        "sources": sources,
+        "connected": connected_count,
+        "total": len(sources),
+    })
+
+
+@app.post("/api/sources/{source_id}/connect")
+def connect_source(source_id: str) -> Response:
+    """Stub: kick off the per-source connection flow. For now, return the slash
+    command the operator should run. Future: spawn an OAuth-driving agent the
+    way share/accept do — browser-bridge handles consent screens, then writes
+    the token blob to ~/.mindframe/credentials/<source>.json.
+    """
+    known = next((s for s in KNOWN_SOURCES if s["id"] == source_id), None)
+    if not known:
+        return JSONResponse({"error": f"unknown source: {source_id}"}, status_code=404)
+    # The connect-source agent isn't built yet. Be honest: hand the operator
+    # the credential file path + format and let them paste a token in
+    # manually. When the agent ships, this returns spawn:add-source instead.
+    cred_path = _credentials_dir() / f"{source_id}.json"
+    examples = {
+        "github": '{"token": "ghp_..."}  // or run `gh auth login` (mindframe will detect it)',
+        "google-drive": '{"access_token": "...", "refresh_token": "...", "client_id": "...", "client_secret": "..."}',
+        "google-calendar": '{"access_token": "...", "refresh_token": "...", "client_id": "...", "client_secret": "..."}',
+        "slack": '{"bot_token": "xoxb-...", "workspace": "your-workspace"}',
+        "confluence": '{"base_url": "https://your.atlassian.net", "email": "you@team.com", "api_token": "..."}',
+        "sentry": '{"auth_token": "...", "org": "your-org-slug"}',
+        "pagerduty": '{"api_key": "...", "user_email": "you@team.com"}',
+        "gmail": '{"access_token": "...", "refresh_token": "...", "client_id": "...", "client_secret": "..."}',
+    }
+    example = examples.get(source_id, '{}')
+    return JSONResponse({
+        "status": "manual",
+        "source": known,
+        "credential_path": str(cred_path),
+        "example_blob": example,
+        "instructions": (
+            f"The agent-driven OAuth/credential flow for {known['name']} hasn't shipped yet. "
+            f"For now, create the file {cred_path} with this shape:\n\n{example}\n\n"
+            "Then click refresh."
+        ),
+    })
+
+
+@app.post("/api/sources/{source_id}/disconnect")
+def disconnect_source(source_id: str) -> Response:
+    """Remove the stored credentials for a source. Doesn't revoke remote-side
+    grants — the operator is told to do that in the source system's UI if they
+    care about it (most won't)."""
+    known = next((s for s in KNOWN_SOURCES if s["id"] == source_id), None)
+    if not known:
+        return JSONResponse({"error": f"unknown source: {source_id}"}, status_code=404)
+    cred_path = _credentials_dir() / f"{source_id}.json"
+    if cred_path.exists():
+        try:
+            cred_path.unlink()
+        except OSError as e:
+            return JSONResponse({"error": f"failed to delete credentials: {e}"}, status_code=500)
+        return JSONResponse({"status": "disconnected", "source_id": source_id})
+    return JSONResponse({"status": "not-connected", "source_id": source_id})
+
+
 @app.get("/api/shares/incoming")
 def shares_incoming() -> Response:
     """List pending GitHub repository invitations (potential vaults to accept)."""
