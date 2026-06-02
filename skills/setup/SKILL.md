@@ -31,18 +31,21 @@ The previous version of this skill duplicated install.txt's content and progress
 
 ## What's in install.txt (phase summary, for the agent's context)
 
-- **PHASE 0** — rules: identity inheritance, file-handoff for generated secrets, idempotency, telemetry, user-scope-by-default, no Anthropic API key
+The install flow is now **UI-based**: a small terminal bootstrap that births the
+operator's first mindframe, then hands setup over to that mindframe. The terminal
+agent does NOT run a long wizard — onboarding happens inside a web surface the
+mindframe drives.
+
+- **PHASE 0** — rules: identity inheritance, file-handoff for generated secrets, idempotency, user-scope-by-default, no Anthropic API key, telemetry
 - **PHASE 0.W** — Windows preflight (WSL2 required)
-- **PHASE 1–2** — bootstrap the softwaresoftware marketplace + resolver, install mindframe + dependencies
-- **PHASE 3** — deployment config (`deployment_name`, `vault_path`, telemetry consent)
-- **PHASE 4** — environment discovery (probes A–F), pack activation
-- **PHASE 5** — identity inheritance per in-scope system (never collect raw tokens)
-- **PHASE 6** — assemble `<vault>/schema.yaml`, bootstrap KB from real sources
-- **PHASE 7** — guided authoring: first event source → recipe → agent → simulated event (the aha moment)
-- **PHASE 8** — surface what else operators might author next
-- **PHASE 9** — launch dashboard as a managed daemon
-- **PHASE 9.5** — spawn vault-keeper + vault-query, install the capture scheduler (added in v0.6.x)
-- **PHASE 10** — end-to-end smoke test
-- **PHASE 11** — summary + pointers
+- **PHASE 1** — bootstrap the softwaresoftware marketplace + resolver
+- **PHASE 2** — install mindframe + dependencies
+- **PHASE 3** — BIRTH THE FIRST MINDFRAME: minimal config + vault, fill the setup brief (`${CLAUDE_PLUGIN_ROOT}/setup/brief.md`), spawn the `mindframe-setup` agent, run the surface server (`${CLAUDE_PLUGIN_ROOT}/surface/server.py`) as a managed daemon, open the browser
+- **PHASE 4** — HAND OFF: the terminal agent steps out; setup continues in the surface
+
+The setup mindframe (an agent owning one HTML surface it rewrites + a message
+box) then runs the real onboarding arc: this-is-you → interview/schema →
+discover connections → connect + synthesize → first signal. See
+`${CLAUDE_PLUGIN_ROOT}/docs/onboarding-ux.md` and `setup/brief.md`.
 
 When operating from this skill, you ARE the install agent install.txt addresses in second person. Read it, then act.

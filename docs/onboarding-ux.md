@@ -174,23 +174,25 @@ The onboarding flow is not special-cased UI — it is the **first mindframe**. T
 schema rail, connections rail, and knowledge-graph are reusable components any
 mindframe composes. `install-flow-v2.md` is that mindframe's recipe.
 
-### The intent primitive (how interaction works)
+### The v0 interaction model (supersedes the intent primitive)
 
-- The **agent is a durable JSON transcript reached by id**, not a running
-  process. It's resumed per interaction; its transcript is its memory of what it
-  rendered.
-- A UI element carries **only an element id** (+ optional runtime context like a
-  row). The resumed agent resolves meaning from its own history. No `data-context`
-  restating what the agent knows; a human-readable label is fine.
-- One intent channel; every element auto-wires to it (so **dead buttons are
-  impossible by construction**). Render states: **idle → working →
-  awaiting-approval → settled.**
-- The `awaiting-approval` state is the human-in-the-loop gate as a first-class,
-  on-surface object (see `install-flow-v2.md` PHASE 0 — taught, present,
-  away-path, editable). The same channel carries clicks down and approval
-  requests up.
-- Design pressure moves from "keep agents alive" to **"keep resume cheap"**:
-  don't store rendered markup in the transcript; keep histories lean; warm-cache.
+The earlier "intent primitive" (element-id channel, typed render states, a
+durable JSON transcript reached by id) is **superseded** by a simpler model
+proven 2026-06-02. A mindframe is a conversation where the agent's replies are
+full web pages instead of text:
+
+- The agent **owns one HTML document and rewrites the whole thing in place.** The
+  browser is the renderer. No typed-block renderer, no element-id channel, no
+  component library.
+- The operator has **one message box.** Input is linear (free text); presentation
+  is not (the full mutated page). Affordances the agent draws are decorative in
+  v0; the message box is the only input channel until v0.1.
+- The substrate is ~80 lines, shipped in the plugin at `surface/`: a server that
+  owns the shell + message rail and serves the agent's `index.html`; the agent
+  rewrites the file; the shell polls a revision and reloads.
+- **Human-in-the-loop** stays first-class, just rendered: the agent draws the
+  pending act onto the page (what it wants to do, why, the consequence) and waits
+  for a message to approve. On-surface approve/deny buttons are v0.1.
 
 ### Generative-UI finding — the UI is no longer the hard part
 
@@ -198,8 +200,8 @@ Given a minimal prompt (domain only, zero UI guidance), independent agents
 **reproduced and beat** the hand-built first-run surface, converging on the same
 vocabulary (phases, conversation, connections rail, schema, signals, input) plus
 extras, grounded in the real environment. Conclusion: **do not build a component
-library or layout DSL.** The minimal harness is freeform agent-generated UI + the
-intent primitive + live state binding.
+library or layout DSL.** The minimal harness is freeform agent-generated UI +
+the v0 substrate (full-page rewrite + message box) + live state binding.
 
 ### Proven on real infrastructure, and the one real blocker
 
@@ -216,3 +218,22 @@ drift, and spawned agents have a sandboxed `$HOME` so `gh` needs
 (queue/API), not keystroke injection. Prototypes (local, **not committed**):
 `slice/` (incl. `slice/live`, the real-agent run) and
 `dashboard/artifacts/{kb-live,genui-1,2,3}` (the latter under gitignored `artifacts/`).
+
+## Update (2026-06-02, later) — v0 substrate shipped + setup migrated
+
+- The **v0 substrate** is shipped in the plugin at `surface/` (`server.py` +
+  `shell.html`), promoted from the `slice/` prototype. The intent primitive is
+  cut; see "The v0 interaction model" above.
+- **Setup is migrated to the UI-based flow.** The hosted `install.txt` is now a
+  small terminal bootstrap (rules → marketplace → install mindframe → birth the
+  setup mindframe → hand off). The onboarding arc lives in `setup/brief.md` (the
+  setup mindframe's standing brief, a template install.txt fills in).
+  `install-flow-v2.md` is the superseded intent-primitive-era draft.
+- **Capabilities are skills / MCPs / CLIs, not KB records.** Skills and MCPs
+  self-inject into an agent at startup; a CLI capability is wrapped as a skill
+  whose body is the recipe. The knowledge base stores what the org IS (entities,
+  history), never the capability registry. There is no `Connection` KB entity;
+  connections are discovered live via shell. This supersedes the "Connection
+  state persistence" open thread above for the *capability* concern (operator-
+  specific scope/account binding lives in config or a generated per-deployment
+  skill, still injected, not queried).

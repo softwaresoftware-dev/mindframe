@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mindframe</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; flex-direction: column; height: 100vh;
+    font-family: system-ui, -apple-system, sans-serif; background: #0b0b0c;
+  }
+  #surface { flex: 1; border: 0; width: 100%; background: #0d0d0f; }
+  #rail {
+    display: flex; gap: .55rem; align-items: center;
+    padding: .6rem .8rem; background: #141416; border-top: 1px solid #26262a;
+  }
+  #brand {
+    font-size: .62rem; letter-spacing: .18em; color: #6b6b73;
+    font-weight: 700; padding-right: .2rem; user-select: none;
+  }
+  #msg {
+    flex: 1; padding: .65rem .85rem; border-radius: 8px;
+    border: 1px solid #303036; background: #1c1c20; color: #ececf0;
+    font-size: 15px; outline: none;
+  }
+  #msg:focus { border-color: #5b6cff; }
+  #send {
+    padding: .65rem 1.15rem; border: 0; border-radius: 8px;
+    background: #5b6cff; color: #fff; font-size: 15px; cursor: pointer;
+  }
+  #send:disabled { opacity: .45; cursor: default; }
+  #status {
+    font-size: 12px; color: #7a7a82; min-width: 6ch; text-align: right;
+  }
+</style>
+</head>
+<body>
+  <iframe id="surface" src="/frame" title="mindframe surface"></iframe>
+  <form id="rail" autocomplete="off">
+    <span id="brand">MINDFRAME</span>
+    <input id="msg" placeholder="Message the mindframe&hellip;" autofocus>
+    <button id="send" type="submit">Send</button>
+    <span id="status"></span>
+  </form>
+<script>
+  const surface = document.getElementById('surface');
+  const form = document.getElementById('rail');
+  const msg = document.getElementById('msg');
+  const send = document.getElementById('send');
+  const status = document.getElementById('status');
+  let rev = null, waiting = false;
+
+  async function poll() {
+    try {
+      const r = (await fetch('/api/rev', { cache: 'no-store' }).then(x => x.json())).rev;
+      if (rev !== null && r !== rev) {
+        surface.contentWindow.location.reload();   // agent rewrote the page
+        if (waiting) { waiting = false; send.disabled = false; status.textContent = ''; }
+      }
+      rev = r;
+    } catch (e) { /* server momentarily unreachable; keep polling */ }
+  }
+  setInterval(poll, 1000);
+  poll();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = msg.value.trim();
+    if (!text) return;
+    msg.value = '';
+    waiting = true;
+    send.disabled = true;
+    status.textContent = 'working…';
+    try {
+      await fetch('/api/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+    } catch (e) {
+      status.textContent = 'send failed';
+      waiting = false;
+      send.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

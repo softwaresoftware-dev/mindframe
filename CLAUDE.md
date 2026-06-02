@@ -66,11 +66,13 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 ## In-directory artifacts
 
 - `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, core entities, domain packs, and the per-install `schema.yaml` manifest format. Read before building setup or deliverable skills.
-- `docs/onboarding-ux.md` — **the onboarding UX model + decisions (2026-06-02 redesign).** The concept ladder (knowledge base → schema → connections → watches → signals → mindframes), the three-zone first-run surface, agent-led + human-in-the-loop principles, the intent-channel/render-state model, and the generative-UI direction. **Read this before touching setup or the dashboard** — it captures decisions not yet reflected in shipped code.
-- `docs/install-flow-v2.md` — the redesigned, self-contained `install.txt` (web-app-first, dashboard-early, setup-as-a-mindframe, human-in-the-loop gate). Supersedes `install-outline.md` once promoted to the hosted `install.txt`.
-- `skills/setup/` — `/mindframe:setup` wizard (delegating stub → fetches the hosted `install.txt`; the next version is generated from `docs/install-flow-v2.md`).
+- `docs/onboarding-ux.md` — **the onboarding UX model + decisions (2026-06-02).** The concept ladder (knowledge base → schema → connections → watches → signals → mindframes), the three-zone first-run surface, agent-led + human-in-the-loop principles, the **v0 interaction model** (agent rewrites a full HTML page + message box; the intent primitive is cut), and the generative-UI direction. **Read this before touching setup or the dashboard.**
+- `surface/` — **the v0 mindframe substrate** (shipped). `server.py` owns the shell + message rail and serves the agent's `index.html`; `shell.html` is the chrome. Env-driven (`MF_FRAME_DIR`/`MF_TASK_ID`/`MF_PORT`/`MF_DAEMON`). This is what a mindframe IS now.
+- `setup/brief.md` — **the setup mindframe's standing brief** (a template `install.txt` fills in). The onboarding arc on the v0 substrate: this-is-you → interview/schema → discover connections via shell → connect+synthesize → first signal.
+- `docs/install-flow-v2.md` — **SUPERSEDED** intent-primitive-era draft; kept for history. The live flow is the hosted `install.txt` (source: `staticsites/mindframe.softwaresoftware.dev/install.txt`) + `setup/brief.md`.
+- `skills/setup/` — `/mindframe:setup`: delegating stub → fetches the hosted `install.txt` (now the UI-based bootstrap → birth setup mindframe → hand off).
 - `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
-- `dashboard/` — FastAPI server (`server/server.py`) + SPA (`public/`). Exposes: KB graph (`/api/vaults`, `/api/vaults/<name>/graph`), **live connection discovery (`/api/connections` — `claude mcp list` + gh/gcloud/aws/az auth probes, minus bundle runtime; replaces the hardcoded `KNOWN_SOURCES`/`/api/sources` catalog)**, the block-stream API (`/api/frames`, `/api/frame/<id>/blocks`, `/api/frame/<id>/stream` SSE), panes, shares, `/artifacts/<sid>/<path>`. Managed daemon via the `daemon` capability. **Direction note (2026-06-02):** the append-only block-stream is being superseded *as the default mindframe modality* by an agent-generated **spatial** surface + an **intent channel** (a click carries only an element id; the frame's agent, reached by id, is resumed and resolves meaning from its own transcript). Input is linear; presentation is not. See `docs/onboarding-ux.md`. The block-stream remains the shipped frame plumbing.
+- `dashboard/` — FastAPI server (`server/server.py`) + SPA (`public/`). Exposes: KB graph (`/api/vaults`, `/api/vaults/<name>/graph`), **live connection discovery (`/api/connections` — `claude mcp list` + gh/gcloud/aws/az auth probes, minus bundle runtime; replaces the hardcoded `KNOWN_SOURCES`/`/api/sources` catalog)**, the block-stream API (`/api/frames`, `/api/frame/<id>/blocks`, `/api/frame/<id>/stream` SSE), panes, shares, `/artifacts/<sid>/<path>`. Managed daemon via the `daemon` capability. **Direction note (2026-06-02):** the block-stream is **cut** as the mindframe modality, replaced by the **v0 substrate** (`surface/`): the agent owns one HTML page it rewrites + a message box. The block-stream endpoints here are legacy/fallback only. See `docs/onboarding-ux.md`.
 - `recipes/mindframe-poc/` — example recipe ships in-tree. `make install-recipes` copies it to `~/.dispatcher/recipes/`.
 - `lib/` — `frame.py` (core storage ops), `spawn.py` (CLI), tests. The block-stream contract.
 - `mcp/` — `server.py` (FastMCP `write_block` + `set_title`), tests.
@@ -78,23 +80,21 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 
 ## Next
 
-**Direction redesigned 2026-06-02 — full model in `docs/onboarding-ux.md`.** Decisions from that session, with honest build status:
+**Direction redesigned 2026-06-02 — full model in `docs/onboarding-ux.md`.** Status:
 
-- **The web app is the primary interface**, not the terminal. The terminal does only bootstrap (PHASE 1–2); the setup conversation moves into the dashboard. *(designed; `install-flow-v2.md` drafted)*
-- **A mindframe is an agent-generated SPATIAL surface, not a linear conversation.** The append-only block-stream is a failed *default* — it forces a chat feel. A mindframe is a composed surface the agent mutates: input is linear, presentation is not. *(decided; block-stream is still the shipped renderer)*
-- **The agent is a durable JSON transcript reached by id**, resumed per interaction. UI elements carry only an element id (+ optional runtime context); the resumed agent resolves meaning from its own history. One intent channel, render states `idle → working → awaiting-approval → settled`. *(prototyped end-to-end — see below)*
-- **Connections = live discovery** (MCPs + authed CLIs minus bundle runtime), not a hardcoded catalog. *(built: `/api/connections`)*
-- **Generative-UI finding:** minimal-prompt agents reproduce/beat the hand-designed setup surface. The UI is no longer the hard part — do **not** build a component library / layout DSL.
-
-Proven this session (prototypes under `slice/` and `dashboard/artifacts/`, local/uncommitted): a **real Claude agent** (taskpilot, subscription, reached by task id, resumed per message) interpreted element-id clicks from its own brief, ran real `gh` (pulled 40 repos), surfaced an honest error and self-corrected, and the surface reflected it live with a consequence-gated approval state.
+- **The web app is the primary interface**, not the terminal. The terminal does only bootstrap; the setup conversation moves into the surface. *(shipped: `install.txt` migrated to bootstrap → birth setup mindframe → hand off)*
+- **A mindframe is the v0 model**: the agent owns one HTML page it rewrites + a message box. The block-stream AND the interim intent-primitive are both cut. *(shipped: substrate at `surface/`; proven live)*
+- **Capabilities are skills / MCPs / CLIs, not KB records** — self-injecting at startup; a CLI capability is a skill whose body is the recipe. The KB holds what the org IS, never the capability registry; no `Connection` entity. *(decided)*
+- **Connections = live discovery** (MCPs + authed CLIs minus bundle runtime), not a hardcoded catalog. *(built: `/api/connections`; setup discovers via shell)*
+- **Generative-UI finding:** minimal-prompt agents reproduce/beat a hand-designed surface. Don't build a component library / layout DSL.
 
 Open / to harden, priority order:
 
-1. **Reliable agent message-delivery transport.** taskpilot delivers via tmux keystrokes into the Claude TUI; submits drop intermittently (and `hooks/on-prompt.py` was missing — likely install drift, cf. the prefix-drift pattern). A production mindframe needs a real resume channel, not keystroke injection. **This is the keystone blocker.**
-2. **Sandboxed-HOME for spawned agents** — `gh`/CLI auth isn't visible to taskpilot agents; they need `GH_CONFIG_DIR` / `$TASKPILOT_HOME` handling.
-3. **The intent-channel + spatial-surface runtime** — promote the `slice/` prototypes into the dashboard: generated surface bound to live state, `element-id → resume agent` channel, render states incl. approval.
+1. **Reliable agent message-delivery transport.** taskpilot delivers via tmux keystrokes; submits drop intermittently. A production mindframe needs a real resume channel — e.g. `claude --continue` in the per-task cwd (verified to reload plugins; would also kill the `state.json` frailty by making the transcript the durable state). **Keystone blocker.**
+2. **Run the migrated `install.txt` end-to-end** in an isolated `HOME` (faithful, zero blast radius), then deploy the staticsite so the hosted URL serves the new flow (it currently still serves the old one).
+3. **URL delivery polish** — dynamic port (not the fixed `5180`), a persistent/re-findable URL, and decide whether the setup URL becomes the durable "home" or hands off again.
 4. **Home surface** — signals → "tackle this" → spawn a mindframe (the bridge from setup to use).
-5. Carryover (lower priority given the modality shift): fresh-install dry-run; live-agent stability; block-stream renderer polish.
+5. Deferred / lower priority: taskpilot "inherit all user-scope plugins/MCPs" (off critical path); block-stream + intent-primitive runtime are legacy.
 
 ### Shipped this slice (chronological)
 

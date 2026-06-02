@@ -1,5 +1,19 @@
-MINDFRAME — INSTALL FLOW v2 (redesign draft)
-============================================
+MINDFRAME — INSTALL FLOW v2 (redesign draft) — SUPERSEDED
+=========================================================
+
+>> SUPERSEDED 2026-06-02 by the shipped flow. This v2 draft assumed the
+>> intent-primitive model (element-id channel, typed render states, block-stream
+>> wire-path). That model was cut in favor of the v0 substrate (the agent owns
+>> one HTML page it rewrites + a message box). The canonical install flow now
+>> lives in two places:
+>>   - the hosted install.txt source:
+>>       staticsites/mindframe.softwaresoftware.dev/install.txt
+>>       (terminal bootstrap -> birth the setup mindframe -> hand off)
+>>   - the setup mindframe's standing brief (the onboarding arc):
+>>       plugins/frameworks/mindframe/setup/brief.md
+>> The PHASE 0 rules and the onboarding arc below are still good reference and
+>> were carried forward; the intent-primitive interaction mechanics are not.
+>> Kept for history. Do not implement from this file.
 
 You are the install agent. A real human launched Claude Code and pasted this
 in. They expect end-to-end install + setup with minimal manual intervention.
