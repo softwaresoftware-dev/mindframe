@@ -1,6 +1,16 @@
 # Mindframe block-stream API
 
-Spec for the new conversational modality. **A mindframe** is a focused, agent-driven, rich-block conversation. The block-stream API is how agents author them, how the SPA renders them, and how user actions flow back.
+> **SUPERSEDED AS THE DEFAULT MODALITY (decided 2026-06-02).** The append-only
+> block-stream forces a linear, chat-like feel. A mindframe is now defined as an
+> agent-generated **spatial** surface the agent mutates in place, driven by an
+> **intent channel**: a click carries only an element id; the frame's agent — a
+> durable transcript reached by id — is resumed and resolves meaning from its own
+> history. Input is linear; presentation is not. Full model in
+> `docs/onboarding-ux.md`. The block-stream API below remains the **shipped frame
+> plumbing** (frames, SSE, `custom-html`) and a fine fallback for simple linear
+> output, but it is no longer the intended default for new mindframes.
+
+Spec for the original block-stream conversational modality. **A mindframe** (in this doc) is a focused, agent-driven, rich-block conversation. The block-stream API is how agents author them, how the SPA renders them, and how user actions flow back.
 
 Status: spec, not implementation. The current panes lane (shipped 2026-05-21, commit `6b9d26a`) is ~30% of this. Anything not in the panes lane is still to be built.
 

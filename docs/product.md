@@ -60,6 +60,8 @@ claude plugin install softwaresoftware@softwaresoftware-plugins
 
 The first three steps install the bundle. `/mindframe:setup` does the rest: probes the machine for the data systems already in use, walks the operator through credentials, bootstraps the knowledge base from real source systems, wires the event router, and runs an end-to-end smoke test.
 
+> **Onboarding redesigned 2026-06-02.** The setup experience is being reworked into a web-app-first, dashboard-early flow where the user watches their knowledge base take shape and connects sources as the agent interviews them. The model and the redesigned `install.txt` live in [`onboarding-ux.md`](onboarding-ux.md) and [`install-flow-v2.md`](install-flow-v2.md).
+
 ## Principles
 
 - **Capability-based.** Every dependency is an abstract capability, not a named product. Notifications go to Slack today and email tomorrow by swapping a provider — no change to the bundle.

@@ -66,9 +66,11 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 ## In-directory artifacts
 
 - `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, core entities, domain packs, and the per-install `schema.yaml` manifest format. Read before building setup or deliverable skills.
-- `skills/setup/` — `/mindframe:setup` wizard.
+- `docs/onboarding-ux.md` — **the onboarding UX model + decisions (2026-06-02 redesign).** The concept ladder (knowledge base → schema → connections → watches → signals → mindframes), the three-zone first-run surface, agent-led + human-in-the-loop principles, the intent-channel/render-state model, and the generative-UI direction. **Read this before touching setup or the dashboard** — it captures decisions not yet reflected in shipped code.
+- `docs/install-flow-v2.md` — the redesigned, self-contained `install.txt` (web-app-first, dashboard-early, setup-as-a-mindframe, human-in-the-loop gate). Supersedes `install-outline.md` once promoted to the hosted `install.txt`.
+- `skills/setup/` — `/mindframe:setup` wizard (delegating stub → fetches the hosted `install.txt`; the next version is generated from `docs/install-flow-v2.md`).
 - `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
-- `dashboard/` — FastAPI server that serves the SPA shell, exposes the block-stream API (`/api/frames`, `/api/frame/<id>`, `/api/frame/<id>/blocks`, `/api/frame/<id>/stream` SSE), and the manual-spawn `POST /api/frames`. Runs as a managed daemon via the `daemon` capability (`daemon-manager`) — reboot-persistent via systemd/launchd/Task Scheduler. SPA: boards-index at `/`, per-mindframe detail at `/m/<id>` with the typed block renderer. See `dashboard/README.md` and `docs/mindframe-block-stream-api.md`.
+- `dashboard/` — FastAPI server (`server/server.py`) + SPA (`public/`). Exposes: KB graph (`/api/vaults`, `/api/vaults/<name>/graph`), **live connection discovery (`/api/connections` — `claude mcp list` + gh/gcloud/aws/az auth probes, minus bundle runtime; replaces the hardcoded `KNOWN_SOURCES`/`/api/sources` catalog)**, the block-stream API (`/api/frames`, `/api/frame/<id>/blocks`, `/api/frame/<id>/stream` SSE), panes, shares, `/artifacts/<sid>/<path>`. Managed daemon via the `daemon` capability. **Direction note (2026-06-02):** the append-only block-stream is being superseded *as the default mindframe modality* by an agent-generated **spatial** surface + an **intent channel** (a click carries only an element id; the frame's agent, reached by id, is resumed and resolves meaning from its own transcript). Input is linear; presentation is not. See `docs/onboarding-ux.md`. The block-stream remains the shipped frame plumbing.
 - `recipes/mindframe-poc/` — example recipe ships in-tree. `make install-recipes` copies it to `~/.dispatcher/recipes/`.
 - `lib/` — `frame.py` (core storage ops), `spawn.py` (CLI), tests. The block-stream contract.
 - `mcp/` — `server.py` (FastMCP `write_block` + `set_title`), tests.
@@ -76,12 +78,23 @@ Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don
 
 ## Next
 
-The bundle is now in **shipping shape**: cross-platform CI matrix green, demo recipe works end-to-end, install path documented. Remaining items in priority order:
+**Direction redesigned 2026-06-02 — full model in `docs/onboarding-ux.md`.** Decisions from that session, with honest build status:
 
-1. **Diagnose the live-agent crash at block ~10** (gap #6). The mindframe-poc spawn died early in the live demo. State dir was empty — taskpilot's lifecycle hooks may not have fired. Needs another live spawn with hook instrumentation.
-2. **Real end-to-end fresh-install dry-run** against a clean Linux box (Tier 3 covers the deterministic surface; the Claude-driven phases of install.txt — PHASE 3–8 — still need a human-in-the-loop pass).
-3. **Home surface** — signals + "tackle this" buttons that spawn mindframes. Closer to taskboard's domain.
-4. **Block-stream renderer polish** — supersedes/redact visual paths untested, inline markdown is minimal (no GFM tables/strikethrough), large historical replay isn't paginated.
+- **The web app is the primary interface**, not the terminal. The terminal does only bootstrap (PHASE 1–2); the setup conversation moves into the dashboard. *(designed; `install-flow-v2.md` drafted)*
+- **A mindframe is an agent-generated SPATIAL surface, not a linear conversation.** The append-only block-stream is a failed *default* — it forces a chat feel. A mindframe is a composed surface the agent mutates: input is linear, presentation is not. *(decided; block-stream is still the shipped renderer)*
+- **The agent is a durable JSON transcript reached by id**, resumed per interaction. UI elements carry only an element id (+ optional runtime context); the resumed agent resolves meaning from its own history. One intent channel, render states `idle → working → awaiting-approval → settled`. *(prototyped end-to-end — see below)*
+- **Connections = live discovery** (MCPs + authed CLIs minus bundle runtime), not a hardcoded catalog. *(built: `/api/connections`)*
+- **Generative-UI finding:** minimal-prompt agents reproduce/beat the hand-designed setup surface. The UI is no longer the hard part — do **not** build a component library / layout DSL.
+
+Proven this session (prototypes under `slice/` and `dashboard/artifacts/`, local/uncommitted): a **real Claude agent** (taskpilot, subscription, reached by task id, resumed per message) interpreted element-id clicks from its own brief, ran real `gh` (pulled 40 repos), surfaced an honest error and self-corrected, and the surface reflected it live with a consequence-gated approval state.
+
+Open / to harden, priority order:
+
+1. **Reliable agent message-delivery transport.** taskpilot delivers via tmux keystrokes into the Claude TUI; submits drop intermittently (and `hooks/on-prompt.py` was missing — likely install drift, cf. the prefix-drift pattern). A production mindframe needs a real resume channel, not keystroke injection. **This is the keystone blocker.**
+2. **Sandboxed-HOME for spawned agents** — `gh`/CLI auth isn't visible to taskpilot agents; they need `GH_CONFIG_DIR` / `$TASKPILOT_HOME` handling.
+3. **The intent-channel + spatial-surface runtime** — promote the `slice/` prototypes into the dashboard: generated surface bound to live state, `element-id → resume agent` channel, render states incl. approval.
+4. **Home surface** — signals → "tackle this" → spawn a mindframe (the bridge from setup to use).
+5. Carryover (lower priority given the modality shift): fresh-install dry-run; live-agent stability; block-stream renderer polish.
 
 ### Shipped this slice (chronological)
 
@@ -93,9 +106,9 @@ The bundle is now in **shipping shape**: cross-platform CI matrix green, demo re
 - ~~CI matrix Linux/macOS/Windows~~ — caught and fixed 6 cross-platform bugs on first run
 - ~~Dashboard as managed daemon~~ — `daemon` capability declared, setup skill + install.txt updated to register via daemon-manager (intent-based, not tool-hardcoded)
 
-## Current dashboard state (as of 2026-05-23)
+## Current dashboard state (as of 2026-06-02)
 
-- `dashboard/server/server.py` — FastAPI: `/api/health`, `/api/panes`, `/api/dashboard-event` (dispatcher proxy reading `~/.mindframe/secrets/dispatcher-bearer.token`), `/api/save` + `/s/<id>` shares, `/artifacts/<sid>/<path>` artifact serving, SPA fallback for everything else. No taskpilot or session-bridge dependency.
-- `dashboard/public/` — Inter-free design-system stack (Space Grotesk / Source Serif 4 / JetBrains Mono), warm dark palette, gold accent. Two routes: `/` (boards index) and `/m/<id>` (mindframe detail).
-- Bearer file at `~/.mindframe/secrets/dispatcher-bearer.token` (chmod 600); matches the dispatcher daemon's `DISPATCHER_INGEST_TOKEN` env so button events succeed end-to-end.
-- 21 artifacts under `dashboard/artifacts/`: 19 historical (legacy dashboard-agent leftovers, ignore for demos) + `demo-incident-001` (OOMKilled in payments-api) + `demo-customer-review` (Acme QBR prep). Latter two are hand-authored HTML used for visual iteration.
+- `dashboard/server/server.py` — FastAPI. Endpoints: `/api/health`, `/api/panes`, block-stream (`/api/frames`, `/api/frame/<id>`, `/api/frame/<id>/blocks`, `/api/frame/<id>/stream`, `POST /api/frames`), `/api/suggestions`, `POST /api/prompt`, `POST /api/dashboard-event` (dispatcher proxy, bearer from `~/.mindframe/secrets/dispatcher-bearer.token`), vaults (`/api/vaults`, `/api/vaults/<name>/entries|graph`, `POST .../share`), sources (`/api/sources`, connect/disconnect) + **`/api/connections` (live discovery, the real replacement for the `KNOWN_SOURCES` catalog)**, shares, `/artifacts/<sid>/<path>`, SPA fallback.
+- `dashboard/public/` — Space Grotesk / Source Serif 4 / JetBrains Mono, warm dark, gold accent. Routes `/` (boards index) and `/m/<id>` (typed block renderer).
+- Bearer file at `~/.mindframe/secrets/dispatcher-bearer.token` (chmod 600); matches the dispatcher's `DISPATCHER_INGEST_TOKEN`.
+- **2026-06-02 redesign prototypes (local, NOT shipped — `dashboard/artifacts/` is gitignored):** `kb-live` (hand-built spatial first-run surface: you-graph + schema rail + connections rail), `genui-1/2/3` (minimal-prompt agent-generated surfaces), and `slice/` (the live intent-channel experiments incl. one real taskpilot-agent run). Reference material for the spatial-mindframe direction; Wizard-of-Oz except the `slice/live` real-agent run.

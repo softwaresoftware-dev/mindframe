@@ -153,3 +153,66 @@ The user is never left holding broken plumbing.
   meets real walls. Likely the home of the `human-approval` capability.
 - Connection state persistence (provenance/path/fidelity/recipe/dismissed).
 - Relevance curation layer (discovery finds Beats; the agent deprioritizes it).
+
+## What we built and learned next (2026-06-02)
+
+The sections above were written mid-design. These are the decisions and findings
+that followed, and they supersede anything above that conflicts.
+
+### A mindframe is a spatial surface, not a linear conversation
+
+The append-only block-stream (`docs/mindframe-block-stream-api.md`) is a **failed
+default** — appending blocks forces a chat feel. The right model: **input is
+linear, presentation is not.** A mindframe is an agent-composed **spatial**
+surface (graph centerpiece, rails, signal cards, an input) that the agent
+**mutates in place**, not a transcript you scroll. The block-stream stays as
+fallback plumbing only.
+
+### Setup is a mindframe
+
+The onboarding flow is not special-cased UI — it is the **first mindframe**. The
+schema rail, connections rail, and knowledge-graph are reusable components any
+mindframe composes. `install-flow-v2.md` is that mindframe's recipe.
+
+### The intent primitive (how interaction works)
+
+- The **agent is a durable JSON transcript reached by id**, not a running
+  process. It's resumed per interaction; its transcript is its memory of what it
+  rendered.
+- A UI element carries **only an element id** (+ optional runtime context like a
+  row). The resumed agent resolves meaning from its own history. No `data-context`
+  restating what the agent knows; a human-readable label is fine.
+- One intent channel; every element auto-wires to it (so **dead buttons are
+  impossible by construction**). Render states: **idle → working →
+  awaiting-approval → settled.**
+- The `awaiting-approval` state is the human-in-the-loop gate as a first-class,
+  on-surface object (see `install-flow-v2.md` PHASE 0 — taught, present,
+  away-path, editable). The same channel carries clicks down and approval
+  requests up.
+- Design pressure moves from "keep agents alive" to **"keep resume cheap"**:
+  don't store rendered markup in the transcript; keep histories lean; warm-cache.
+
+### Generative-UI finding — the UI is no longer the hard part
+
+Given a minimal prompt (domain only, zero UI guidance), independent agents
+**reproduced and beat** the hand-built first-run surface, converging on the same
+vocabulary (phases, conversation, connections rail, schema, signals, input) plus
+extras, grounded in the real environment. Conclusion: **do not build a component
+library or layout DSL.** The minimal harness is freeform agent-generated UI + the
+intent primitive + live state binding.
+
+### Proven on real infrastructure, and the one real blocker
+
+A real Claude agent (taskpilot, subscription, reached by **task id**, resumed per
+message) interpreted element-id clicks from its own brief, ran real `gh` (pulled
+40 repos), surfaced an honest auth error and self-corrected, and the surface
+reflected it live with a consequence-gated approval state. The keystone works.
+
+The blocker is **delivery transport, not the concept**: taskpilot delivers
+messages by typing keystrokes into the Claude TUI in tmux, and submits drop
+intermittently (plus a missing `taskpilot/hooks/on-prompt.py` — likely install
+drift, and spawned agents have a sandboxed `$HOME` so `gh` needs
+`GH_CONFIG_DIR`). A production mindframe needs a **reliable resume channel**
+(queue/API), not keystroke injection. Prototypes (local, **not committed**):
+`slice/` (incl. `slice/live`, the real-agent run) and
+`dashboard/artifacts/{kb-live,genui-1,2,3}` (the latter under gitignored `artifacts/`).
