@@ -96,9 +96,8 @@ def _resolve_default_vault_path() -> Path | None:
 
 VAULT_PATH = _resolve_default_vault_path()
 
-# lib.frame lives one level above the dashboard, in the plugin root.
+# Plugin libs (lib.vaults_yaml) live one level above the dashboard.
 sys.path.insert(0, str(ROOT.parent))
-from lib import frame as frame_lib  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "5174"))
 
@@ -194,10 +193,10 @@ def artifact_path(sid: str) -> Path:
 
 
 def _configure_logging() -> None:
-    """Surface library log messages (httpx, asyncio, frame_lib, etc.) to
+    """Surface library log messages (httpx, asyncio, etc.) to
     journald / launchd's StandardOutPath. The dashboard's own log() helper
     print()s with flush=True and doesn't need this, but anything that uses
-    the standard logging library (fastapi internals, httpx, frame_lib) goes
+    the standard logging library (fastapi internals, httpx) goes
     silent without it. See dispatcher's main.py for the full rationale.
     """
     import logging
@@ -298,16 +297,14 @@ async def api_panes() -> dict[str, Any]:
     return {"panes": _list_panes()}
 
 
-# --------------------------- block-stream API ---------------------------
-
-
-def _frame_dir(mid: str) -> Path | None:
-    if not FRAME_ID_RE.match(mid):
-        return None
-    d = FRAMES_ROOT / mid
-    if not d.is_dir():
-        return None
-    return d
+# --------------------------- mindframe surface listing ---------------------------
+#
+# Block-stream removed (2026-06-04): a mindframe is now a *surface* — the agent
+# owns one index.html it rewrites in place (see surface/ and
+# docs/onboarding-ux.md). This endpoint lists surface mindframes: frame dirs
+# under FRAMES_ROOT that hold an index.html. Proper per-mindframe viewing and
+# prompt->surface creation are rebuilt in a later migration step; for now each
+# frame's page is reachable via /artifacts/<id>/index.html.
 
 
 def _read_meta(fdir: Path) -> dict[str, Any]:
@@ -320,40 +317,10 @@ def _read_meta(fdir: Path) -> dict[str, Any]:
         return {}
 
 
-def _read_blocks(fdir: Path, since_id: str | None = None) -> tuple[list[dict[str, Any]], int]:
-    """Read all blocks from blocks.jsonl, optionally filtering to those after
-    `since_id` (UUIDv7 string comparison works because of chronological sort).
-
-    Returns (blocks, file_size_bytes_read). The byte count lets tail loops
-    cheaply detect whether the file has grown since the last read.
-    """
-    bpath = fdir / "blocks.jsonl"
-    if not bpath.is_file():
-        return [], 0
-    try:
-        raw = bpath.read_bytes()
-    except OSError:
-        return [], 0
-    blocks: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            b = json.loads(line)
-        except ValueError:
-            continue
-        if since_id and isinstance(b.get("id"), str) and b["id"] <= since_id:
-            continue
-        blocks.append(b)
-    # Server-side application of supersedes / redact happens at the renderer
-    # for now. Spec calls for server-side resolution; we'll iterate.
-    return blocks, len(raw)
-
-
 @app.get("/api/frames")
 async def api_frames() -> dict[str, Any]:
-    """List mindframes from ~/.mindframe/frames/, newest-activity first."""
+    """List surface mindframes — frame dirs under FRAMES_ROOT holding an
+    index.html — newest-activity first."""
     out: list[dict[str, Any]] = []
     if not FRAMES_ROOT.is_dir():
         return {"frames": []}
@@ -364,329 +331,23 @@ async def api_frames() -> dict[str, Any]:
     for fdir in entries:
         if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
             continue
+        index = fdir / "index.html"
+        if not index.is_file():
+            continue
         meta = _read_meta(fdir)
-        bpath = fdir / "blocks.jsonl"
-        block_count = 0
-        last_block_at = meta.get("last_block_at") or meta.get("created_at") or 0
-        if bpath.is_file():
-            try:
-                with open(bpath, "rb") as fh:
-                    block_count = sum(1 for line in fh if line.strip())
-                last_block_at = max(last_block_at, int(bpath.stat().st_mtime * 1000))
-            except OSError:
-                pass
+        try:
+            modified = int(index.stat().st_mtime * 1000)
+        except OSError:
+            modified = 0
         out.append({
             "id": fdir.name,
             "title": meta.get("title") or fdir.name,
             "status": meta.get("status") or "active",
-            "block_count": block_count,
-            "last_block_at": last_block_at,
+            "modified": modified,
             "tags": meta.get("tags") or [],
         })
-    out.sort(key=lambda f: f["last_block_at"], reverse=True)
+    out.sort(key=lambda f: f["modified"], reverse=True)
     return {"frames": out}
-
-
-@app.get("/api/frame/{mid}")
-async def api_frame_meta(mid: str) -> Response:
-    fdir = _frame_dir(mid)
-    if fdir is None:
-        return JSONResponse({"error": "frame not found"}, status_code=404)
-    return JSONResponse(_read_meta(fdir))
-
-
-@app.get("/api/frame/{mid}/blocks")
-async def api_frame_blocks(mid: str, since: str | None = None) -> Response:
-    fdir = _frame_dir(mid)
-    if fdir is None:
-        return JSONResponse({"error": "frame not found"}, status_code=404)
-    blocks, _ = _read_blocks(fdir, since_id=since)
-    last_id = blocks[-1]["id"] if blocks else None
-    return JSONResponse({"frame_id": mid, "blocks": blocks, "last_block_id": last_id})
-
-
-class CreateFrameBody(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    seed_block: dict | None = None
-    spawned_by: dict | None = None
-    tags: list[str] | None = None
-
-
-@app.post("/api/frames")
-async def api_frames_create(body: CreateFrameBody) -> Response:
-    """Manual mindframe creation — used by the home '+ new mindframe' button
-    and any external caller that wants to spawn a frame without going through
-    the dispatcher. Calls lib.frame.create_frame directly (in-process).
-
-    Note: this only creates the frame *shell*. To actually launch an agent
-    against it, the caller (or a subsequent step) needs to spawn taskpilot
-    with name=<id>, cwd=<frame_dir>. The shell alone is useful for testing
-    the renderer and for manual block-stream authoring."""
-    try:
-        result = frame_lib.create_frame(
-            title=body.title,
-            seed_block=body.seed_block,
-            spawned_by=body.spawned_by or {"kind": "manual"},
-            tags=body.tags,
-        )
-    except (ValueError, FileExistsError) as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except OSError as e:
-        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
-    return JSONResponse({
-        "id": result["id"],
-        "url": result["url"],
-        "frame_dir": result["frame_dir"],
-    })
-
-
-def _scan_vault_targets(limit_per_kind: int = 5) -> dict[str, list[str]]:
-    """Pull a handful of names out of the vault to seed suggested mindframes.
-
-    Reads file basenames (without `.md`) from the canonical KB folders. Any
-    folder that doesn't exist is skipped. Falls back to an empty dict if the
-    vault path isn't configured or unreachable.
-    """
-    targets: dict[str, list[str]] = {"services": [], "repos": [], "products": []}
-    if not VAULT_PATH or not VAULT_PATH.is_dir():
-        return targets
-    for kind, subdir in (
-        ("services", "services"),
-        ("repos", "repos"),
-        ("products", "products"),
-    ):
-        d = VAULT_PATH / subdir
-        if not d.is_dir():
-            continue
-        entries = sorted(
-            f.stem for f in d.glob("*.md") if f.is_file() and not f.name.startswith("_")
-        )
-        targets[kind] = entries[:limit_per_kind]
-    return targets
-
-
-def _build_suggestions(targets: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """Return suggested mindframes the user can spawn from the home screen.
-
-    Each suggestion is a starting prompt plus a title. We weave in vault
-    entries when we have them so the suggestions feel grounded — "review PRs
-    on payments-api" beats "review your team's PRs". If the vault is empty,
-    we fall back to generic placeholders.
-    """
-    services = targets.get("services") or []
-    repos = targets.get("repos") or []
-    products = targets.get("products") or []
-
-    primary_repo = repos[0] if repos else (services[0] if services else None)
-    primary_product = products[0] if products else None
-    primary_service = services[0] if services else None
-
-    def s(title: str, prompt: str, tag: str) -> dict[str, Any]:
-        return {"title": title, "prompt": prompt, "tag": tag}
-
-    out: list[dict[str, Any]] = []
-    out.append(s(
-        title=f"Review PRs on {primary_repo}" if primary_repo else "Review your team's PRs",
-        prompt=(
-            f"Create an agent that reviews open pull requests on {primary_repo} "
-            "every weekday morning, flags risky changes, and posts a summary."
-            if primary_repo else
-            "Create an agent that reviews open pull requests across our repos "
-            "every weekday morning, flags risky changes, and posts a summary."
-        ),
-        tag="engineering",
-    ))
-    out.append(s(
-        title=f"E2E test {primary_product} weekly" if primary_product else "Weekly E2E browser test",
-        prompt=(
-            f"Create an agent that does a full end-to-end browser test of {primary_product} "
-            "once a week. Walk the golden path, capture screenshots, report any regressions."
-            if primary_product else
-            "Create an agent that does a full end-to-end browser test of our product "
-            "once a week. Walk the golden path, capture screenshots, report any regressions."
-        ),
-        tag="product",
-    ))
-    out.append(s(
-        title=(
-            f"Investigate {primary_service} infrastructure"
-            if primary_service else "Investigate our infrastructure"
-        ),
-        prompt=(
-            f"Investigate the health and cost of {primary_service}'s infrastructure — "
-            "logs, metrics, alerts, recent deploys. Surface anything that looks off."
-            if primary_service else
-            "Investigate the health and cost of our production infrastructure — "
-            "logs, metrics, alerts, recent deploys. Surface anything that looks off."
-        ),
-        tag="infra",
-    ))
-    out.append(s(
-        title="Weekly customer-feedback digest",
-        prompt=(
-            "Create an agent that scans support tickets, sales call notes, and "
-            "Slack #feedback every Monday morning and writes a digest of what "
-            "customers are asking for."
-        ),
-        tag="business",
-    ))
-    return out
-
-
-@app.get("/api/suggestions")
-async def api_suggestions() -> Response:
-    """Suggested mindframes for the home screen.
-
-    Pulls service / repo / product names from the configured vault (if any)
-    and threads them into a small library of starter prompts. Generic fallbacks
-    when the vault isn't reachable.
-    """
-    targets = _scan_vault_targets()
-    suggestions = _build_suggestions(targets)
-    return JSONResponse({
-        "vault_present": bool(VAULT_PATH and VAULT_PATH.is_dir()),
-        "vault_path": str(VAULT_PATH) if VAULT_PATH else None,
-        "targets": targets,
-        "suggestions": suggestions,
-    })
-
-
-class PromptBody(BaseModel):
-    text: str = Field(..., min_length=1, max_length=2000)
-    source: str | None = None
-
-
-@app.post("/api/prompt")
-async def api_prompt(body: PromptBody) -> Response:
-    """Human-typed prompt from the home chatbox.
-
-    Creates a frame shell with the user's prompt as the seed block, then fires
-    a `mindframe.create` dashboard event so the dispatcher can spawn an agent
-    to fulfil the prompt. Returns the new frame's id so the SPA can navigate
-    to it.
-
-    The dispatcher event is best-effort — if dispatcher is unreachable, the
-    frame still exists and the user can attach an agent manually.
-    """
-    title = body.text.strip().split("\n", 1)[0][:120]
-    try:
-        result = frame_lib.create_frame(
-            title=title,
-            seed_block={"type": "text", "markdown": body.text},
-            spawned_by={"kind": "dashboard-prompt", "source": body.source or "home"},
-            tags=["user-prompt"],
-        )
-    except (ValueError, FileExistsError) as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except OSError as e:
-        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
-
-    bearer = _read_dispatcher_bearer()
-    dispatcher_status = "skipped"
-    dispatcher_error: str | None = None
-    if bearer:
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.post(
-                    f"{DISPATCHER_URL}/api/event",
-                    headers={"Authorization": f"Bearer {bearer}"},
-                    json={
-                        "event_type": "mindframe.create",
-                        "source": "dashboard-prompt",
-                        "data": {
-                            "frame_id": result["id"],
-                            "prompt": body.text,
-                            "title": title,
-                        },
-                    },
-                )
-                if r.status_code < 300:
-                    dispatcher_status = "queued"
-                else:
-                    dispatcher_status = "rejected"
-                    dispatcher_error = f"status {r.status_code}: {r.text[:200]}"
-        except httpx.HTTPError as e:
-            dispatcher_status = "unreachable"
-            dispatcher_error = str(e)
-
-    return JSONResponse({
-        "id": result["id"],
-        "url": result["url"],
-        "dispatcher_status": dispatcher_status,
-        "dispatcher_error": dispatcher_error,
-    })
-
-
-@app.get("/api/frame/{mid}/stream")
-async def api_frame_stream(
-    mid: str,
-    request: Request,
-    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
-) -> Response:
-    """SSE stream of blocks. Replays from Last-Event-ID (if given), then tails.
-
-    Each event is `id: <uuid7>\\ndata: <json>\\n\\n`. The browser's EventSource
-    auto-reconnects with Last-Event-ID set, so resumption is free.
-    """
-    fdir = _frame_dir(mid)
-    if fdir is None:
-        return JSONResponse({"error": "frame not found"}, status_code=404)
-
-    async def gen():
-        # Tell the client our preferred reconnect delay (ms).
-        yield "retry: 2000\n\n"
-
-        seen_id = last_event_id
-        # Initial replay — everything after Last-Event-ID (or all of it).
-        blocks, _ = _read_blocks(fdir, since_id=seen_id)
-        for b in blocks:
-            yield _sse_event(b)
-            seen_id = b["id"]
-
-        # Tail loop — poll file mtime, re-read if it grew.
-        bpath = fdir / "blocks.jsonl"
-        last_size = bpath.stat().st_size if bpath.is_file() else 0
-        last_mtime = bpath.stat().st_mtime if bpath.is_file() else 0
-        keepalive_counter = 0
-        while True:
-            if await request.is_disconnected():
-                return
-            await asyncio.sleep(TAIL_POLL_S)
-            try:
-                st = bpath.stat()
-            except OSError:
-                continue
-            if st.st_size != last_size or st.st_mtime != last_mtime:
-                new_blocks, size = _read_blocks(fdir, since_id=seen_id)
-                for b in new_blocks:
-                    yield _sse_event(b)
-                    seen_id = b["id"]
-                last_size = size
-                last_mtime = st.st_mtime
-                keepalive_counter = 0
-            else:
-                keepalive_counter += 1
-                # Send a comment line every ~15s to keep proxies from closing.
-                if keepalive_counter * TAIL_POLL_S >= 15:
-                    yield ": keepalive\n\n"
-                    keepalive_counter = 0
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",  # disable nginx buffering if proxied
-            "Connection": "keep-alive",
-        },
-    )
-
-
-def _sse_event(block: dict[str, Any]) -> str:
-    """Format one block as one SSE event. id field doubles as Last-Event-ID."""
-    bid = block.get("id", "")
-    payload = json.dumps(block, ensure_ascii=False, separators=(",", ":"))
-    return f"id: {bid}\ndata: {payload}\n\n"
 
 
 # --------------------------- dispatcher proxy ---------------------------
@@ -1723,6 +1384,283 @@ async def shares_accept(body: AcceptBody) -> Response:
         "repo": repo_full, "response_path": str(response_path),
         "status": "queued",
     })
+
+
+# --------------------------- system overview (read-only) ---------------------------
+#
+# Three endpoints that, together with the existing /api/frames, /api/vaults and
+# /api/connections, back the structured "System" view. Each maps one bucket of
+# the bundle's mental model to its real on-disk source of truth:
+#
+#   /api/events       — dispatcher routes      (~/.dispatcher/channels.yaml)
+#   /api/agents       — recipes + taskpilot db (~/.dispatcher/recipes, ~/.taskpilot)
+#   /api/capabilities — MCPs + plugin skills   (claude mcp list, installed_plugins.json)
+#
+# All read-only, all defensive: a missing dispatcher / taskpilot / claude CLI
+# degrades to an empty list with a `present: false` flag, never a 500.
+
+DISPATCHER_HOME = Path(os.environ.get("MINDFRAME_DISPATCHER_HOME", str(Path.home() / ".dispatcher")))
+TASKPILOT_DB = Path(os.environ.get("MINDFRAME_TASKPILOT_DB", str(Path.home() / ".taskpilot" / "taskpilot.db")))
+
+_sys_cache: dict[str, dict[str, Any]] = {}
+_SYS_TTL_S = 20.0
+
+
+def _load_yaml(path: Path) -> Any:
+    """Parse a YAML file, tolerating a missing PyYAML or unreadable file."""
+    try:
+        import yaml  # transitive dep of the bundle (lib/vaults_yaml.py)
+    except ImportError:
+        return None
+    try:
+        return yaml.safe_load(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _split_target(target: str) -> dict[str, str]:
+    """`spawn:meeting-prep` -> {kind: spawn, name: meeting-prep}."""
+    if isinstance(target, str) and ":" in target:
+        kind, name = target.split(":", 1)
+        return {"kind": kind, "name": name}
+    return {"kind": "session", "name": str(target)}
+
+
+@app.get("/api/events")
+def list_event_sources() -> Response:
+    """Dispatcher event-source routes, grouped by source. Each route says which
+    (source, event_type) pair fires which target (spawn:<recipe> | session:<name>)."""
+    chan = DISPATCHER_HOME / "channels.yaml"
+    if not chan.is_file():
+        return JSONResponse({"sources": [], "route_count": 0, "dispatcher_present": False})
+    data = _load_yaml(chan) or {}
+    routes = data.get("routes") or []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for r in routes:
+        if not isinstance(r, dict):
+            continue
+        src = str(r.get("source", "unknown"))
+        tgt = _split_target(r.get("target", ""))
+        grouped.setdefault(src, []).append({
+            "event_type": str(r.get("event_type", "*")),
+            "target_kind": tgt["kind"],
+            "target_name": tgt["name"],
+            "brief_keys": sorted((r.get("brief") or {}).keys()),
+        })
+    sources = [{"source": s, "routes": rs} for s, rs in sorted(grouped.items())]
+    return JSONResponse({
+        "sources": sources,
+        "route_count": sum(len(rs) for rs in grouped.values()),
+        "dispatcher_present": True,
+    })
+
+
+def _tmux_sessions() -> set[str]:
+    r = _conn_run(["tmux", "ls", "-F", "#{session_name}"], timeout=5)
+    if not r or r.returncode != 0:
+        return set()
+    return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
+
+
+def _agent_definitions() -> list[dict[str, Any]]:
+    """Recipes under ~/.dispatcher/recipes/<name>/recipe.yaml — the spawn
+    templates an event route can target. These are what CAN run."""
+    recipes_dir = DISPATCHER_HOME / "recipes"
+    out: list[dict[str, Any]] = []
+    if not recipes_dir.is_dir():
+        return out
+    # Map recipe name -> the (source, event_type) routes that trigger it.
+    triggers: dict[str, list[str]] = {}
+    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    for r in (chan.get("routes") or []):
+        if isinstance(r, dict):
+            t = _split_target(r.get("target", ""))
+            if t["kind"] == "spawn":
+                triggers.setdefault(t["name"], []).append(
+                    f"{r.get('source', '?')}/{r.get('event_type', '*')}")
+    for d in sorted(recipes_dir.iterdir()):
+        rec = d / "recipe.yaml"
+        if not d.is_dir() or not rec.is_file():
+            continue
+        meta = _load_yaml(rec) or {}
+        out.append({
+            "id": d.name,
+            "name": meta.get("task_name") or d.name,
+            "kind": meta.get("kind") or "task",
+            "model": meta.get("model"),
+            "when_to_use": meta.get("when_to_use") or [],
+            "triggered_by": triggers.get(d.name, []),
+        })
+    return out
+
+
+def _live_agents(limit: int = 40) -> list[dict[str, Any]]:
+    """Taskpilot tasks — what IS (or recently was) running. Read straight from
+    taskpilot.db, newest first, cross-referenced with live tmux sessions."""
+    if not TASKPILOT_DB.is_file():
+        return []
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+    except sqlite3.Error:
+        return []
+    try:
+        cols = ("task_id", "name", "description", "status", "kind", "model",
+                "cwd", "updated_at")
+        rows = con.execute(
+            f"SELECT {', '.join(cols)} FROM tasks "
+            "ORDER BY updated_at DESC LIMIT 400"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+
+    def _recent(ts: str | None) -> bool:
+        if not ts:
+            return False
+        try:
+            dt = datetime.fromisoformat(ts.replace(" ", "T"))
+        except ValueError:
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt >= cutoff
+
+    sessions = _tmux_sessions()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rec = dict(zip(cols, row))
+        rec["live"] = rec["task_id"] in sessions
+        # "Live tasks" = what is running right now or freshly queued:
+        #   - a live tmux session (ground truth for "running"), always kept; or
+        #   - a non-terminal db status (running/pending) updated in the last 3d.
+        # Terminal runs (killed/crashed/completed) and ancient pending zombies
+        # are history, not live — drop them.
+        if not (rec["live"] or
+                (rec["status"] in ("running", "pending") and _recent(rec["updated_at"]))):
+            continue
+        desc = rec.get("description") or ""
+        rec["description"] = desc[:140] + ("…" if len(desc) > 140 else "")
+        out.append(rec)
+    # Live first, then by recency (already DESC), capped.
+    out.sort(key=lambda a: not a["live"])
+    return out[:limit]
+
+
+@app.get("/api/agents")
+def list_agents() -> Response:
+    """Agents in two groups: definitions (recipes = what can run) and live
+    (taskpilot tasks = what is running)."""
+    now = time.time()
+    c = _sys_cache.get("agents")
+    if not c or (now - c["at"]) > _SYS_TTL_S:
+        defs = _agent_definitions()
+        live = _live_agents()
+        c = {"at": now, "data": {
+            "definitions": defs,
+            "live": live,
+            "definition_count": len(defs),
+            "live_count": len(live),
+            "running_count": sum(1 for a in live if a["live"]),
+        }}
+        _sys_cache["agents"] = c
+    return JSONResponse(c["data"])
+
+
+def _list_mcps() -> list[dict[str, Any]]:
+    """All MCPs from `claude mcp list`, flagged bundle-runtime vs external."""
+    r = _conn_run(["claude", "mcp", "list"], timeout=45)
+    out: list[dict[str, Any]] = []
+    for line in (r.stdout if r else "").splitlines():
+        line = line.strip()
+        if ": " not in line or " - " not in line:
+            continue
+        name_part, rest = line.split(": ", 1)
+        status = rest.rsplit(" - ", 1)[-1].strip()
+        base = name_part.split(":")[-1] if name_part.startswith("plugin:") else name_part
+        state = ("connected" if "Connected" in status
+                 else "needs-auth" if "auth" in status.lower() else "unknown")
+        out.append({
+            "id": base,
+            "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title()),
+            "state": state,
+            "bundle": base in _BUNDLE_RUNTIME,
+        })
+    out.sort(key=lambda m: (m["state"] != "connected", m["bundle"], m["name"]))
+    return out
+
+
+def _parse_frontmatter(text: str) -> dict[str, str]:
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    fm: dict[str, str] = {}
+    for line in text[3:end].splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip()
+    return fm
+
+
+def _list_skills() -> list[dict[str, Any]]:
+    """Skills shipped by installed plugins, grouped by plugin."""
+    manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(manifest.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[dict[str, Any]] = []
+    for plugin_key, installs in (data.get("plugins") or {}).items():
+        if not installs:
+            continue
+        install_path = installs[0].get("installPath")
+        if not install_path:
+            continue
+        skills_dir = Path(install_path) / "skills"
+        if not skills_dir.is_dir():
+            continue
+        skills: list[dict[str, str]] = []
+        for sk in sorted(skills_dir.glob("*/SKILL.md")):
+            try:
+                fm = _parse_frontmatter(sk.read_text("utf-8")[:600])
+            except OSError:
+                continue
+            desc = fm.get("description", "")
+            skills.append({
+                "name": fm.get("name") or sk.parent.name,
+                "description": desc[:120] + ("…" if len(desc) > 120 else ""),
+            })
+        if skills:
+            out.append({
+                "plugin": plugin_key.split("@")[0],
+                "version": installs[0].get("version", ""),
+                "skills": skills,
+            })
+    out.sort(key=lambda p: p["plugin"])
+    return out
+
+
+@app.get("/api/capabilities")
+def list_capabilities() -> Response:
+    """Skills + MCPs the bundle can act through — the capability surface."""
+    now = time.time()
+    c = _sys_cache.get("caps")
+    if not c or (now - c["at"]) > _SYS_TTL_S:
+        mcps = _list_mcps()
+        skills = _list_skills()
+        c = {"at": now, "data": {
+            "mcps": mcps,
+            "skills": skills,
+            "mcp_count": len(mcps),
+            "skill_count": sum(len(p["skills"]) for p in skills),
+        }}
+        _sys_cache["caps"] = c
+    return JSONResponse(c["data"])
 
 
 @app.get("/{full_path:path}")

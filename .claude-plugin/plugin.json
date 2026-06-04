@@ -14,15 +14,6 @@
     "claude"
   ],
   "repository": "https://github.com/softwaresoftware-dev/mindframe",
-  "mcpServers": {
-    "mindframe": {
-      "command": "python3",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/mcp/server.py"
-      ],
-      "cwd": "${CLAUDE_PLUGIN_ROOT}/mcp"
-    }
-  },
   "userConfig": {
     "deployment_name": {
       "type": "string",

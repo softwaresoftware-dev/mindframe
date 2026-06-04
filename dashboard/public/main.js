@@ -1,8 +1,13 @@
-// Mindframe dashboard SPA — boards-index + per-mindframe block-stream renderer.
+// Mindframe dashboard SPA.
 //
 // Two views:
-//   /        → boards index (polled from /api/frames)
-//   /m/<id>  → one mindframe, blocks streamed live via SSE (EventSource)
+//   /        → home: vaults + data sources
+//   /system  → structured overview of the whole bundle (events, agents,
+//              mindframes, skills+MCPs, knowledge bases)
+//
+// A mindframe is a surface (the agent owns one index.html it rewrites). Block-
+// stream rendering was removed 2026-06-04; per-mindframe viewing is rebuilt on
+// the surface model in a later migration step.
 
 const POLL_INTERVAL_MS = 3000;
 const HEALTH_POLL_MS = 15000;
@@ -143,7 +148,7 @@ window.mindframe = {
   },
 };
 
-// ----- Block renderers: one function per type, returns an HTMLElement -----
+// ----- el(): generic DOM builder helper -----
 
 function el(tag, attrs = {}, children = []) {
   const e = document.createElement(tag);
@@ -158,176 +163,6 @@ function el(tag, attrs = {}, children = []) {
     e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
   }
   return e;
-}
-
-const RENDERERS = {
-  text(b) {
-    return el("div", { class: "block block-text" }, [
-      el("div", { class: "block-body md", html: renderMarkdown(b.markdown) }),
-    ]);
-  },
-
-  code(b) {
-    const pre = el("pre", { class: "block block-code" });
-    const code = el("code", { class: `lang-${escapeHtml(b.lang || "text")}` });
-    code.textContent = b.content ?? "";
-    pre.appendChild(code);
-    if (b.lang) {
-      pre.appendChild(el("span", { class: "code-lang" }, b.lang));
-    }
-    return pre;
-  },
-
-  image(b) {
-    const src = b.src || "";
-    const img = el("img", { class: "block-image-img", src, alt: b.alt || "" });
-    return el("figure", { class: "block block-image" }, [
-      img,
-      b.caption ? el("figcaption", {}, b.caption) : null,
-    ]);
-  },
-
-  "url-card"(b) {
-    const a = el("a", { class: "block block-urlcard", href: b.url, rel: "noopener", target: "_blank" });
-    if (b.favicon) a.appendChild(el("img", { class: "uc-favicon", src: b.favicon, alt: "" }));
-    a.appendChild(el("div", { class: "uc-body" }, [
-      el("div", { class: "uc-title" }, b.title || b.url),
-      b.summary ? el("div", { class: "uc-summary" }, b.summary) : null,
-      el("div", { class: "uc-url" }, b.url),
-    ]));
-    return a;
-  },
-
-  table(b) {
-    const t = el("table", { class: "block block-table" });
-    if (Array.isArray(b.headers)) {
-      const thead = el("thead", {}, el("tr", {}, b.headers.map(h => el("th", {}, String(h)))));
-      t.appendChild(thead);
-    }
-    const tbody = el("tbody");
-    for (const row of (b.rows || [])) {
-      tbody.appendChild(el("tr", {}, (row || []).map(c => el("td", {}, String(c)))));
-    }
-    t.appendChild(tbody);
-    return t;
-  },
-
-  "button-row"(b) {
-    const row = el("div", { class: "block block-btnrow" });
-    for (const btn of (b.buttons || [])) {
-      const style = btn.style || "default";
-      row.appendChild(el("button", {
-        class: `btn btn-${style}`,
-        type: "button",
-        onClick: () => window.mindframe.postEvent(btn.event_type, btn.data || {}),
-      }, btn.label || btn.event_type));
-    }
-    return row;
-  },
-
-  input(b) {
-    const wrap = el("form", { class: "block block-input" });
-    const field = b.field === "textarea"
-      ? el("textarea", { name: b.name || "value", placeholder: b.placeholder || "", rows: "3" })
-      : b.field === "select"
-        ? el("select", { name: b.name || "value" }, (b.options || []).map(o => el("option", { value: o }, o)))
-        : el("input", { type: b.field === "number" ? "number" : "text", name: b.name || "value", placeholder: b.placeholder || "" });
-    if (b.label) wrap.appendChild(el("label", {}, b.label));
-    wrap.appendChild(field);
-    wrap.appendChild(el("button", { class: "btn btn-primary", type: "submit" }, b.submit_label || "Send"));
-    wrap.addEventListener("submit", (ev) => {
-      ev.preventDefault();
-      window.mindframe.postEvent(b.submit_event_type, { name: b.name || "value", value: field.value });
-    });
-    return wrap;
-  },
-
-  summary(b) {
-    const tone = b.tone || "info";
-    return el("div", { class: `block block-summary tone-${tone}` }, [
-      b.title ? el("div", { class: "summary-title" }, b.title) : null,
-      b.body ? el("div", { class: "summary-body" }, b.body) : null,
-    ]);
-  },
-
-  divider() {
-    return el("hr", { class: "block block-divider" });
-  },
-
-  "custom-html"(b) {
-    const src = `/artifacts/${encodeURIComponent(currentFrameId)}/${b.src}`;
-    return el("iframe", {
-      class: "block block-customhtml",
-      src,
-      sandbox: "allow-scripts allow-same-origin",
-      style: `height: ${parseInt(b.height || 400, 10)}px`,
-    });
-  },
-
-  "user-action"(b) {
-    return el("div", { class: "block block-useraction" }, [
-      el("span", { class: "ua-marker" }, "→"),
-      el("span", {}, `you clicked: ${b.label || b.event_type || "(action)"}`),
-    ]);
-  },
-
-  supersedes(b) {
-    // Render the replacement block, with an "edited" badge.
-    const inner = b.block ? renderBlock(b.block) : el("div", {}, "(empty supersedes)");
-    inner.classList.add("superseded-wrap");
-    inner.appendChild(el("span", { class: "edited-badge", title: `replaces ${b.supersedes_id}` }, "edited"));
-    return inner;
-  },
-
-  redact(b) {
-    return el("div", { class: "block block-redact" }, `[redacted: ${b.reason || "no reason"}]`);
-  },
-
-  close(b) {
-    const node = el("div", { class: "block block-close" }, [
-      el("div", { class: "close-bar" }),
-      el("div", { class: "close-reason" }, b.reason || "marked complete"),
-    ]);
-    if (Array.isArray(b.links) && b.links.length) {
-      const links = el("ul", { class: "close-links" });
-      for (const lid of b.links) {
-        links.appendChild(el("li", {}, el("code", {}, lid)));
-      }
-      node.appendChild(links);
-    }
-    return node;
-  },
-};
-
-let currentFrameId = null;
-const renderedBlocks = new Map(); // id -> element
-
-function renderBlock(block) {
-  const fn = RENDERERS[block.type];
-  if (!fn) {
-    return el("div", { class: "block block-unknown" }, [
-      el("strong", {}, `unknown block type: ${block.type}`),
-      el("pre", {}, JSON.stringify(block, null, 2)),
-    ]);
-  }
-  return fn(block);
-}
-
-function appendBlock(block, stream) {
-  if (renderedBlocks.has(block.id)) return;
-  const node = renderBlock(block);
-  node.dataset.blockId = block.id;
-  node.dataset.blockType = block.type;
-  stream.appendChild(node);
-  renderedBlocks.set(block.id, node);
-  // Auto-scroll if user is near the bottom (within 200px).
-  const nearBottom = window.scrollY + window.innerHeight >= document.body.scrollHeight - 200;
-  if (nearBottom) {
-    requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
-  }
-  // Brief glow animation on new blocks (CSS handles).
-  requestAnimationFrame(() => node.classList.add("just-arrived"));
-  setTimeout(() => node.classList.remove("just-arrived"), 900);
 }
 
 // ----- Boards index view -----
@@ -872,60 +707,13 @@ async function openBrowseDialog(vaultName) {
 }
 
 
-async function submitPrompt(text) {
-  text = (text || "").trim();
-  if (!text) {
-    showToast("type a prompt first", "warn");
-    return;
-  }
-  try {
-    const r = await fetch("/api/prompt", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, source: "home-chatbox" }),
-    });
-    const j = await r.json();
-    if (!r.ok) {
-      showToast(`couldn't create mindframe: ${j.error || r.statusText}`, "err");
-      return;
-    }
-    if (j.dispatcher_status === "unreachable") {
-      showToast("mindframe created (dispatcher offline — attach an agent manually)", "warn");
-    } else if (j.dispatcher_status === "skipped") {
-      showToast("mindframe created (no dispatcher bearer — frame is empty until an agent attaches)", "warn");
-    } else if (j.dispatcher_status === "rejected") {
-      showToast(`mindframe created, but dispatcher rejected the spawn (${j.dispatcher_error || "see logs"})`, "warn");
-    } else {
-      showToast("mindframe created — spinning up an agent", "ok");
-    }
-    history.pushState({}, "", `/m/${encodeURIComponent(j.id)}`);
-    route();
-  } catch (e) {
-    showToast(`network error: ${e.message}`, "err");
-  }
-}
-
 async function renderBoardsIndex() {
   root().innerHTML = `
     <div class="index-wrap">
-      <section class="home-chat">
-        <p class="home-eyebrow">tell mindframe what you want to know</p>
-        <h1 class="home-headline">What should I look into?</h1>
-        <form id="chat-form" class="chat-form" autocomplete="off">
-          <textarea
-            id="chat-input"
-            class="chat-input"
-            rows="3"
-            placeholder="e.g. review my team's PRs every morning, or investigate why checkout latency spiked last week."
-          ></textarea>
-          <div class="chat-form-row">
-            <span class="chat-hint">⌘/Ctrl + Enter to submit</span>
-            <button type="submit" class="btn btn-primary chat-submit">Create mindframe</button>
-          </div>
-        </form>
-        <div id="suggestions" class="suggestions">
-          <div class="loading">loading suggestions…</div>
-        </div>
+      <section class="home-intro">
+        <p class="home-eyebrow">mindframe</p>
+        <h1 class="home-headline">Your knowledge base &amp; agents</h1>
+        <p class="home-sub">Browse your vaults and connected sources. See the whole bundle — event sources, agents, mindframes, skills &amp; MCPs — on the <a href="/system">System overview</a>.</p>
       </section>
 
       <section class="vaults-section">
@@ -948,160 +736,13 @@ async function renderBoardsIndex() {
           <div class="loading">loading sources…</div>
         </div>
       </section>
-
-      <section class="frame-section">
-        <div class="index-header">
-          <h2>Your mindframes</h2>
-          <span id="frame-count" class="count">…</span>
-        </div>
-        <div id="frame-list" class="frame-list">
-          <div class="loading">loading…</div>
-        </div>
-      </section>
     </div>
   `;
 
   refreshVaults();
   refreshIncomingShares();
   refreshSources();
-
-  const form = $("chat-form");
-  const input = $("chat-input");
-  form.addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    submitPrompt(input.value);
-  });
-  input.addEventListener("keydown", (ev) => {
-    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
-      ev.preventDefault();
-      submitPrompt(input.value);
-    }
-  });
-
-  // Suggestions — pulled once on render; vault contents rarely change mid-session.
-  try {
-    const r = await fetch("/api/suggestions");
-    const j = await r.json();
-    const wrap = $("suggestions");
-    const cards = (j.suggestions || []).map((s, i) => `
-      <button class="suggest-card" type="button" data-i="${i}">
-        <span class="suggest-tag tag-${escapeHtml(s.tag)}">${escapeHtml(s.tag)}</span>
-        <span class="suggest-title">${escapeHtml(s.title)}</span>
-        <span class="suggest-prompt">${escapeHtml(s.prompt)}</span>
-      </button>
-    `).join("");
-    const groundedNote = j.vault_present
-      ? `<p class="suggest-source">suggestions grounded in your vault at <code>${escapeHtml(j.vault_path || "")}</code></p>`
-      : `<p class="suggest-source suggest-source-warn">no vault configured — suggestions are generic. Run <code>/mindframe:setup</code> to ground them in your org.</p>`;
-    wrap.innerHTML = `
-      <p class="suggest-eyebrow">try one of these</p>
-      <div class="suggest-grid">${cards}</div>
-      ${groundedNote}
-    `;
-    wrap.querySelectorAll(".suggest-card").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const idx = parseInt(btn.dataset.i, 10);
-        const s = (j.suggestions || [])[idx];
-        if (!s) return;
-        input.value = s.prompt;
-        input.focus();
-        input.scrollIntoView({ behavior: "smooth", block: "center" });
-      });
-    });
-  } catch {
-    $("suggestions").innerHTML = `<p class="suggest-source suggest-source-warn">couldn't load suggestions.</p>`;
-  }
-
-  async function refresh() {
-    try {
-      const r = await fetch("/api/frames");
-      const j = await r.json();
-      const frames = j.frames || [];
-      setConn("ok", `live · ${frames.length} mindframe${frames.length === 1 ? "" : "s"}`);
-      $("frame-count").textContent = frames.length;
-      const list = $("frame-list");
-      if (!frames.length) {
-        list.innerHTML = `
-          <div class="empty">
-            <p>No mindframes yet — type a prompt above, or pick one of the suggestions.</p>
-          </div>`;
-        return;
-      }
-      list.innerHTML = frames.map(f => `
-        <a class="frame-row" href="/m/${encodeURIComponent(f.id)}">
-          <span class="frame-marker frame-marker-${f.status}"></span>
-          <span class="frame-title-wrap">
-            <span class="frame-title">${escapeHtml(f.title)}</span>
-            <span class="frame-sub">
-              <span class="mono">${escapeHtml(f.id)}</span>
-              <span class="frame-status">${escapeHtml(f.status)}</span>
-              ${(f.tags || []).map(t => `<span class="frame-tag">${escapeHtml(t)}</span>`).join("")}
-            </span>
-          </span>
-          <span class="frame-meta">
-            <span class="frame-count">${f.block_count} block${f.block_count === 1 ? "" : "s"}</span>
-            <span class="frame-time">${relativeTime(f.last_block_at)}</span>
-          </span>
-          <span class="frame-open">→</span>
-        </a>
-      `).join("");
-    } catch (e) {
-      setConn("err", `connection lost (${e.message})`);
-    }
-  }
-
-  refresh();
-  return setInterval(refresh, POLL_INTERVAL_MS);
-}
-
-// ----- Mindframe detail view — SSE-driven block stream -----
-
-async function renderMindframeDetail(mid) {
-  currentFrameId = mid;
-  renderedBlocks.clear();
-
-  // Fetch meta for title/status.
-  let meta = {};
-  try {
-    const r = await fetch(`/api/frame/${encodeURIComponent(mid)}`);
-    if (r.ok) meta = await r.json();
-  } catch { /* ignore */ }
-
-  root().innerHTML = `
-    <div class="mf-wrap">
-      <nav class="mf-nav">
-        <a class="back" href="/">← all mindframes</a>
-        <span class="mf-title-wrap">
-          <span class="mf-title">${escapeHtml(meta.title || mid)}</span>
-          <span class="mf-id mono">${escapeHtml(mid)}</span>
-        </span>
-        <span class="mf-actions">
-          <span id="stream-state" class="stream-state" data-state="connecting">connecting…</span>
-        </span>
-      </nav>
-      <div id="stream" class="mf-stream"></div>
-    </div>
-  `;
-
-  const stream = $("stream");
-  const stateEl = $("stream-state");
-
-  // SSE — auto-reconnects, sends Last-Event-ID on its own.
-  const es = new EventSource(`/api/frame/${encodeURIComponent(mid)}/stream`);
-  es.onopen = () => { stateEl.dataset.state = "ok"; stateEl.textContent = "live"; setConn("ok", "streaming"); };
-  es.onmessage = (ev) => {
-    try {
-      const block = JSON.parse(ev.data);
-      appendBlock(block, stream);
-    } catch (e) {
-      console.error("bad block payload", e, ev.data);
-    }
-  };
-  es.onerror = () => { stateEl.dataset.state = "warn"; stateEl.textContent = "reconnecting…"; };
-
-  // Clean up when navigating away.
-  window.addEventListener("popstate", () => es.close(), { once: true });
-  return { stop: () => es.close() };
+  setConn("ok", "ready");
 }
 
 // ----- Health probe -----
@@ -1123,13 +764,191 @@ async function pollHealth() {
   }
 }
 
+// ----- System overview — structured map of the whole bundle -----
+
+const sysEmpty = (msg) => `<div class="sys-empty">${escapeHtml(msg)}</div>`;
+const sysErr = (e) => `<div class="sys-empty sys-empty-err">error: ${escapeHtml(String(e))}</div>`;
+
+const stateDot = (state) => {
+  const s = state === "connected" ? "ok"
+    : state === "needs-auth" ? "warn"
+    : state === "unknown" ? "faint" : "faint";
+  return `<span class="sys-dot sys-dot-${s}" title="${escapeHtml(state)}"></span>`;
+};
+
+const statusBadge = (status) => {
+  const map = { running: "ok", completed: "ok", pending: "warn",
+    crashed: "err", killed: "faint" };
+  const s = map[status] || "faint";
+  return `<span class="sys-badge sys-badge-${s}">${escapeHtml(status)}</span>`;
+};
+
+async function fillEvents() {
+  try {
+    const j = await (await fetch("/api/events")).json();
+    $("sys-events-count").textContent = j.route_count;
+    const body = $("sys-events-body");
+    if (!j.dispatcher_present) {
+      body.innerHTML = sysEmpty("dispatcher not configured — no event routes.");
+      return;
+    }
+    if (!j.sources.length) {
+      body.innerHTML = sysEmpty("no routes yet. Add one with /dispatcher:route.");
+      return;
+    }
+    body.innerHTML = j.sources.map(s => `
+      <div class="sys-group">
+        <div class="sys-group-head">${escapeHtml(s.source)}</div>
+        ${s.routes.map(rt => `
+          <div class="sys-row">
+            <span class="sys-row-main">${escapeHtml(rt.event_type)}</span>
+            <span class="sys-row-sub">
+              <span class="sys-tgt sys-tgt-${escapeHtml(rt.target_kind)}">${escapeHtml(rt.target_kind)}</span>
+              <span class="mono">${escapeHtml(rt.target_name)}</span>
+            </span>
+          </div>`).join("")}
+      </div>`).join("");
+  } catch (e) { $("sys-events-body").innerHTML = sysErr(e); }
+}
+
+const parseTs = (s) => {
+  if (!s) return Date.now();
+  const t = new Date(s.replace(" ", "T") + (s.includes("Z") ? "" : "Z")).getTime();
+  return Number.isFinite(t) ? t : Date.now();
+};
+
+async function fillAgents() {
+  try {
+    const j = await (await fetch("/api/agents")).json();
+    $("sys-agents-count").textContent = `${j.running_count} live · ${j.definition_count} def`;
+    const defs = (j.definitions || []).map(d => `
+      <div class="sys-row sys-row-stack">
+        <span class="sys-row-main">${escapeHtml(d.name)}
+          <span class="sys-tag">${escapeHtml(d.kind)}${d.model ? " · " + escapeHtml(d.model) : ""}</span>
+        </span>
+        <span class="sys-trigger-line">${(d.triggered_by || []).map(t =>
+          `<span class="sys-chip">↯ ${escapeHtml(t)}</span>`).join("") || '<span class="sys-faint">manual trigger</span>'}</span>
+      </div>`).join("") || sysEmpty("no recipes installed.");
+    const live = (j.live || []).map(a => `
+      <div class="sys-row">
+        <span class="sys-row-main">${a.live ? '<span class="sys-dot sys-dot-ok" title="tmux session live"></span>' : ""}${escapeHtml(a.name)}</span>
+        <span class="sys-row-sub">${statusBadge(a.status)}<span class="sys-faint">${relativeTime(parseTs(a.updated_at))}</span></span>
+      </div>`).join("") || sysEmpty("nothing running right now.");
+    $("sys-agents-body").innerHTML = `
+      <div class="sys-subhead">Definitions <span>${j.definition_count}</span></div>
+      ${defs}
+      <div class="sys-subhead">Live tasks <span>${j.running_count} live · ${j.live_count} shown</span></div>
+      ${live}`;
+  } catch (e) { $("sys-agents-body").innerHTML = sysErr(e); }
+}
+
+async function fillMindframes() {
+  try {
+    const j = await (await fetch("/api/frames")).json();
+    const frames = j.frames || [];
+    $("sys-frames-count").textContent = frames.length;
+    const body = $("sys-frames-body");
+    if (!frames.length) { body.innerHTML = sysEmpty("no surface mindframes yet."); return; }
+    body.innerHTML = frames.map(f => `
+      <a class="sys-row sys-row-link" href="/artifacts/${encodeURIComponent(f.id)}/index.html" target="_blank" rel="noopener">
+        <span class="sys-row-main"><span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>${escapeHtml(f.title)}</span>
+        <span class="sys-row-sub"><span class="sys-faint">${relativeTime(f.modified)}</span><span class="sys-open">→</span></span>
+      </a>`).join("");
+  } catch (e) { $("sys-frames-body").innerHTML = sysErr(e); }
+}
+
+async function fillCapabilities() {
+  try {
+    const j = await (await fetch("/api/capabilities")).json();
+    $("sys-caps-count").textContent = `${j.mcp_count} MCPs · ${j.skill_count} skills`;
+    const mcps = (j.mcps || []).map(m => `
+      <div class="sys-row">
+        <span class="sys-row-main">${stateDot(m.state)}${escapeHtml(m.name)}${m.bundle ? '<span class="sys-tag sys-tag-faint">bundle</span>' : ""}</span>
+      </div>`).join("") || sysEmpty("no MCPs connected.");
+    const skills = (j.skills || []).map(p => `
+      <div class="sys-group">
+        <div class="sys-group-head">${escapeHtml(p.plugin)} <span class="sys-faint">${escapeHtml(p.version)}</span></div>
+        <div class="sys-skill-chips">${p.skills.map(s =>
+          `<span class="sys-chip" title="${escapeHtml(s.description)}">${escapeHtml(s.name)}</span>`).join("")}</div>
+      </div>`).join("") || sysEmpty("no plugin skills found.");
+    $("sys-caps-body").innerHTML = `
+      <div class="sys-subhead">MCPs <span>${j.mcp_count}</span></div>
+      ${mcps}
+      <div class="sys-subhead">Skills <span>${j.skill_count}</span></div>
+      ${skills}`;
+  } catch (e) { $("sys-caps-body").innerHTML = sysErr(e); }
+}
+
+async function fillKnowledge() {
+  try {
+    const j = await (await fetch("/api/vaults")).json();
+    const vaults = j.vaults || [];
+    $("sys-kb-count").textContent = vaults.length;
+    const body = $("sys-kb-body");
+    if (!vaults.length) { body.innerHTML = sysEmpty("no vaults. Run /mindframe:setup."); return; }
+    body.innerHTML = vaults.map(v => {
+      const types = Object.entries(v.entry_counts || {})
+        .sort((a, b) => b[1] - a[1]).slice(0, 4)
+        .map(([t, n]) => `<span class="sys-chip">${escapeHtml(t)}: ${n}</span>`).join("");
+      return `
+      <div class="sys-group">
+        <div class="sys-group-head">${escapeHtml(v.name)}
+          ${v.is_default ? '<span class="sys-tag">default</span>' : ""}
+          ${v.remote ? '<span class="sys-tag sys-tag-faint">⇄ shared</span>' : ""}
+        </div>
+        <div class="sys-row-sub"><span class="sys-faint">${v.total_entries} entries · ${escapeHtml(vaultLastTouched(v))}</span></div>
+        <div class="sys-skill-chips">${types || '<span class="sys-faint">empty</span>'}</div>
+      </div>`;
+    }).join("");
+  } catch (e) { $("sys-kb-body").innerHTML = sysErr(e); }
+}
+
+async function renderSystem() {
+  root().innerHTML = `
+    <div class="system-wrap">
+      <div class="system-head">
+        <a class="back" href="/">← home</a>
+        <h1 class="system-title">System overview</h1>
+        <p class="system-sub">the live shape of your mindframe bundle</p>
+      </div>
+      <div class="sys-grid">
+        <section class="sys-card">
+          <div class="sys-card-head"><h2>Event sources</h2><span id="sys-events-count" class="count">…</span></div>
+          <div id="sys-events-body" class="sys-card-body"><div class="loading">loading…</div></div>
+        </section>
+        <section class="sys-card">
+          <div class="sys-card-head"><h2>Agents</h2><span id="sys-agents-count" class="count">…</span></div>
+          <div id="sys-agents-body" class="sys-card-body"><div class="loading">loading…</div></div>
+        </section>
+        <section class="sys-card">
+          <div class="sys-card-head"><h2>Mindframes</h2><span id="sys-frames-count" class="count">…</span></div>
+          <div id="sys-frames-body" class="sys-card-body"><div class="loading">loading…</div></div>
+        </section>
+        <section class="sys-card">
+          <div class="sys-card-head"><h2>Skills + MCPs</h2><span id="sys-caps-count" class="count">…</span></div>
+          <div id="sys-caps-body" class="sys-card-body"><div class="loading">loading…</div></div>
+        </section>
+        <section class="sys-card">
+          <div class="sys-card-head"><h2>Knowledge bases</h2><span id="sys-kb-count" class="count">…</span></div>
+          <div id="sys-kb-body" class="sys-card-body"><div class="loading">loading…</div></div>
+        </section>
+      </div>
+    </div>`;
+
+  const refreshAll = () => {
+    fillEvents(); fillAgents(); fillMindframes(); fillCapabilities(); fillKnowledge();
+    setConn("ok", "system overview");
+  };
+  refreshAll();
+  return setInterval(refreshAll, POLL_INTERVAL_MS);
+}
+
 // ----- Router -----
 
 function route() {
   const path = location.pathname;
-  const m = path.match(/^\/m\/([A-Za-z0-9_-]+)\/?$/);
-  if (m) {
-    renderMindframeDetail(decodeURIComponent(m[1]));
+  if (path === "/system" || path === "/system/") {
+    renderSystem();
   } else {
     renderBoardsIndex();
   }
