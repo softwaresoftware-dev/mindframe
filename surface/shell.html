@@ -38,6 +38,8 @@
     padding: .6rem .8rem; background: #141416; border-top: 1px solid #26262a;
   }
   #brand { font-size: .62rem; letter-spacing: .18em; color: #6b6b73; font-weight: 700; padding-right: .2rem; user-select: none; }
+  #stat { font-size: .62rem; letter-spacing: .04em; color: #6b6b73; font-family: ui-monospace, monospace; white-space: nowrap; user-select: none; }
+  #stat .ctx { color: #8a8a93; }
   #logtoggle {
     display: flex; align-items: center; gap: 6px; cursor: pointer;
     background: #1c1c20; border: 1px solid #303036; color: #9a9aa2;
@@ -64,6 +66,7 @@
   <form id="rail" autocomplete="off">
     <span id="brand">MINDFRAME</span>
     <button id="logtoggle" type="button"><span class="dot"></span><span class="lbl">logs</span><span class="chev">▴</span></button>
+    <span id="stat"></span>
     <input id="msg" placeholder="Message the mindframe&hellip;" autofocus>
     <button id="send" type="submit">Send</button>
   </form>
@@ -75,11 +78,36 @@
   const logs = document.getElementById('logs');
   const logbody = document.getElementById('logbody');
   const toggle = document.getElementById('logtoggle');
+  const stat = document.getElementById('stat');
 
   let rev = null, waiting = false;
   let actFile = "", actOffset = 0, lastActAt = 0, started = false, sentAt = 0, warned = false;
+  let lastMtime = 0, mtimeAtSend = 0, sawActSinceSent = false;
 
   function esc(s){ return (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+  // The log is client-side state — restore it across refreshes so typed
+  // messages and the agent's stream don't vanish on reload. We persist the
+  // rendered lines plus the tail position so polling resumes, not restarts.
+  const LOG_KEY = 'mf_log';
+  function saveLog(){
+    try {
+      sessionStorage.setItem(LOG_KEY, JSON.stringify({
+        file: actFile, offset: actOffset, started,
+        html: logbody.innerHTML,
+      }));
+    } catch (e) {}
+  }
+  function restoreLog(){
+    try {
+      const s = JSON.parse(sessionStorage.getItem(LOG_KEY) || 'null');
+      if (s && s.html && s.started) {
+        logbody.innerHTML = s.html;
+        actFile = s.file || ""; actOffset = s.offset || 0; started = true;
+        logbody.scrollTop = logbody.scrollHeight;
+      }
+    } catch (e) {}
+  }
 
   function appendLog(ev){
     if (!started){ logbody.innerHTML = ''; started = true; }
@@ -93,6 +121,24 @@
     const lns = logbody.querySelectorAll('.ln');
     if (lns.length > 300) lns[0].remove();
     if (atBottom || logs.classList.contains('open')) logbody.scrollTop = logbody.scrollHeight;
+    saveLog();
+  }
+
+  function fmtCtx(n){
+    if (!n) return '';
+    if (n < 1000) return '' + n;
+    const k = n / 1000;
+    return (k >= 10 ? Math.round(k) : k.toFixed(1)) + 'k';
+  }
+  function setMeta(model, ctx){
+    if (!model){ stat.textContent = ''; return; }
+    stat.textContent = model;
+    if (ctx){
+      const span = document.createElement('span');
+      span.className = 'ctx';
+      span.textContent = ' · ' + fmtCtx(ctx) + ' ctx';
+      stat.appendChild(span);
+    }
   }
   function setActive(on){
     toggle.classList.toggle('active', on);
@@ -121,18 +167,28 @@
                             { cache: 'no-store' }).then(x => x.json());
       if (r.file !== actFile) { actFile = r.file; actOffset = 0; }
       actOffset = r.offset;
+      if (typeof r.mtime === 'number' && r.mtime > 0) lastMtime = r.mtime;
       if (r.events && r.events.length) { r.events.forEach(appendLog); lastActAt = Date.now(); }
+      // The transcript advancing at all (a new turn landed, or its file was
+      // touched) since the message was sent proves the agent is alive and
+      // working — even during a long, quiet thinking/tool turn that emits no
+      // lines yet. Only the total absence of progress means "not running".
+      if (waiting && lastMtime > mtimeAtSend) sawActSinceSent = true;
+      if (r.model) setMeta(r.model, r.context);
+      saveLog();
     } catch (e) {}
-    if (waiting && !warned && sentAt && Date.now() - sentAt > 22000 && Date.now() - lastActAt > 22000) {
+    if (waiting && !warned && sentAt && Date.now() - sentAt > 40000 && !sawActSinceSent) {
       appendLog({ kind: 'warn', label: 'No response yet — the mindframe agent may not be running. Try resending.' });
       warned = true;
     }
-    setActive(waiting || (Date.now() - lastActAt < 4000));
+    setActive(waiting || (Date.now() - lastActAt < 6000));
   }
 
+  restoreLog();
   setInterval(pollRev, 1000);
   setInterval(pollActivity, 1200);
   pollRev();
+  pollActivity();
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -141,6 +197,7 @@
     msg.value = '';
     waiting = true; send.disabled = true; setActive(true);
     sentAt = Date.now(); warned = false;
+    mtimeAtSend = lastMtime; sawActSinceSent = false;
     appendLog({ kind: 'you', label: 'you: ' + text });
     try {
       await fetch('/api/message', {

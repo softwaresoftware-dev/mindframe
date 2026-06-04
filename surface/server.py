@@ -21,6 +21,7 @@ All paths are env-driven so one server binary serves any mindframe:
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 import uvicorn
@@ -107,6 +108,8 @@ def _parse_events(line: str) -> list:
         e = json.loads(line)
     except Exception:
         return []
+    if e.get("isSidechain"):
+        return []  # sub-agent / completion-judge runs — not this agent's stream
     msg = e.get("message") or {}
     if (msg.get("role") or e.get("type")) == "user":
         return []  # injected prompts + tool results from the user side
@@ -134,20 +137,63 @@ def _parse_events(line: str) -> list:
     return out
 
 
+def _latest_meta(tp) -> dict:
+    """Most recent assistant turn's model + context size, read from the tail of
+    the transcript. `context` = every input token that was in the window for
+    that request (fresh + cache-read + cache-write) — i.e. how full the context
+    is right now, not the cumulative spend."""
+    try:
+        with open(tp, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 131072))
+            tail = f.read().decode("utf-8", "replace")
+    except Exception:
+        return {}
+    for ln in reversed(tail.split("\n")):
+        if not ln.strip() or '"usage"' not in ln:
+            continue
+        try:
+            e = json.loads(ln)
+        except Exception:
+            continue
+        m = e.get("message") or {}
+        if (m.get("role") or e.get("type")) != "assistant":
+            continue
+        u = m.get("usage") or {}
+        if not u:
+            continue
+        ctx = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+               + u.get("cache_creation_input_tokens", 0))
+        return {"model": _pretty_model(m.get("model") or ""), "context": ctx}
+    return {}
+
+
+def _pretty_model(name: str) -> str:
+    """`claude-opus-4-8` -> `opus-4.8`; drop any trailing yyyymmdd date."""
+    name = name.replace("claude-", "")
+    name = re.sub(r"-\d{8}$", "", name)
+    return re.sub(r"(\d)-(\d)", r"\1.\2", name)
+
+
 @app.get("/api/activity")
 def activity(offset: int = 0, file: str = "") -> JSONResponse:
     """Tail the agent's live transcript and return cognition events since
     `offset` (byte position in the current session file). When the session
-    file rotates, `file` won't match the client's and we restart from 0."""
+    file rotates, `file` won't match the client's and we restart from 0.
+
+    Also reports `mtime` (so the client can tell a working-but-quiet agent from
+    a dead one) and the live `model` / `context` of the latest turn."""
     tp = _active_transcript()
     if tp is None:
-        return JSONResponse({"events": [], "offset": 0, "file": ""})
+        return JSONResponse({"events": [], "offset": 0, "file": "", "mtime": 0})
     fid = tp.name
     if fid != file:
         offset = 0
     events: list = []
     new_offset = offset
     try:
+        mtime = tp.stat().st_mtime
         with open(tp, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
@@ -163,8 +209,10 @@ def activity(offset: int = 0, file: str = "") -> JSONResponse:
                 if ln.strip():
                     events.extend(_parse_events(ln))
     except Exception:
-        return JSONResponse({"events": [], "offset": offset, "file": fid})
-    return JSONResponse({"events": events, "offset": new_offset, "file": fid})
+        return JSONResponse({"events": [], "offset": offset, "file": fid, "mtime": 0})
+    out = {"events": events, "offset": new_offset, "file": fid, "mtime": mtime}
+    out.update(_latest_meta(tp))
+    return JSONResponse(out)
 
 
 if __name__ == "__main__":
