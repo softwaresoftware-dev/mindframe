@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mindframe</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; flex-direction: column; height: 100vh;
+    font-family: system-ui, -apple-system, sans-serif; background: #0b0b0c;
+  }
+  #topbar {
+    display: flex; align-items: center; gap: .8rem;
+    padding: .5rem .9rem; background: #0d0d0f; border-bottom: 1px solid #1d1d22;
+    font-family: ui-monospace, monospace; font-size: 12px;
+  }
+  #topbar a { color: #8a8a93; text-decoration: none; }
+  #topbar a:hover { color: #cfe0ff; }
+  #topbar .sep { color: #3a3a42; }
+  #topbar .id { color: #5a5a63; }
+  #surface { flex: 1; border: 0; width: 100%; background: #0d0d0f; min-height: 0; }
+
+  /* collapsible cognition log — docked above the message bar, outside the surface */
+  #logs {
+    max-height: 0; overflow: hidden; transition: max-height .2s ease;
+    background: #0f0f11; border-top: 1px solid #23232a;
+  }
+  #logs.open { max-height: 34vh; border-top-color: #2f2f3a; }
+  #logbody {
+    max-height: 34vh; overflow-y: auto; padding: 12px 16px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.55;
+  }
+  #logbody .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #logbody .ln .ic { display: inline-block; width: 1.6em; opacity: .9; }
+  #logbody .think { color: #8a8a93; font-style: italic; }
+  #logbody .tool  { color: #7fb0ff; }
+  #logbody .text  { color: #d7dae0; }
+  #logbody .you   { color: #a8b0ff; }
+  #logbody .warn  { color: #d9a441; }
+  #logbody .empty { color: #5a5a63; }
+
+  #rail {
+    display: flex; gap: .55rem; align-items: center;
+    padding: .6rem .8rem; background: #141416; border-top: 1px solid #26262a;
+  }
+  #brand { font-size: .62rem; letter-spacing: .18em; color: #6b6b73; font-weight: 700; padding-right: .2rem; user-select: none; }
+  #stat { font-size: .62rem; letter-spacing: .04em; color: #6b6b73; font-family: ui-monospace, monospace; white-space: nowrap; user-select: none; }
+  #stat .ctx { color: #8a8a93; }
+  #logtoggle {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    background: #1c1c20; border: 1px solid #303036; color: #9a9aa2;
+    border-radius: 8px; padding: .5rem .7rem; font-size: 12px; font-family: ui-monospace, monospace;
+  }
+  #logtoggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #4a4a52; }
+  #logtoggle .chev { font-size: 10px; opacity: .6; transition: transform .15s; }
+  #logtoggle.active { color: #cfe0ff; border-color: #3a4a8a; }
+  #logtoggle.active .dot { background: #5b6cff; animation: pulse 1.1s ease-in-out infinite; }
+  #logtoggle.open .chev { transform: rotate(180deg); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  #msg {
+    flex: 1; padding: .65rem .85rem; border-radius: 8px;
+    border: 1px solid #303036; background: #1c1c20; color: #ececf0; font-size: 15px; outline: none;
+  }
+  #msg:focus { border-color: #5b6cff; }
+  #send { padding: .65rem 1.15rem; border: 0; border-radius: 8px; background: #5b6cff; color: #fff; font-size: 15px; cursor: pointer; }
+  #send:disabled { opacity: .45; cursor: default; }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <a href="/system">← mindframes</a>
+    <span class="sep">/</span>
+    <span class="id" id="frame-id"></span>
+  </div>
+  <iframe id="surface" title="mindframe surface"></iframe>
+  <section id="logs"><div id="logbody"><div class="ln empty">No activity yet. The agent's thinking and tool calls show here while it works.</div></div></section>
+  <form id="rail" autocomplete="off">
+    <span id="brand">MINDFRAME</span>
+    <button id="logtoggle" type="button"><span class="dot"></span><span class="lbl">logs</span><span class="chev">▴</span></button>
+    <span id="stat"></span>
+    <input id="msg" placeholder="Message the mindframe&hellip;" autofocus>
+    <button id="send" type="submit">Send</button>
+  </form>
+<script>
+  // This page is served at /m/<id>; derive the frame id from the path and
+  // build per-mindframe endpoints. One dashboard serves every mindframe.
+  const MF_ID = decodeURIComponent((location.pathname.match(/^\/m\/([^/]+)/) || [,''])[1]);
+  const API = (suffix) => `/api/frame/${encodeURIComponent(MF_ID)}/${suffix}`;
+  document.getElementById('frame-id').textContent = MF_ID;
+
+  const surface = document.getElementById('surface');
+  surface.src = API('page');
+  const form = document.getElementById('rail');
+  const msg = document.getElementById('msg');
+  const send = document.getElementById('send');
+  const logs = document.getElementById('logs');
+  const logbody = document.getElementById('logbody');
+  const toggle = document.getElementById('logtoggle');
+  const stat = document.getElementById('stat');
+
+  let rev = null, waiting = false;
+  let actFile = "", actOffset = 0, lastActAt = 0, started = false, sentAt = 0, warned = false;
+  let lastMtime = 0, mtimeAtSend = 0, sawActSinceSent = false;
+
+  // Per-mindframe log state, restored across refreshes.
+  const LOG_KEY = 'mf_log_' + MF_ID;
+  function saveLog(){
+    try {
+      sessionStorage.setItem(LOG_KEY, JSON.stringify({
+        file: actFile, offset: actOffset, started, html: logbody.innerHTML,
+      }));
+    } catch (e) {}
+  }
+  function restoreLog(){
+    try {
+      const s = JSON.parse(sessionStorage.getItem(LOG_KEY) || 'null');
+      if (s && s.html && s.started) {
+        logbody.innerHTML = s.html;
+        actFile = s.file || ""; actOffset = s.offset || 0; started = true;
+        logbody.scrollTop = logbody.scrollHeight;
+      }
+    } catch (e) {}
+  }
+
+  function appendLog(ev){
+    if (!started){ logbody.innerHTML = ''; started = true; }
+    const cls = ev.kind === 'thinking' ? 'think' : ev.kind === 'tool' ? 'tool'
+              : ev.kind === 'you' ? 'you' : ev.kind === 'warn' ? 'warn' : 'text';
+    const div = document.createElement('div');
+    div.className = 'ln ' + cls;
+    div.textContent = ev.label;
+    const atBottom = logbody.scrollHeight - logbody.scrollTop - logbody.clientHeight < 48;
+    logbody.appendChild(div);
+    const lns = logbody.querySelectorAll('.ln');
+    if (lns.length > 300) lns[0].remove();
+    if (atBottom || logs.classList.contains('open')) logbody.scrollTop = logbody.scrollHeight;
+    saveLog();
+  }
+
+  function fmtCtx(n){
+    if (!n) return '';
+    if (n < 1000) return '' + n;
+    const k = n / 1000;
+    return (k >= 10 ? Math.round(k) : k.toFixed(1)) + 'k';
+  }
+  function setMeta(model, ctx){
+    if (!model){ stat.textContent = ''; return; }
+    stat.textContent = model;
+    if (ctx){
+      const span = document.createElement('span');
+      span.className = 'ctx';
+      span.textContent = ' · ' + fmtCtx(ctx) + ' ctx';
+      stat.appendChild(span);
+    }
+  }
+  function setActive(on){
+    toggle.classList.toggle('active', on);
+    toggle.querySelector('.lbl').textContent = on ? 'working…' : 'logs';
+  }
+  function openLogs(open){
+    logs.classList.toggle('open', open);
+    toggle.classList.toggle('open', open);
+    if (open) logbody.scrollTop = logbody.scrollHeight;
+  }
+  toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
+
+  async function pollRev(){
+    try {
+      const r = (await fetch(API('rev'), { cache: 'no-store' }).then(x => x.json())).rev;
+      if (rev !== null && r !== rev) {
+        surface.contentWindow.location.reload();      // agent rewrote the page
+        if (waiting) { waiting = false; send.disabled = false; }
+      }
+      rev = r;
+    } catch (e) {}
+  }
+  async function pollActivity(){
+    try {
+      const r = await fetch(API('activity') + '?offset=' + actOffset + '&file=' + encodeURIComponent(actFile),
+                            { cache: 'no-store' }).then(x => x.json());
+      if (r.file !== actFile) { actFile = r.file; actOffset = 0; }
+      actOffset = r.offset;
+      if (typeof r.mtime === 'number' && r.mtime > 0) lastMtime = r.mtime;
+      if (r.events && r.events.length) { r.events.forEach(appendLog); lastActAt = Date.now(); }
+      if (waiting && lastMtime > mtimeAtSend) sawActSinceSent = true;
+      if (r.model) setMeta(r.model, r.context);
+      saveLog();
+    } catch (e) {}
+    if (waiting && !warned && sentAt && Date.now() - sentAt > 40000 && !sawActSinceSent) {
+      appendLog({ kind: 'warn', label: 'No response yet — the mindframe agent may not be running. Try resending.' });
+      warned = true;
+    }
+    setActive(waiting || (Date.now() - lastActAt < 6000));
+  }
+
+  restoreLog();
+  setInterval(pollRev, 1000);
+  setInterval(pollActivity, 1200);
+  pollRev();
+  pollActivity();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = msg.value.trim();
+    if (!text) return;
+    msg.value = '';
+    waiting = true; send.disabled = true; setActive(true);
+    sentAt = Date.now(); warned = false;
+    mtimeAtSend = lastMtime; sawActSinceSent = false;
+    appendLog({ kind: 'you', label: 'you: ' + text });
+    try {
+      const r = await fetch(API('message'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        appendLog({ kind: 'warn', label: 'delivery failed: ' + (j.error || r.statusText) });
+        waiting = false; send.disabled = false;
+      }
+    } catch (e) { appendLog({ kind: 'warn', label: 'network error sending message' }); waiting = false; send.disabled = false; }
+  });
+</script>
+</body>
+</html>

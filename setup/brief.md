@@ -103,8 +103,9 @@ For every discovery or identity probe, point at the real home:
 Never fabricate. If a probe fails or a CLI is unauthed, show the honest state
 and offer the provider's own login.
 
-VAULT: __VAULT_PATH__ — the operator's knowledge base (a git repo of markdown +
-frontmatter). You write real entities here only from connected sources.
+VAULT: ~/.mindframe/vault — the operator's knowledge base (a git repo of markdown +
+frontmatter), at its fixed location. You write real entities here only from
+connected sources.
 
 ================================================================================
 THE ARC — FIVE BEATS (each beat is a surface mutation that advances the story)

@@ -62,41 +62,12 @@ FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".m
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
 
-# Vault path resolution — same priority order the rest of the bundle uses:
-#   1. CLAUDE_PLUGIN_OPTION_VAULT_PATH env var (set by Claude Code when plugin
-#      runs inside a session; absent when dashboard runs as a daemon)
-#   2. MINDFRAME_VAULT_PATH env var (operator override)
-#   3. The default vault from ~/.mindframe/vaults.yaml (which itself falls
-#      back to pluginConfigs.mindframe.options.vault_path in settings.json)
-def _resolve_default_vault_path() -> Path | None:
-    env_val = (os.environ.get("CLAUDE_PLUGIN_OPTION_VAULT_PATH")
-               or os.environ.get("MINDFRAME_VAULT_PATH"))
-    if env_val:
-        return Path(env_val).expanduser()
-    # Try vaults.yaml (handles single-vault legacy via settings.json too).
-    try:
-        import importlib.util as _ilu
-        plugin_root = Path(__file__).resolve().parent.parent.parent
-        spec = _ilu.spec_from_file_location(
-            "_vy_default", plugin_root / "lib" / "vaults_yaml.py")
-        if spec is None or spec.loader is None:
-            return None
-        mod = _ilu.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        name = mod.default_vault_name()
-        if not name:
-            return None
-        v = mod.get_vault(name)
-        if not v or not v.get("path"):
-            return None
-        return Path(v["path"]).expanduser()
-    except Exception:
-        return None
+# The single, static knowledge-base vault. Not configurable — keeper and the
+# skills hardcode the same path.
+VAULT_DIR = Path.home() / ".mindframe" / "vault"
 
 
-VAULT_PATH = _resolve_default_vault_path()
-
-# Plugin libs (lib.vaults_yaml) live one level above the dashboard.
+# Plugin libs (lib/*.py) live one level above the dashboard.
 sys.path.insert(0, str(ROOT.parent))
 
 PORT = int(os.environ.get("PORT", "5174"))
@@ -105,6 +76,10 @@ DISPATCHER_URL = os.environ.get("MINDFRAME_DISPATCHER_URL", "http://127.0.0.1:89
 DISPATCHER_BEARER_FILE = Path(
     os.environ.get("MINDFRAME_DISPATCHER_BEARER_FILE", str(Path.home() / ".mindframe/secrets/dispatcher-bearer.token"))
 )
+# Agent-runtime daemon (taskpilot) — message delivery + spawn. Same endpoint the
+# surface substrate uses (MF_DAEMON). Mindframe agents idle until messaged.
+TASKPILOT_DAEMON = os.environ.get("MINDFRAME_TASKPILOT_DAEMON", "http://127.0.0.1:8912")
+TASKPILOT_HOME = Path(os.environ.get("MINDFRAME_TASKPILOT_HOME", str(Path.home() / ".taskpilot")))
 
 SHARE_RETENTION_DAYS = int(os.environ.get("MINDFRAME_SHARE_RETENTION_DAYS", "60"))
 SHARE_RETENTION_MS = SHARE_RETENTION_DAYS * 24 * 60 * 60 * 1000
@@ -350,6 +325,349 @@ async def api_frames() -> dict[str, Any]:
     return {"frames": out}
 
 
+# --------------------------- mindframe creation ---------------------------
+#
+# Create = mint a frame dir + spawn a persistent agent whose cwd is that dir and
+# whose one job is to own index.html. The agent is spawned through taskpilot's
+# spawner CLI (the agent-spawning provider), located via the installed-plugins
+# manifest. The agent writes its page with the plain Write tool — no MCP.
+
+MINDFRAME_BRIEF = """You are a mindframe — an autonomous agent that works for the operator by \
+composing a single live web page. You own exactly ONE file:
+
+    {index}
+
+THE LOOP
+  1. The operator sends you a message (their first request is below).
+  2. You do the real work it implies — run Bash, read files, query the MCPs and \
+CLIs available to you. Never fabricate; if you can't reach something, say so on the page.
+  3. You use the Write tool to rewrite the ENTIRE file above as one complete, \
+valid, self-contained HTML document that reflects the new state.
+  4. You stop and wait for the next message. The operator's browser reloads \
+automatically when the file changes.
+
+RULES
+  - ALWAYS write the COMPLETE document — never a fragment, never an append. Inline \
+all CSS. The page is the whole interface; there is no chat transcript, so render \
+what matters now, not a log.
+  - Make it calm and legible: type, weight, colour, and spacing carry meaning. No emoji.
+  - NEVER declare yourself done. End every page with a forward question or a clear \
+next step so the conversation keeps going.
+  - Anything irreversible or outward-facing: draw the pending action on the page \
+and wait for the operator to approve it in a message before doing it.
+
+THE OPERATOR'S FIRST REQUEST
+{prompt}
+
+Compose your first index.html now: acknowledge the request, show what you \
+understand and your first concrete step, and end with a question."""
+
+
+def _mint_frame_id(n: int = 10) -> str:
+    return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(n))
+
+
+def _find_spawner_cli() -> Path | None:
+    """Locate taskpilot's spawner_cli.py via the installed-plugins manifest."""
+    manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(manifest.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    for key, installs in (data.get("plugins") or {}).items():
+        if key.split("@")[0] == "taskpilot" and installs:
+            p = Path(installs[0].get("installPath", "")) / "spawner_cli.py"
+            if p.is_file():
+                return p
+    return None
+
+
+class CreateMindframe(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    title: str | None = None
+
+
+@app.post("/api/frames/create")
+def create_mindframe(body: CreateMindframe) -> Response:
+    """Create a surface mindframe: mint a frame dir, drop a placeholder page,
+    then spawn a persistent agent (cwd = frame dir) that owns index.html.
+    Returns the new id + url so the SPA can open /m/<id> immediately."""
+    spawner_cli = _find_spawner_cli()
+    if spawner_cli is None:
+        return JSONResponse(
+            {"error": "taskpilot (agent-spawning) not found — can't spawn a mindframe agent."},
+            status_code=503)
+
+    for _ in range(5):
+        mid = _mint_frame_id()
+        fdir = FRAMES_ROOT / mid
+        if not fdir.exists():
+            break
+    else:
+        return JSONResponse({"error": "could not mint a unique frame id"}, status_code=500)
+    try:
+        fdir.mkdir(parents=True, mode=0o755)
+    except OSError as e:
+        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
+
+    index = fdir / "index.html"
+    title = (body.title or body.prompt.strip().split("\n", 1)[0])[:120]
+    safe_title = title.replace("&", "&amp;").replace("<", "&lt;")
+    index.write_text(
+        "<!doctype html><meta charset=utf-8><title>composing…</title>"
+        "<body style='margin:0;height:100vh;display:grid;place-items:center;"
+        "font:16px system-ui;color:#888;background:#0d0d0f'>"
+        f"<div style='text-align:center'>Composing this mindframe…<br>"
+        f"<small style='color:#555'>{safe_title}</small></div>",
+        "utf-8",
+    )
+    (fdir / "meta.json").write_text(json.dumps({
+        "id": mid, "title": title, "task_id": mid, "status": "active",
+        "prompt": body.prompt, "spawned_by": {"kind": "dashboard"},
+    }, indent=2), "utf-8")
+
+    brief = MINDFRAME_BRIEF.format(index=str(index), prompt=body.prompt.strip())
+    try:
+        proc = subprocess.run(
+            ["python3", str(spawner_cli), brief, "--name", mid, "--cwd", str(fdir)],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return JSONResponse({"id": mid, "url": f"/m/{mid}",
+                             "spawn": "error", "error": f"spawn failed: {e}"})
+    spawn_result: dict = {}
+    try:
+        spawn_result = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        spawn_result = {"ok": False,
+                        "error": (proc.stderr or proc.stdout or "no spawner output")[:400]}
+    return JSONResponse({
+        "id": mid, "url": f"/m/{mid}",
+        "spawn": "ok" if spawn_result.get("ok") else "error",
+        "spawn_result": spawn_result,
+    })
+
+
+# --------------------------- mindframe surface (viewing) ---------------------------
+#
+# Multi-tenant fold-in of surface/server.py: one dashboard serves every
+# mindframe. /m/<id> renders the shell; the agent owns <framedir>/index.html and
+# rewrites it in place; the shell polls /api/frame/<id>/rev and reloads. User
+# messages reach the agent through the taskpilot daemon (which wakes a dormant
+# agent on contact); /activity tails the agent's transcript for the cognition log.
+
+
+def _frame_dir(mid: str) -> Path | None:
+    if not FRAME_ID_RE.match(mid):
+        return None
+    d = FRAMES_ROOT / mid
+    return d if d.is_dir() else None
+
+
+def _frame_task_id(mid: str, fdir: Path) -> str:
+    """The taskpilot task that owns this frame — meta.json `task_id`, else the
+    frame id itself (creation names the task after the frame)."""
+    return _read_meta(fdir).get("task_id") or mid
+
+
+@app.get("/m/{mid}")
+def surface_shell(mid: str) -> Response:
+    """The mindframe surface shell — iframe over the agent's page + message rail
+    + cognition log. The page's JS derives the id from the URL."""
+    if _frame_dir(mid) is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    shell = WEB_ROOT / "surface.html"
+    if not shell.is_file():
+        return JSONResponse({"error": "surface shell missing"}, status_code=500)
+    return FileResponse(shell, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/frame/{mid}/page")
+def frame_page(mid: str) -> Response:
+    """Serve the agent's index.html (or a 'composing…' placeholder)."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    index = fdir / "index.html"
+    headers = {"Cache-Control": "no-store"}
+    if index.is_file():
+        return FileResponse(index, media_type="text/html", headers=headers)
+    return Response(
+        "<!doctype html><meta charset=utf-8>"
+        "<body style='margin:0;height:100vh;display:grid;place-items:center;"
+        "font:16px system-ui;color:#777;background:#0d0d0f'>"
+        "<div>Composing this mindframe&hellip;</div></body>",
+        media_type="text/html", headers=headers,
+    )
+
+
+@app.get("/api/frame/{mid}/rev")
+def frame_rev(mid: str) -> Response:
+    """Revision = the surface file's mtime_ns. Bumps when the agent rewrites."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    index = fdir / "index.html"
+    rev = index.stat().st_mtime_ns if index.is_file() else 0
+    return JSONResponse({"rev": rev})
+
+
+class FrameMessage(BaseModel):
+    text: str = Field(..., min_length=1, max_length=8000)
+
+
+@app.post("/api/frame/{mid}/message")
+async def frame_message(mid: str, body: FrameMessage) -> Response:
+    """Deliver a user message to the mindframe's agent via the taskpilot daemon."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    task_id = _frame_task_id(mid, fdir)
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(
+                f"{TASKPILOT_DAEMON}/tasks/{task_id}/message",
+                json={"text": body.text, "from_session": "mindframe-surface"},
+            )
+        if r.status_code >= 300:
+            return JSONResponse(
+                {"ok": False, "error": f"daemon {r.status_code}: {r.text[:200]}"},
+                status_code=502)
+    except httpx.HTTPError as e:
+        return JSONResponse({"ok": False, "error": f"taskpilot daemon unreachable: {e}"},
+                            status_code=502)
+    return JSONResponse({"ok": True})
+
+
+# --- cognition log: tail the agent's Claude transcript (ported from surface/) ---
+
+def _pretty_model(name: str) -> str:
+    name = name.replace("claude-", "")
+    name = re.sub(r"-\d{8}$", "", name)
+    return re.sub(r"(\d)-(\d)", r"\1.\2", name)
+
+
+def _agent_transcript(fdir: Path, task_id: str) -> Path | None:
+    """Newest Claude session JSONL for this mindframe's agent. Handles both spawn
+    styles: a normal taskpilot spawn runs with the real $HOME and cwd = the frame
+    dir, so Claude stores the transcript at ~/.claude/projects/<encoded-cwd>/
+    (each '/' and '.' becomes '-'); an isolated spawn (e.g. setup) keeps it under
+    ~/.taskpilot/<task_id>/.claude/projects/<proj>/."""
+    files: list[Path] = []
+    enc = re.sub(r"[/.]", "-", str(fdir.resolve()))
+    real_proj = Path.home() / ".claude" / "projects" / enc
+    if real_proj.is_dir():
+        files.extend(real_proj.glob("*.jsonl"))
+    iso_proj = TASKPILOT_HOME / task_id / ".claude" / "projects"
+    if iso_proj.is_dir():
+        files.extend(iso_proj.glob("*/*.jsonl"))
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
+def _parse_cognition(line: str) -> list[dict[str, str]]:
+    """One transcript line -> 0+ compact cognition events (thinking/tool/text)."""
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return []
+    if e.get("isSidechain"):
+        return []
+    msg = e.get("message") or {}
+    if (msg.get("role") or e.get("type")) == "user":
+        return []
+    content = msg.get("content")
+    if isinstance(content, str):
+        s = content.strip().replace("\n", " ")
+        return [{"kind": "text", "label": s[:160]}] if s else []
+    if not isinstance(content, list):
+        return []
+    out: list[dict[str, str]] = []
+    for b in content:
+        t = b.get("type")
+        if t == "text" and b.get("text", "").strip():
+            out.append({"kind": "text", "label": b["text"].strip().replace("\n", " ")[:160]})
+        elif t == "thinking":
+            out.append({"kind": "thinking", "label": "thinking…"})
+        elif t == "tool_use":
+            inp = b.get("input") or {}
+            hint = (inp.get("command") or inp.get("file_path") or inp.get("description")
+                    or inp.get("path") or inp.get("url") or "")
+            label = b.get("name") or "tool"
+            if hint:
+                label += ": " + str(hint)[:100]
+            out.append({"kind": "tool", "label": label})
+    return out
+
+
+def _latest_turn_meta(tp: Path) -> dict[str, Any]:
+    """Most recent assistant turn's model + live context size (window fullness)."""
+    try:
+        with open(tp, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 131072))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return {}
+    for ln in reversed(tail.split("\n")):
+        if not ln.strip() or '"usage"' not in ln:
+            continue
+        try:
+            e = json.loads(ln)
+        except ValueError:
+            continue
+        m = e.get("message") or {}
+        if (m.get("role") or e.get("type")) != "assistant":
+            continue
+        u = m.get("usage") or {}
+        if not u:
+            continue
+        ctx = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+               + u.get("cache_creation_input_tokens", 0))
+        return {"model": _pretty_model(m.get("model") or ""), "context": ctx}
+    return {}
+
+
+@app.get("/api/frame/{mid}/activity")
+def frame_activity(mid: str, offset: int = 0, file: str = "") -> Response:
+    """Tail the mindframe agent's transcript and return cognition events since
+    `offset`; also reports `mtime` + live `model`/`context`."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    tp = _agent_transcript(fdir, _frame_task_id(mid, fdir))
+    if tp is None:
+        return JSONResponse({"events": [], "offset": 0, "file": "", "mtime": 0})
+    fid = tp.name
+    if fid != file:
+        offset = 0
+    events: list = []
+    new_offset = offset
+    try:
+        mtime = tp.stat().st_mtime
+        with open(tp, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if offset > size:
+                offset = 0
+            f.seek(offset)
+            chunk = f.read()
+        text = chunk.decode("utf-8", "replace")
+        if "\n" in text:
+            complete, _, remainder = text.rpartition("\n")
+            new_offset = offset + (len(chunk) - len(remainder.encode("utf-8")))
+            for ln in complete.split("\n"):
+                if ln.strip():
+                    events.extend(_parse_cognition(ln))
+    except OSError:
+        return JSONResponse({"events": [], "offset": offset, "file": fid, "mtime": 0})
+    out: dict[str, Any] = {"events": events, "offset": new_offset, "file": fid, "mtime": mtime}
+    out.update(_latest_turn_meta(tp))
+    return JSONResponse(out)
+
+
 # --------------------------- dispatcher proxy ---------------------------
 
 
@@ -513,38 +831,15 @@ def serve_artifact(sid: str, path: str) -> Response:
     return PlainTextResponse("not found", status_code=404)
 
 
-# --------------------------- vaults panel (v0.8.0) ---------------------------
+# --------------------------- vault panel ---------------------------
 #
-# Surfaces the multi-vault catalog (~/.mindframe/vaults.yaml) to the UI:
-# list vaults, browse recent entries, share via vault-sharing agent, see
-# inbound GitHub invites, accept. All operations route through the existing
-# vault-sharing taskpilot agent (which uses gh CLI under the hood) — the
-# dashboard server is a thin proxy.
+# Surfaces the single knowledge-base vault to the UI: its metadata, recent
+# entries, and node-link graph. The path is fixed at VAULT_DIR
+# (~/.mindframe/vault). There is no multi-vault catalog and no sharing —
+# one deployment, one vault.
 
-import importlib.util
 import subprocess
 from datetime import datetime, timezone
-
-
-def _load_mindframe_lib(module_name: str):
-    """Import a module from the bundle's lib/ at runtime.
-
-    The dashboard server doesn't sit inside the mindframe Python package
-    namespace, but the bundle ships ${CLAUDE_PLUGIN_ROOT}/lib/*.py. We
-    locate the lib relative to this file (dashboard/server/server.py →
-    plugin root → lib/<name>.py).
-    """
-    plugin_root = Path(__file__).resolve().parent.parent.parent
-    lib_path = plugin_root / "lib" / f"{module_name}.py"
-    if not lib_path.is_file():
-        return None
-    spec = importlib.util.spec_from_file_location(
-        f"_mf_lib_{module_name}", lib_path)
-    if spec is None or spec.loader is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _count_entries_per_type(vault_path: Path) -> dict[str, int]:
@@ -594,55 +889,54 @@ def _vault_remote(vault_path: Path) -> str | None:
         return None
 
 
-@app.get("/api/vaults")
-def vaults_list() -> Response:
-    """List all vaults from vaults.yaml, with entry counts + recent activity.
+def _resolve_vault_or_error() -> tuple[Path, str, Response | None]:
+    """The vault path + name. Returns (path, name, error_response).
 
-    Falls back to the legacy single-vault config (pluginConfigs.mindframe.
-    options.vault_path) if vaults.yaml is missing — same behavior as the
-    lib/vaults_yaml.py readers.
+    The path is static (~/.mindframe/vault), so error_response is non-None only
+    when the vault dir doesn't exist yet (fresh install, pre-setup) — handlers
+    should return it directly.
     """
-    vyl = _load_mindframe_lib("vaults_yaml")
-    if vyl is None:
-        return JSONResponse({"error": "vaults_yaml lib not found"}, status_code=500)
-    try:
-        raw_vaults = vyl.list_vaults()
-        default = vyl.default_vault_name()
-    except Exception as e:  # noqa: BLE001
-        return JSONResponse({"error": f"vaults.yaml read failed: {e}"}, status_code=500)
-    out = []
-    for v in raw_vaults:
-        path = Path(v.get("path", "")).expanduser()
-        out.append({
-            "name": v.get("name"),
-            "path": str(path),
-            "exists": path.is_dir(),
-            "is_default": v.get("name") == default,
-            "added_via": v.get("added_via", "manual"),
-            "entry_counts": _count_entries_per_type(path) if path.is_dir() else {},
-            "total_entries": sum(_count_entries_per_type(path).values()) if path.is_dir() else 0,
-            "remote": _vault_remote(path) if path.is_dir() else None,
-            "last_commit": _vault_last_commit(path) if path.is_dir() else None,
-        })
-    return JSONResponse({"vaults": out, "default_vault": default})
+    path = VAULT_DIR
+    name = path.name
+    if not path.is_dir():
+        return path, name, JSONResponse(
+            {"error": f"vault not created yet at {path} — run /mindframe:setup"},
+            status_code=404)
+    return path, name, None
 
 
-@app.get("/api/vaults/{name}/entries")
-def vault_entries(name: str, limit: int = 50) -> Response:
-    """Recent entries in one vault, grouped by entity-type, ordered by mtime.
+@app.get("/api/vault")
+def vault_info() -> Response:
+    """The single knowledge-base vault: path, entry counts, recent activity.
+
+    The path is fixed at ~/.mindframe/vault, so this always returns 200 — the
+    `exists` flag is false until /mindframe:setup creates it.
+    """
+    path = VAULT_DIR
+    name = path.name
+    exists = path.is_dir()
+    counts = _count_entries_per_type(path) if exists else {}
+    return JSONResponse({
+        "name": name,
+        "path": str(path),
+        "exists": exists,
+        "entry_counts": counts,
+        "total_entries": sum(counts.values()),
+        "remote": _vault_remote(path) if exists else None,
+        "last_commit": _vault_last_commit(path) if exists else None,
+    })
+
+
+@app.get("/api/vault/entries")
+def vault_entries(limit: int = 50) -> Response:
+    """Recent entries in the vault, grouped by entity-type, ordered by mtime.
 
     Returns a flat list (name, type, path, modified_at, title from frontmatter
     if available) for the home view's "recent activity" feed.
     """
-    vyl = _load_mindframe_lib("vaults_yaml")
-    if vyl is None:
-        return JSONResponse({"error": "vaults_yaml lib not found"}, status_code=500)
-    v = vyl.get_vault(name)
-    if not v:
-        return JSONResponse({"error": f"vault '{name}' not found"}, status_code=404)
-    path = Path(v.get("path", "")).expanduser()
-    if not path.is_dir():
-        return JSONResponse({"error": f"vault path does not exist: {path}"}, status_code=404)
+    path, name, err = _resolve_vault_or_error()
+    if err is not None:
+        return err
     entries = []
     for child in path.iterdir():
         if not (child.is_dir() and not child.name.startswith(("." , "_"))):
@@ -675,8 +969,8 @@ def vault_entries(name: str, limit: int = 50) -> Response:
                          "total": len(entries)})
 
 
-@app.get("/api/vaults/{name}/graph")
-def vault_graph(name: str, limit: int = 500) -> Response:
+@app.get("/api/vault/graph")
+def vault_graph(limit: int = 500) -> Response:
     """Return a node-link graph of the vault.
 
     Nodes: one per .md entry. Each carries id (relative path), label
@@ -688,16 +982,9 @@ def vault_graph(name: str, limit: int = 500) -> Response:
     Cap at `limit` nodes (default 500) so a 10k-entry vault doesn't
     explode the payload. Sampled by mtime (newest first) on overflow.
     """
-    vyl = _load_mindframe_lib("vaults_yaml")
-    if vyl is None:
-        return JSONResponse({"error": "vaults_yaml lib not found"}, status_code=500)
-    v = vyl.get_vault(name)
-    if not v:
-        return JSONResponse({"error": f"vault '{name}' not found"}, status_code=404)
-    path = Path(v.get("path", "")).expanduser()
-    if not path.is_dir():
-        return JSONResponse({"error": f"vault path does not exist: {path}"},
-                            status_code=404)
+    path, name, err = _resolve_vault_or_error()
+    if err is not None:
+        return err
     return JSONResponse(build_vault_graph(path, name, limit))
 
 
@@ -872,139 +1159,6 @@ def build_vault_graph(path: Path, name: str, limit: int = 500) -> dict:
         "nodes": nodes,
         "edges": edges,
     }
-
-
-class VaultShareBody(BaseModel):
-    recipient: str = Field(..., min_length=3, max_length=128)
-    permission: str = Field("push", pattern=r"^(pull|push|admin)$")
-    owner: str | None = None
-
-
-@app.post("/api/vaults/{name}/share")
-async def vault_share(name: str, body: VaultShareBody) -> Response:
-    """Fire a share job at the vault-sharing agent. Fire-and-forget; the
-    UI polls /api/vaults/{name} or watches the agent's outgoing.json for
-    completion status.
-    """
-    vyl = _load_mindframe_lib("vaults_yaml")
-    if vyl is None or not vyl.vault_exists(name):
-        return JSONResponse({"error": f"vault '{name}' not found"}, status_code=404)
-
-    # Resolve gh user as default owner
-    owner = body.owner
-    if not owner:
-        try:
-            r = subprocess.run(["gh", "api", "user", "--jq", ".login"],
-                                capture_output=True, text=True, timeout=5)
-            owner = r.stdout.strip() if r.returncode == 0 else None
-        except (OSError, subprocess.TimeoutExpired):
-            owner = None
-    if not owner:
-        return JSONResponse({
-            "error": "no GitHub owner — run `gh auth login` or pass `owner`",
-        }, status_code=400)
-
-    # Drop the job file in the agent's queue + message via session-bridge
-    queue = Path.home() / ".mindframe" / "vault-sharing" / "queue"
-    responses = Path.home() / ".mindframe" / "vault-sharing" / "responses"
-    queue.mkdir(parents=True, exist_ok=True)
-    responses.mkdir(parents=True, exist_ok=True)
-    job_id = uuid.uuid4().hex[:12]
-    response_path = responses / f"share-{job_id}.json"
-    vault = vyl.get_vault(name)
-    job = {
-        "job_id": job_id, "kind": "share",
-        "vault_name": name, "vault_path": vault.get("path"),
-        "recipient": body.recipient, "permission": body.permission,
-        "github_owner": owner, "response_path": str(response_path),
-    }
-    job_path = queue / f"{job_id}.json"
-    job_path.write_text(json.dumps(job, indent=2))
-
-    bridge = "http://127.0.0.1:8910"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                f"{bridge}/sessions/vault-sharing/message",
-                json={"text": f"vault-sharing job: {job_path}"},
-            )
-            if r.status_code >= 400:
-                return JSONResponse({
-                    "error": f"agent dispatch failed: {r.status_code} {r.text[:200]}",
-                    "hint": "is vault-sharing agent spawned via taskpilot?",
-                }, status_code=502)
-    except httpx.HTTPError as e:
-        return JSONResponse({"error": f"session-bridge unreachable: {e}"},
-                             status_code=502)
-
-    return JSONResponse({
-        "ok": True, "job_id": job_id,
-        "vault": name, "recipient": body.recipient,
-        "repo": f"{owner}/vault-{name}",
-        "response_path": str(response_path),
-        "status": "queued",
-    })
-
-
-@app.get("/api/github/owners")
-def github_owners() -> Response:
-    """List places the operator can create a repo under: their personal
-    account + every org they're a member of. Drives the 'where should
-    this vault live?' dropdown in the share dialog.
-    """
-    try:
-        me = subprocess.run(
-            ["gh", "api", "user", "--jq", "{login,name}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        orgs = subprocess.run(
-            ["gh", "api", "user/orgs", "--jq", ".[] | {login,description}"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except FileNotFoundError:
-        return JSONResponse({"error": "gh CLI not installed"}, status_code=500)
-    except subprocess.TimeoutExpired:
-        return JSONResponse({"error": "gh CLI timed out"}, status_code=504)
-
-    if me.returncode != 0:
-        return JSONResponse({
-            "error": "gh CLI not authenticated — run `gh auth login`",
-            "stderr": me.stderr[:300],
-        }, status_code=401)
-
-    try:
-        user = json.loads(me.stdout)
-    except json.JSONDecodeError:
-        user = {"login": None}
-
-    org_list = []
-    if orgs.returncode == 0:
-        # gh returns one JSON object per line
-        for line in orgs.stdout.strip().splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    org_list.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
-    owners = []
-    if user.get("login"):
-        owners.append({
-            "login": user["login"],
-            "kind": "personal",
-            "label": f"{user['login']} (your personal account)",
-        })
-    for o in org_list:
-        owners.append({
-            "login": o["login"],
-            "kind": "org",
-            "label": f"{o['login']} (org)" + (f" — {o['description']}" if o.get("description") else ""),
-        })
-    return JSONResponse({
-        "owners": owners,
-        "default": user.get("login"),
-    })
 
 
 # --------------------------- data sources panel ---------------------------
@@ -1279,116 +1433,9 @@ def list_connections() -> Response:
     return JSONResponse(_conn_cache["data"])
 
 
-@app.get("/api/shares/incoming")
-def shares_incoming() -> Response:
-    """List pending GitHub repository invitations (potential vaults to accept)."""
-    try:
-        r = subprocess.run(
-            ["gh", "api", "/user/repository_invitations"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except FileNotFoundError:
-        return JSONResponse({"error": "gh CLI not installed"}, status_code=500)
-    if r.returncode != 0:
-        return JSONResponse({
-            "error": "gh api failed",
-            "stderr": r.stderr[:300],
-        }, status_code=502)
-    try:
-        invites = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        invites = []
-    out = []
-    for inv in invites:
-        repo = inv.get("repository", {}).get("full_name", "")
-        # Heuristic: looks like a mindframe vault if name starts with vault-
-        is_vault_shaped = repo.split("/")[-1].startswith("vault-")
-        out.append({
-            "id": inv.get("id"),
-            "repo": repo,
-            "inviter": inv.get("inviter", {}).get("login"),
-            "permissions": inv.get("permissions"),
-            "created_at": inv.get("created_at"),
-            "html_url": inv.get("html_url"),
-            "looks_like_vault": is_vault_shaped,
-        })
-    return JSONResponse({"invitations": out})
-
-
-class AcceptBody(BaseModel):
-    invitation_id: int
-    vault_name: str | None = None
-    vaults_root: str | None = None
-
-
-@app.post("/api/shares/accept")
-async def shares_accept(body: AcceptBody) -> Response:
-    """Tell vault-sharing agent to accept a GitHub invite, clone, register."""
-    # Fetch the invitation to derive a default vault name + repo
-    try:
-        r = subprocess.run(
-            ["gh", "api", "/user/repository_invitations"],
-            capture_output=True, text=True, timeout=10,
-        )
-        invites = json.loads(r.stdout) if r.returncode == 0 else []
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        invites = []
-    match = next((i for i in invites if i.get("id") == body.invitation_id), None)
-    if not match:
-        return JSONResponse({
-            "error": f"invitation {body.invitation_id} not in pending list. "
-                     "If already accepted on GitHub, accept via CLI: "
-                     "vault_sharing/accept.py --invitation <id> --repo <owner/name> --vault <name>",
-        }, status_code=404)
-
-    repo_full = match["repository"]["full_name"]
-    vault_name = body.vault_name or repo_full.split("/")[-1].replace("vault-", "", 1)
-    vaults_root = Path(body.vaults_root or str(
-        Path.home() / "mindframe-vaults")).expanduser()
-    vaults_root.mkdir(parents=True, exist_ok=True)
-
-    queue = Path.home() / ".mindframe" / "vault-sharing" / "queue"
-    responses = Path.home() / ".mindframe" / "vault-sharing" / "responses"
-    queue.mkdir(parents=True, exist_ok=True)
-    responses.mkdir(parents=True, exist_ok=True)
-    job_id = uuid.uuid4().hex[:12]
-    response_path = responses / f"accept-{job_id}.json"
-    job = {
-        "job_id": job_id, "kind": "accept",
-        "invitation_id": body.invitation_id,
-        "repo_full_name": repo_full,
-        "vault_name": vault_name,
-        "vaults_root": str(vaults_root),
-        "response_path": str(response_path),
-    }
-    job_path = queue / f"{job_id}.json"
-    job_path.write_text(json.dumps(job, indent=2))
-
-    bridge = "http://127.0.0.1:8910"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                f"{bridge}/sessions/vault-sharing/message",
-                json={"text": f"vault-sharing job: {job_path}"},
-            )
-            if r.status_code >= 400:
-                return JSONResponse({
-                    "error": f"agent dispatch failed: {r.status_code} {r.text[:200]}",
-                }, status_code=502)
-    except httpx.HTTPError as e:
-        return JSONResponse({"error": f"session-bridge unreachable: {e}"},
-                             status_code=502)
-
-    return JSONResponse({
-        "ok": True, "job_id": job_id, "vault_name": vault_name,
-        "repo": repo_full, "response_path": str(response_path),
-        "status": "queued",
-    })
-
-
 # --------------------------- system overview (read-only) ---------------------------
 #
-# Three endpoints that, together with the existing /api/frames, /api/vaults and
+# Three endpoints that, together with the existing /api/frames, /api/vault and
 # /api/connections, back the structured "System" view. Each maps one bucket of
 # the bundle's mental model to its real on-disk source of truth:
 #
@@ -1409,7 +1456,7 @@ _SYS_TTL_S = 20.0
 def _load_yaml(path: Path) -> Any:
     """Parse a YAML file, tolerating a missing PyYAML or unreadable file."""
     try:
-        import yaml  # transitive dep of the bundle (lib/vaults_yaml.py)
+        import yaml  # transitive dep of the bundle (schema.yaml, channels.yaml)
     except ImportError:
         return None
     try:

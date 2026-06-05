@@ -8,7 +8,7 @@ implements against.
 
 Status: design agreed, wiring in progress. Prototype lives (throwaway) at
 `dashboard/artifacts/kb-live/` driven by `setup-*` JSON files + the live
-`/api/vaults/<name>/graph` endpoint.
+`/api/vault/graph` endpoint.
 
 ## The first-run surface
 
@@ -51,7 +51,7 @@ graph filling (connect a source).
 
 Per `kb-schema.md`: a fixed meta-schema + a per-install entity set recorded in
 `<vault>/schema.yaml`. The interview *assembles* that entity set. The schema is
-**seeded** (core types) and **grown** (pack types + custom types the agent
+**seeded** (core types) and **grown** (custom types the agent
 mints from the interview, `source: custom`). The legend reads `schema.yaml`;
 no hardcoded type list.
 
@@ -172,7 +172,8 @@ fallback plumbing only.
 
 The onboarding flow is not special-cased UI — it is the **first mindframe**. The
 schema rail, connections rail, and knowledge-graph are reusable components any
-mindframe composes. `install-flow-v2.md` is that mindframe's recipe.
+mindframe composes. The setup mindframe's recipe is its standing brief at
+`setup/brief.md`, filled in by the hosted `install.txt`.
 
 ### The v0 interaction model (supersedes the intent primitive)
 
@@ -228,7 +229,6 @@ drift, and spawned agents have a sandboxed `$HOME` so `gh` needs
   small terminal bootstrap (rules → marketplace → install mindframe → birth the
   setup mindframe → hand off). The onboarding arc lives in `setup/brief.md` (the
   setup mindframe's standing brief, a template install.txt fills in).
-  `install-flow-v2.md` is the superseded intent-primitive-era draft.
 - **Capabilities are skills / MCPs / CLIs, not KB records.** Skills and MCPs
   self-inject into an agent at startup; a CLI capability is wrapped as a skill
   whose body is the recipe. The knowledge base stores what the org IS (entities,

@@ -9,7 +9,7 @@ This document is the **library**, not the contract.
 Different organizations have different entities — a software company has Services and Repositories, a paper mill has Machines and Suppliers, a law firm has Matters. No fixed entity list fits all of them. So mindframe's schema has two parts:
 
 - **The meta-schema** — the universal, fixed rules every entity obeys regardless of domain. This *is* the contract, and it never changes without a version bump.
-- **The entity library** — core entities (every install gets them), domain packs (opt-in sets), and custom entities (defined per install). This is a menu.
+- **The entity library** — core entities (every install gets them) and custom entities (synthesized per install). Core is fixed; everything domain-specific is custom, minted at setup.
 
 Each deployment assembles its own schema from the library and records it in the vault's **`schema.yaml` manifest** (see "The schema manifest"). The manifest is the contract *for that vault*. The librarian and skills read the manifest — never a hardcoded entity list.
 
@@ -29,7 +29,7 @@ Each deployment assembles its own schema from the library and records it in the 
 
 ## The meta-schema
 
-The fixed, universal contract. Every entity in every deployment — core, pack, or custom — obeys these rules.
+The fixed, universal contract. Every entity in every deployment — core or custom — obeys these rules.
 
 ### The four layers
 
@@ -42,7 +42,7 @@ Every entity type belongs to exactly one **layer** — a category answering a di
 | **Knowledge** | what's true / what the rules are | declarative reference |
 | **Process** | how the organization operates | the procedures and practices it runs |
 
-A layer is a *category of entity types*, not an entity itself. The Thing layer holds Person, Team, …; the Process layer holds Runbook, Deployment, …. A layer may be entirely populated by pack or custom entity types (the Process layer has no core types).
+A layer is a *category of entity types*, not an entity itself. The Thing layer holds Person, Team, …; the Process layer holds whatever procedures a deployment defines. A layer may be entirely populated by custom entity types (the Process layer has no core types — every Process entity is custom).
 
 ### Identity rules
 
@@ -87,17 +87,16 @@ Each vault carries `schema.yaml` at its root — the assembled, self-contained s
 
 ```yaml
 schema_version: 2
-packs: [software-ops, communications]      # packs activated at setup
 entities:
   person:
     layer: thing
-    source: core                           # core | pack:<name> | custom
+    source: core                           # core | custom
     identity: name
     directory: People
     foreign_keys: { team: team, manager: person }
   runbook:
     layer: process
-    source: pack:software-ops
+    source: custom                         # synthesized by setup, confirmed by the operator
     identity: slug
     directory: Runbooks
     foreign_keys: { service: service, notify: team }
@@ -109,7 +108,7 @@ entities:
     foreign_keys: { affected: any:thing, related_process: any:process }
   mill:
     layer: thing
-    source: custom                         # proposed by setup, confirmed by the operator
+    source: custom                         # synthesized by setup, confirmed by the operator
     identity: name
     directory: Mills
     foreign_keys: { facility: facility }
@@ -117,7 +116,7 @@ entities:
 
 A foreign-key target is a bare type name (`team`) or a layer (`any:thing`).
 
-`source` records provenance: `core` (always present), `pack:<name>` (from an activated pack), or `custom` (defined for this install). An entity type absent from `entities` simply does not exist in this vault — a paper company's manifest has no `service`, no `repository`.
+`source` records provenance: `core` (always present) or `custom` (synthesized for this install). An entity type absent from `entities` simply does not exist in this vault — a paper company's manifest has no `service`, no `repository`.
 
 Because the manifest is self-contained, the vault owns and versions its own schema. There is no central schema to migrate against.
 
@@ -158,7 +157,7 @@ members: [alice-okafor, bob-singh]      # FK -> Person
 ---
 ```
 
-Body: charter, scope, working hours, how to reach them. Packs may extend Team — the communications pack adds `slack_channel`.
+Body: charter, scope, working hours, how to reach them. A deployment may add custom fields to Team — e.g. an org on Slack adds `slack_channel`.
 
 ### Customer — *Thing*
 
@@ -259,7 +258,7 @@ Body: `## Context`, `## Decision`, `## Consequences`, `## Alternatives considere
 
 ### Incident — *Event*
 
-A recorded occurrence of something going wrong, with cause and resolution. Domain-neutral: a software outage, a machine breakdown, a missed deadline. Packs extend it — the software-ops pack adds `fix_pr`, `sentry_project`.
+A recorded occurrence of something going wrong, with cause and resolution. Domain-neutral: a software outage, a machine breakdown, a missed deadline. A deployment may add custom fields — a software org adds `fix_pr`, `sentry_project`.
 
 ```yaml
 ---
@@ -316,54 +315,22 @@ Annual Recurring Revenue. …
 
 ---
 
-## Domain packs
-
-A pack is a named set of entity types for a domain. Setup activates packs based on what discovery finds. A pack may also **extend** a core entity with extra fields.
-
-### `software-ops` pack
-
-Activated when discovery finds GitHub / Sentry / a container runtime / etc.
-
-| Entity | Layer | Role |
-|--------|-------|------|
-| `service` | Thing | A deployable software unit. FKs: `repos -> repository`, `team -> team`, `products -> product`, `depends_on -> service`. |
-| `repository` | Thing | Source code. FKs: `services -> service`, `review_team -> team`. |
-| `integration` | Thing | An external system endpoint + auth pointer (`auth_secret_ref` names a keychain entry). FK: `maintainer -> team`. |
-| `runbook` | Process | Incident-response procedure. `trigger: symptom`. FKs: `service -> service`, `notify -> team`. Fields: `symptom`, `failure_modes`, `severity_if_unaddressed`. |
-| `deployment` | Process | How a team ships. `trigger: manual`. FK: `team -> team`. Fields: `environments`, `rollback`, `approval_required`. |
-| `code-review` | Process | `trigger: event`. FK: `team -> team` (or org-wide). |
-| `release` | Process | `trigger: schedule`/`manual`. FK: `team -> team`. |
-
-Extends core: `Incident` gains `fix_pr` and `services_affected`; `Service` is the natural target of `Incident.affected`.
-
-### `communications` pack
-
-Activated when discovery finds Slack / Teams / etc.
-
-| Entity | Layer | Role |
-|--------|-------|------|
-| `channel` | Thing | A conversation venue in a comms tool. Fields: `platform` (slack/teams/…), `purpose`. FKs: `members -> person`, `team -> team`. |
-
-Extends core: `Team` gains `slack_channel`.
-
-Channel is *not* core — it is an artifact of a particular tool, not of an organization. An org on email and phone has no channels.
-
----
-
 ## Custom entities
 
-When a customer has an entity no pack ships — a paper mill's `machine`, a law firm's `matter` — setup defines it for that install. A custom entity is new in its *name and fields*, never in its *structure*: it must obey the meta-schema (a layer, kebab `type`, name/slug identity, FK-by-name, a CATALOG section).
+Everything domain-specific is a custom entity. Core covers the universal nouns; the rest — a software company's `service`, `repository`, and `runbook`; a comms tool's `channel`; a paper mill's `machine`; a law firm's `matter` — setup synthesizes per install from what discovery finds and what the operator confirms. Mindframe ships no pre-baked domain bundles: the agent mints the types this org actually needs, live.
+
+A custom entity is new in its *name and fields*, never in its *structure*: it must obey the meta-schema (a layer, kebab `type`, name/slug identity, FK-by-name, a CATALOG section). A deployment may also add custom fields to a core entity (e.g. `Incident.fix_pr` for a software org, `Team.slack_channel` for an org on Slack) — same provenance, recorded against the core type.
 
 Setup's custom-entity step:
 
-1. **Detect the gap** — a core noun of the business that is neither core nor in a pack.
+1. **Detect the gap** — a core noun of the business that isn't already a core entity. Discovery surfaces the candidates: probed systems (a GitHub org implies `repository` + `service`), the operator's free-text answer, the interview.
 2. **Alias or mint** — first ask whether it is genuinely new or a renamed core entity. "Squad" is just Team; "Matter" may be a richer Project or its own type. Do not over-mint: a renamed core entity is an alias, not a new type.
 3. **Define against the meta-schema** — pick the layer, name the `type`, choose fields and FKs, with the operator.
 4. **Record** — write it into `schema.yaml` with `source: custom`.
 
 From that point the custom entity is first-class *in that install*: the librarian validates and writes it, the catalog indexes it — because it conforms to the meta-schema.
 
-When a custom entity recurs across deployments, that is the signal to promote its cluster into a new pack.
+When a custom entity recurs across many deployments, that is the signal to consider promoting it into the core set in a future schema version.
 
 ---
 
@@ -381,10 +348,10 @@ Last updated: 2026-04-28
 ## Teams
 | Name | Lead | Members |
 
-## Services            (only if the software-ops pack is active)
+## Services            (custom — only if this deployment defines it)
 | Name | Criticality | Team | Repos |
 
-## Runbooks            (only if the software-ops pack is active)
+## Runbooks            (custom — only if this deployment defines it)
 | Slug | Service | Symptom |
 
 ## Incidents (last 90 days)
@@ -407,12 +374,12 @@ Flat-by-type. Each entity type's `directory` comes from the manifest:
   People/        Teams/        Customers/     Partners/      Projects/      Products/
   Decisions/     Incidents/
   Conventions/
-  Runbooks/      Deployments/  CodeReviews/                  # software-ops pack
-  Channels/                                                  # communications pack
-  Mills/         Machines/                                   # custom, this install only
+  Runbooks/      Deployments/  CodeReviews/                  # custom (a software org)
+  Channels/                                                  # custom (an org on Slack)
+  Mills/         Machines/                                   # custom (a paper mill)
 ```
 
-A vault only has the directories for entity types its manifest activates.
+A vault only has the directories for entity types its manifest declares.
 
 ## Schema invariants
 
@@ -432,7 +399,7 @@ Validation has two homes:
 
 Setup populates the vault after it has assembled and written `schema.yaml`. Three passes:
 
-1. **Auto-discovery** — per-source extraction. Each activated pack/source knows how to read its system into entity notes (GitHub org → `repository` + `service`; Slack workspace → `person` + `channel`; …). Stub notes are presented for confirmation.
+1. **Auto-discovery** — per-source extraction. Each connected source knows how to read its system into entity notes (GitHub org → `repository` + `service`; Slack workspace → `person` + `channel`; …). Stub notes are presented for confirmation.
 2. **Manual seeding** — what discovery can't infer: top Products, active Projects, foundational Decisions, Conventions, Glossary terms.
 3. **Organic growth** — Events and most Processes start empty; deliverable skills add to them as they run.
 

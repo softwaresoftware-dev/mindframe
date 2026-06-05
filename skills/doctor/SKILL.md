@@ -30,12 +30,9 @@ If a Tier-1 heal fails or its re-probe still fails, stop healing that subsystem 
 
 Read bundle config from `~/.claude/settings.json` → `pluginConfigs.mindframe.options`:
 
-- `deployment_name` — must be a non-empty string.
-- `vault_path` — must be set, and must resolve to an existing directory.
+- `deployment_name` — must be a non-empty string. If missing, that's a Tier 2 finding: `/mindframe:setup` is the proper path on a fresh install.
 
-If either is missing or `vault_path` does not exist, this is the **first finding** and it is blocking — every check that reads the vault will be `unknown` until it is fixed. This is Tier 2: use `AskUserQuestion` to ask the operator for the missing value, write it back into settings.json, and note that `/mindframe:setup` is the proper path if this is a fresh install. Do not invent a path.
-
-Resolve `VAULT` for the rest of the run: the configured `vault_path`, or `CLAUDE_PLUGIN_OPTION_VAULT_PATH` if exported.
+The vault is **not configurable** — it always lives at `~/.mindframe/vault`. Resolve `VAULT` to that path for the rest of the run. If the directory does not exist, this is the **first finding** and it is blocking — every check that reads the vault will be `unknown` until it is created. That's a fresh-install signal, not a misconfiguration: tell the operator to run `/mindframe:setup`. Do not create or invent a vault elsewhere.
 
 ### [check 2/7] inventory the bundle
 

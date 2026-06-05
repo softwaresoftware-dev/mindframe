@@ -60,7 +60,7 @@ claude plugin install softwaresoftware@softwaresoftware-plugins
 
 The first three steps install the bundle. `/mindframe:setup` does the rest: probes the machine for the data systems already in use, walks the operator through credentials, bootstraps the knowledge base from real source systems, wires the event router, and runs an end-to-end smoke test.
 
-> **Onboarding redesigned 2026-06-02.** Setup is now UI-based: a small terminal bootstrap births the operator's first mindframe, which facilitates the rest of onboarding in a web surface as the user watches their knowledge base take shape. The model lives in [`onboarding-ux.md`](onboarding-ux.md); the flow is the hosted `install.txt` plus the setup mindframe's brief at `setup/brief.md`. (`install-flow-v2.md` is a superseded earlier draft.)
+> **Onboarding redesigned 2026-06-02.** Setup is now UI-based: a small terminal bootstrap births the operator's first mindframe, which facilitates the rest of onboarding in a web surface as the user watches their knowledge base take shape. The model lives in [`onboarding-ux.md`](onboarding-ux.md); the flow is the hosted `install.txt` plus the setup mindframe's brief at `setup/brief.md`.
 
 ## Principles
 
@@ -75,4 +75,4 @@ The first three steps install the bundle. `/mindframe:setup` does the rest: prob
   the push/pull split, and the runtime flows.
 - [`interfaces.md`](interfaces.md) — the contracts between subsystems: the
   event API, routing config, recipe format, and knowledge-base schema.
-- [`kb-schema.md`](kb-schema.md) — the knowledge-base schema library: the meta-schema, core entities, domain packs, and the per-install manifest.
+- [`kb-schema.md`](kb-schema.md) — the knowledge-base schema library: the meta-schema, core entities, and the per-install manifest of custom entities.

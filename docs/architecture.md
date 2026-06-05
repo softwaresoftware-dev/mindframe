@@ -60,8 +60,8 @@ taskpilot   session-bridge  knowledge- dispatcher taskboard   claude-        not
 ```
 
 Transitively, `taskpilot` pulls in `terminal-ops` (→ `tmux-session`) and
-`daemon` (→ `daemon-manager`). The bundle's full capability closure is
-verified by `tests/e2e/test_install_contract.py`.
+`daemon` (→ `daemon-manager`), so the bundle's full capability closure
+resolves from the `requires` list above.
 
 Because the binding is by capability, any provider is swappable per customer:
 notifications resolve to Slack on one install and email on the next, with no

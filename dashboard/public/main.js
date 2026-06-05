@@ -167,138 +167,53 @@ function el(tag, attrs = {}, children = []) {
 
 // ----- Boards index view -----
 
-// ----- Vaults panel (v0.8.0) -----
+// ----- Knowledge base panel (single vault) -----
 
 function vaultLastTouched(v) {
   if (!v.last_commit?.committed_at) return "no commits yet";
   return relativeTime(new Date(v.last_commit.committed_at).getTime());
 }
 
-async function refreshVaults() {
+async function refreshVault() {
+  const list = $("vault-list");
   try {
-    const r = await fetch("/api/vaults");
-    const j = await r.json();
-    const vaults = j.vaults || [];
-    $("vault-count").textContent = vaults.length;
-    const list = $("vault-list");
-    if (!vaults.length) {
-      list.innerHTML = `<div class="empty"><p>No vaults configured yet.
-        Run <code>/mindframe:setup</code> to create one.</p></div>`;
+    const r = await fetch("/api/vault");
+    const v = await r.json();
+    if (!r.ok || v.error || !v.exists) {
+      $("vault-count").textContent = "—";
+      list.innerHTML = `<div class="empty"><p>No knowledge base yet.
+        Run <code>/mindframe:setup</code> to create one at <code>~/.mindframe/vault</code>.</p></div>`;
       return;
     }
-    list.innerHTML = vaults.map(v => {
-      const typeCounts = Object.entries(v.entry_counts || {})
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
-        .map(([t, n]) => `<span class="vault-type-chip">${escapeHtml(t)}: ${n}</span>`)
-        .join("");
-      const remoteBadge = v.remote
-        ? `<span class="vault-remote-badge" title="${escapeHtml(v.remote)}">⇄ shared</span>`
-        : `<span class="vault-remote-badge vault-remote-local">● local only</span>`;
-      const defaultBadge = v.is_default
-        ? `<span class="vault-default-badge">default</span>` : "";
-      return `
-        <div class="vault-tile" data-vault="${escapeHtml(v.name)}">
-          <div class="vault-tile-header">
-            <span class="vault-name">${escapeHtml(v.name)}</span>
-            ${defaultBadge}
-            ${remoteBadge}
-          </div>
-          <div class="vault-tile-meta">
-            <span class="vault-total">${v.total_entries} entries</span>
-            <span class="vault-touched">last touched ${vaultLastTouched(v)}</span>
-          </div>
-          <div class="vault-type-chips">${typeCounts || '<span class="vault-empty-note">empty</span>'}</div>
-          <div class="vault-tile-actions">
-            <button class="btn btn-sm btn-default vault-action-browse" type="button">browse</button>
-            <button class="btn btn-sm btn-default vault-action-share" type="button">share</button>
-          </div>
+    $("vault-count").textContent = v.total_entries;
+    const typeCounts = Object.entries(v.entry_counts || {})
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([t, n]) => `<span class="vault-type-chip">${escapeHtml(t)}: ${n}</span>`)
+      .join("");
+    const remoteBadge = v.remote
+      ? `<span class="vault-remote-badge" title="${escapeHtml(v.remote)}">⇄ remote</span>`
+      : `<span class="vault-remote-badge vault-remote-local">● local only</span>`;
+    list.innerHTML = `
+      <div class="vault-tile">
+        <div class="vault-tile-header">
+          <span class="vault-name">${escapeHtml(v.name)}</span>
+          ${remoteBadge}
         </div>
-      `;
-    }).join("");
-
-    // Wire share buttons
-    list.querySelectorAll(".vault-action-share").forEach(btn => {
-      btn.addEventListener("click", (e) => {
-        const tile = e.target.closest(".vault-tile");
-        openShareDialog(tile.dataset.vault);
-      });
-    });
-    list.querySelectorAll(".vault-action-browse").forEach(btn => {
-      btn.addEventListener("click", (e) => {
-        const tile = e.target.closest(".vault-tile");
-        openBrowseDialog(tile.dataset.vault);
-      });
-    });
-  } catch (e) {
-    $("vault-list").innerHTML = `<div class="empty"><p>vault list error: ${escapeHtml(String(e))}</p></div>`;
-  }
-}
-
-async function refreshIncomingShares() {
-  try {
-    const r = await fetch("/api/shares/incoming");
-    const j = await r.json();
-    const invites = j.invitations || [];
-    const el = $("incoming-shares");
-    if (!invites.length) {
-      el.hidden = true;
-      return;
-    }
-    el.hidden = false;
-    el.innerHTML = `
-      <p class="incoming-eyebrow">pending invitations (${invites.length})</p>
-      <div class="incoming-list">
-        ${invites.map(inv => `
-          <div class="incoming-tile ${inv.looks_like_vault ? '' : 'incoming-non-vault'}">
-            <div class="incoming-header">
-              <span class="incoming-repo">${escapeHtml(inv.repo)}</span>
-              ${inv.looks_like_vault ? '<span class="incoming-vault-badge">vault</span>' : '<span class="incoming-other-badge">non-vault repo</span>'}
-            </div>
-            <div class="incoming-meta">
-              from <strong>${escapeHtml(inv.inviter || '?')}</strong> ·
-              ${escapeHtml(inv.permissions || '?')} ·
-              ${inv.created_at ? relativeTime(new Date(inv.created_at).getTime()) : ''}
-            </div>
-            <div class="incoming-actions">
-              ${inv.looks_like_vault
-                ? `<button class="btn btn-sm btn-primary" data-invite-accept="${inv.id}">accept</button>`
-                : `<span class="incoming-note">not a mindframe vault — accept via GitHub if you want it</span>`}
-            </div>
-          </div>
-        `).join("")}
+        <div class="vault-tile-meta">
+          <span class="vault-total">${v.total_entries} entries</span>
+          <span class="vault-touched">last touched ${vaultLastTouched(v)}</span>
+        </div>
+        <div class="vault-type-chips">${typeCounts || '<span class="vault-empty-note">empty</span>'}</div>
+        <div class="vault-tile-actions">
+          <button class="btn btn-sm btn-default vault-action-browse" type="button">browse</button>
+        </div>
       </div>
     `;
-    el.querySelectorAll("[data-invite-accept]").forEach(btn => {
-      btn.addEventListener("click", async (e) => {
-        const id = parseInt(e.target.dataset.inviteAccept, 10);
-        e.target.disabled = true;
-        e.target.textContent = "accepting…";
-        try {
-          const r = await fetch("/api/shares/accept", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ invitation_id: id }),
-          });
-          const j = await r.json();
-          if (r.ok) {
-            showToast(`accepted: ${j.vault_name} (${j.repo})`, "ok");
-            setTimeout(refreshIncomingShares, 8000);
-            setTimeout(refreshVaults, 8000);
-          } else {
-            showToast(`accept failed: ${j.error || r.statusText}`, "err");
-            e.target.disabled = false;
-            e.target.textContent = "accept";
-          }
-        } catch (err) {
-          showToast(`network error: ${err.message}`, "err");
-          e.target.disabled = false;
-          e.target.textContent = "accept";
-        }
-      });
-    });
+    const browse = list.querySelector(".vault-action-browse");
+    if (browse) browse.addEventListener("click", () => openBrowseDialog());
   } catch (e) {
-    /* silent — incoming is best-effort */
+    list.innerHTML = `<div class="empty"><p>knowledge base error: ${escapeHtml(String(e))}</p></div>`;
   }
 }
 
@@ -438,103 +353,8 @@ async function openConnectSourceDialog(sourceId) {
   }
 }
 
-async function openShareDialog(vaultName) {
-  const existing = document.getElementById("share-dialog");
-  if (existing) existing.remove();
-  const dialog = document.createElement("div");
-  dialog.id = "share-dialog";
-  dialog.className = "modal-overlay";
-  dialog.innerHTML = `
-    <div class="modal">
-      <h3 class="modal-title">Share vault: ${escapeHtml(vaultName)}</h3>
-      <form id="share-form" class="modal-form">
-        <label class="modal-label">Recipient (email or GitHub username)</label>
-        <input name="recipient" type="text" required class="modal-input" placeholder="e.g. friend@team.com or githubuser" autofocus>
-        <label class="modal-label">Permission</label>
-        <select name="permission" class="modal-input">
-          <option value="push">read + write</option>
-          <option value="pull">read-only</option>
-          <option value="admin">admin</option>
-        </select>
-        <label class="modal-label">Where should this vault live?</label>
-        <select name="owner" id="share-owner-select" class="modal-input" disabled>
-          <option>loading your GitHub accounts…</option>
-        </select>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-default" id="share-cancel">cancel</button>
-          <button type="submit" class="btn btn-primary" id="share-submit">share</button>
-        </div>
-        <p class="modal-hint">Creates a private GitHub repo at <code id="share-repo-preview">…</code>, pushes the vault, and invites the recipient as a collaborator. They never touch git/ssh — the agent handles it.</p>
-      </form>
-    </div>
-  `;
-  document.body.appendChild(dialog);
-  dialog.querySelector("#share-cancel").addEventListener("click", () => dialog.remove());
-  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
-
-  // Populate the owner dropdown with the operator's GitHub accounts.
-  const ownerSelect = dialog.querySelector("#share-owner-select");
-  const repoPreview = dialog.querySelector("#share-repo-preview");
-  const renderPreview = () => {
-    const owner = ownerSelect.value || "<your-account>";
-    repoPreview.textContent = `${owner}/vault-${vaultName}`;
-  };
-  try {
-    const r = await fetch("/api/github/owners");
-    const j = await r.json();
-    if (!r.ok) {
-      ownerSelect.innerHTML = `<option value="">${escapeHtml(j.error || "couldn't load accounts")}</option>`;
-    } else if (!j.owners || j.owners.length === 0) {
-      ownerSelect.innerHTML = `<option value="">no GitHub accounts found</option>`;
-    } else {
-      ownerSelect.innerHTML = j.owners.map(o =>
-        `<option value="${escapeHtml(o.login)}"${o.login === j.default ? " selected" : ""}>${escapeHtml(o.label)}</option>`
-      ).join("");
-      ownerSelect.disabled = false;
-    }
-  } catch (err) {
-    ownerSelect.innerHTML = `<option value="">network error loading accounts</option>`;
-  }
-  renderPreview();
-  ownerSelect.addEventListener("change", renderPreview);
-
-  dialog.querySelector("#share-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const body = {
-      recipient: form.recipient.value.trim(),
-      permission: form.permission.value,
-    };
-    if (form.owner.value) body.owner = form.owner.value;
-    const submitBtn = form.querySelector("#share-submit");
-    submitBtn.disabled = true;
-    submitBtn.textContent = "queuing…";
-    try {
-      const r = await fetch(`/api/vaults/${encodeURIComponent(vaultName)}/share`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const j = await r.json();
-      if (r.ok) {
-        showToast(`share queued → ${j.repo}; waiting on agent`, "ok");
-        dialog.remove();
-        setTimeout(refreshVaults, 12000);  // agent typically takes ~10s
-      } else {
-        showToast(`share failed: ${j.error || r.statusText}`, "err");
-        submitBtn.disabled = false;
-        submitBtn.textContent = "share";
-      }
-    } catch (err) {
-      showToast(`network error: ${err.message}`, "err");
-      submitBtn.disabled = false;
-      submitBtn.textContent = "share";
-    }
-  });
-}
-
 // Type → color palette for graph nodes. Stable per type so the same kind
-// of entity always looks the same across vaults.
+// of entity always looks the same.
 const TYPE_COLORS = [
   "#ffb86c", "#6fb1ff", "#c792ea", "#90ee90", "#ff79c6",
   "#8be9fd", "#f1fa8c", "#ff6e6e", "#bd93f9", "#50fa7b",
@@ -563,7 +383,7 @@ function loadVisNetwork() {
   return _visLoaderPromise;
 }
 
-async function openBrowseDialog(vaultName) {
+async function openBrowseDialog() {
   const existing = document.getElementById("browse-dialog");
   if (existing) existing.remove();
   const dialog = document.createElement("div");
@@ -572,7 +392,7 @@ async function openBrowseDialog(vaultName) {
   dialog.innerHTML = `
     <div class="modal modal-graph">
       <div class="modal-graph-header">
-        <h3 class="modal-title">Vault graph: ${escapeHtml(vaultName)}</h3>
+        <h3 class="modal-title">Knowledge base graph</h3>
         <div class="modal-graph-meta" id="graph-meta">loading…</div>
         <button type="button" class="btn btn-default btn-sm" id="browse-close">close</button>
       </div>
@@ -589,7 +409,7 @@ async function openBrowseDialog(vaultName) {
 
   try {
     const [g, vis] = await Promise.all([
-      fetch(`/api/vaults/${encodeURIComponent(vaultName)}/graph`).then(r => r.json()),
+      fetch("/api/vault/graph").then(r => r.json()),
       loadVisNetwork(),
     ]);
 
@@ -615,7 +435,7 @@ async function openBrowseDialog(vaultName) {
 
     if (!g.nodes.length) {
       $("graph-canvas").innerHTML =
-        `<p class="empty">vault is empty. vault-keeper writes here on its next tick.</p>`;
+        `<p class="empty">vault is empty.</p>`;
       return;
     }
 
@@ -710,21 +530,42 @@ async function openBrowseDialog(vaultName) {
 async function renderBoardsIndex() {
   root().innerHTML = `
     <div class="index-wrap">
-      <section class="home-intro">
+      <section class="home-chat">
         <p class="home-eyebrow">mindframe</p>
-        <h1 class="home-headline">Your knowledge base &amp; agents</h1>
-        <p class="home-sub">Browse your vaults and connected sources. See the whole bundle — event sources, agents, mindframes, skills &amp; MCPs — on the <a href="/system">System overview</a>.</p>
+        <h1 class="home-headline">What should I look into?</h1>
+        <form id="create-form" class="chat-form" autocomplete="off">
+          <textarea
+            id="create-input"
+            class="chat-input"
+            rows="3"
+            placeholder="e.g. give me a live overview of this machine, or review the open PRs on my main repo and flag anything risky."
+          ></textarea>
+          <div class="chat-form-row">
+            <span class="chat-hint">⌘/Ctrl + Enter to create</span>
+            <button type="submit" class="btn btn-primary chat-submit">Create mindframe</button>
+          </div>
+        </form>
+        <p class="home-sub">A mindframe is an agent that works for you on a live page it composes. Or see the whole bundle on the <a href="/system">System overview</a>.</p>
+      </section>
+
+      <section class="frame-section">
+        <div class="index-header">
+          <h2>Your mindframes</h2>
+          <span id="frame-count" class="count">…</span>
+        </div>
+        <div id="frame-list" class="frame-list">
+          <div class="loading">loading…</div>
+        </div>
       </section>
 
       <section class="vaults-section">
         <div class="index-header">
-          <h2>Your vaults</h2>
+          <h2>Your knowledge base</h2>
           <span id="vault-count" class="count">…</span>
         </div>
         <div id="vault-list" class="vault-list">
-          <div class="loading">loading vaults…</div>
+          <div class="loading">loading knowledge base…</div>
         </div>
-        <div id="incoming-shares" class="incoming-shares" hidden></div>
       </section>
 
       <section class="sources-section">
@@ -739,10 +580,69 @@ async function renderBoardsIndex() {
     </div>
   `;
 
-  refreshVaults();
-  refreshIncomingShares();
+  refreshVault();
   refreshSources();
+  refreshHomeFrames();
   setConn("ok", "ready");
+
+  const form = $("create-form");
+  const input = $("create-input");
+  form.addEventListener("submit", (e) => { e.preventDefault(); createMindframe(input.value); });
+  input.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); createMindframe(input.value); }
+  });
+}
+
+async function refreshHomeFrames() {
+  try {
+    const j = await (await fetch("/api/frames")).json();
+    const frames = j.frames || [];
+    $("frame-count").textContent = frames.length;
+    const list = $("frame-list");
+    if (!frames.length) {
+      list.innerHTML = `<div class="empty"><p>No mindframes yet — describe one above and I'll spin up an agent for it.</p></div>`;
+      return;
+    }
+    list.innerHTML = frames.map(f => `
+      <a class="frame-row" href="/m/${encodeURIComponent(f.id)}">
+        <span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>
+        <span class="frame-title-wrap">
+          <span class="frame-title">${escapeHtml(f.title)}</span>
+          <span class="frame-sub"><span class="mono">${escapeHtml(f.id)}</span></span>
+        </span>
+        <span class="frame-meta"><span class="frame-time">${relativeTime(f.modified)}</span></span>
+        <span class="frame-open">→</span>
+      </a>`).join("");
+  } catch (e) {
+    $("frame-list").innerHTML = `<div class="empty"><p>couldn't load mindframes: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function createMindframe(text) {
+  text = (text || "").trim();
+  if (!text) { showToast("describe what the mindframe should do", "warn"); return; }
+  const btn = document.querySelector("#create-form .chat-submit");
+  if (btn) { btn.disabled = true; btn.textContent = "Spawning agent…"; }
+  try {
+    const r = await fetch("/api/frames/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: text }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      showToast(`couldn't create mindframe: ${j.error || r.statusText}`, "err");
+      if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
+      return;
+    }
+    if (j.spawn !== "ok") {
+      showToast(`frame created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
+    }
+    location.href = j.url;   // open the surface shell at /m/<id>
+  } catch (e) {
+    showToast(`network error: ${e.message}`, "err");
+    if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
+  }
 }
 
 // ----- Health probe -----
@@ -850,7 +750,7 @@ async function fillMindframes() {
     const body = $("sys-frames-body");
     if (!frames.length) { body.innerHTML = sysEmpty("no surface mindframes yet."); return; }
     body.innerHTML = frames.map(f => `
-      <a class="sys-row sys-row-link" href="/artifacts/${encodeURIComponent(f.id)}/index.html" target="_blank" rel="noopener">
+      <a class="sys-row sys-row-link" href="/m/${encodeURIComponent(f.id)}">
         <span class="sys-row-main"><span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>${escapeHtml(f.title)}</span>
         <span class="sys-row-sub"><span class="sys-faint">${relativeTime(f.modified)}</span><span class="sys-open">→</span></span>
       </a>`).join("");
@@ -881,25 +781,26 @@ async function fillCapabilities() {
 
 async function fillKnowledge() {
   try {
-    const j = await (await fetch("/api/vaults")).json();
-    const vaults = j.vaults || [];
-    $("sys-kb-count").textContent = vaults.length;
+    const r = await fetch("/api/vault");
+    const v = await r.json();
     const body = $("sys-kb-body");
-    if (!vaults.length) { body.innerHTML = sysEmpty("no vaults. Run /mindframe:setup."); return; }
-    body.innerHTML = vaults.map(v => {
-      const types = Object.entries(v.entry_counts || {})
-        .sort((a, b) => b[1] - a[1]).slice(0, 4)
-        .map(([t, n]) => `<span class="sys-chip">${escapeHtml(t)}: ${n}</span>`).join("");
-      return `
+    if (!r.ok || v.error || !v.exists) {
+      $("sys-kb-count").textContent = "—";
+      body.innerHTML = sysEmpty("no knowledge base. Run /mindframe:setup.");
+      return;
+    }
+    $("sys-kb-count").textContent = v.total_entries;
+    const types = Object.entries(v.entry_counts || {})
+      .sort((a, b) => b[1] - a[1]).slice(0, 4)
+      .map(([t, n]) => `<span class="sys-chip">${escapeHtml(t)}: ${n}</span>`).join("");
+    body.innerHTML = `
       <div class="sys-group">
         <div class="sys-group-head">${escapeHtml(v.name)}
-          ${v.is_default ? '<span class="sys-tag">default</span>' : ""}
-          ${v.remote ? '<span class="sys-tag sys-tag-faint">⇄ shared</span>' : ""}
+          ${v.remote ? '<span class="sys-tag sys-tag-faint">⇄ remote</span>' : ""}
         </div>
         <div class="sys-row-sub"><span class="sys-faint">${v.total_entries} entries · ${escapeHtml(vaultLastTouched(v))}</span></div>
         <div class="sys-skill-chips">${types || '<span class="sys-faint">empty</span>'}</div>
       </div>`;
-    }).join("");
   } catch (e) { $("sys-kb-body").innerHTML = sysErr(e); }
 }
 
@@ -929,7 +830,7 @@ async function renderSystem() {
           <div id="sys-caps-body" class="sys-card-body"><div class="loading">loading…</div></div>
         </section>
         <section class="sys-card">
-          <div class="sys-card-head"><h2>Knowledge bases</h2><span id="sys-kb-count" class="count">…</span></div>
+          <div class="sys-card-head"><h2>Knowledge base</h2><span id="sys-kb-count" class="count">…</span></div>
           <div id="sys-kb-body" class="sys-card-body"><div class="loading">loading…</div></div>
         </section>
       </div>

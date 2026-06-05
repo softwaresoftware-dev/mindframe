@@ -1,7 +1,0 @@
-# Routes a recipe whose brief.json has a placeholder typo. The recipe is
-# at fault, not the route — the checker must still flag it.
-routes:
-  - source: test-stream
-    target: spawn:typo-reader
-    brief:
-      output_path: /tmp/x.log
