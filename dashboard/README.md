@@ -46,8 +46,7 @@ python3 server/server.py     # http://127.0.0.1:5174
 | Var | Default | Purpose |
 |---|---|---|
 | `PORT` | `5174` | Backend port (also serves the UI). |
-| `MINDFRAME_SHARE_RETENTION_DAYS` | `60` | Share retention window. |
-| `MINDFRAME_CORS_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173` | Cross-origin allowlist. |
+| `MINDFRAME_CORS_ORIGINS` | _(none)_ | Cross-origin allowlist. Unset by default — the UI is same-origin, so CORS is only needed for a separate-origin frontend. |
 
 ## Files
 

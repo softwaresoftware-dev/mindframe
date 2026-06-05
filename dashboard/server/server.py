@@ -80,12 +80,13 @@ DISPATCHER_BEARER_FILE = Path(
 TASKPILOT_DAEMON = os.environ.get("MINDFRAME_TASKPILOT_DAEMON", "http://127.0.0.1:8912")
 TASKPILOT_HOME = Path(os.environ.get("MINDFRAME_TASKPILOT_HOME", str(Path.home() / ".taskpilot")))
 
+# The SPA is served by this server and calls the API with relative paths, so it
+# is always same-origin — CORS is unnecessary by default. Set
+# MINDFRAME_CORS_ORIGINS (comma-separated) only if a separate-origin frontend
+# ever needs cross-origin access; the middleware is mounted only then.
 CORS_ORIGINS = [
     o.strip()
-    for o in os.environ.get(
-        "MINDFRAME_CORS_ORIGINS",
-        "http://127.0.0.1:5173,http://localhost:5173",
-    ).split(",")
+    for o in os.environ.get("MINDFRAME_CORS_ORIGINS", "").split(",")
     if o.strip()
 ]
 
@@ -124,12 +125,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
-)
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept"],
+    )
 
 
 @app.get("/api/health")
@@ -1171,11 +1173,15 @@ def _conn_run(cmd: list[str], timeout: float = 20.0):
         return None
 
 
-def _discover_connections() -> dict:
-    conns: list[dict] = []
+def _parse_mcp_list() -> list[dict[str, Any]]:
+    """Run `claude mcp list` and normalize each line to {id, name, state, bundle}.
 
-    # MCPs Claude is connected to.
+    Shared by /api/connections (live discovery) and /api/capabilities. Lines look
+    like `name: <url-or-cmd> - <status>`, where status carries 'Connected' or an
+    auth hint; a `plugin:<pkg>:<name>` prefix is reduced to its base name.
+    """
     r = _conn_run(["claude", "mcp", "list"], timeout=45)
+    out: list[dict[str, Any]] = []
     for line in (r.stdout if r else "").splitlines():
         line = line.strip()
         if ": " not in line or " - " not in line:
@@ -1183,12 +1189,26 @@ def _discover_connections() -> dict:
         name_part, rest = line.split(": ", 1)
         status = rest.rsplit(" - ", 1)[-1].strip()
         base = name_part.split(":")[-1] if name_part.startswith("plugin:") else name_part
-        if base in _BUNDLE_RUNTIME:
-            continue
         state = ("connected" if "Connected" in status
                  else "needs-auth" if "auth" in status.lower() else "unknown")
-        conns.append({"id": base, "kind": "mcp", "state": state,
-                      "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title())})
+        out.append({
+            "id": base,
+            "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title()),
+            "state": state,
+            "bundle": base in _BUNDLE_RUNTIME,
+        })
+    return out
+
+
+def _discover_connections() -> dict:
+    conns: list[dict] = []
+
+    # MCPs Claude is connected to (excluding the bundle's own runtime).
+    for m in _parse_mcp_list():
+        if m["bundle"]:
+            continue
+        conns.append({"id": m["id"], "kind": "mcp",
+                      "state": m["state"], "name": m["name"]})
 
     # Authed CLIs (inherited identity).
     def add_cli(cmd, name, idd, check, acct=None):
@@ -1416,23 +1436,7 @@ def list_agents() -> Response:
 
 def _list_mcps() -> list[dict[str, Any]]:
     """All MCPs from `claude mcp list`, flagged bundle-runtime vs external."""
-    r = _conn_run(["claude", "mcp", "list"], timeout=45)
-    out: list[dict[str, Any]] = []
-    for line in (r.stdout if r else "").splitlines():
-        line = line.strip()
-        if ": " not in line or " - " not in line:
-            continue
-        name_part, rest = line.split(": ", 1)
-        status = rest.rsplit(" - ", 1)[-1].strip()
-        base = name_part.split(":")[-1] if name_part.startswith("plugin:") else name_part
-        state = ("connected" if "Connected" in status
-                 else "needs-auth" if "auth" in status.lower() else "unknown")
-        out.append({
-            "id": base,
-            "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title()),
-            "state": state,
-            "bundle": base in _BUNDLE_RUNTIME,
-        })
+    out = _parse_mcp_list()
     out.sort(key=lambda m: (m["state"] != "connected", m["bundle"], m["name"]))
     return out
 
