@@ -352,7 +352,7 @@ lists them, and proxies messages to them.
 | `GET /api/sources`, `/api/connections` | Configured sources, and live connection discovery (`claude mcp list` + gh/gcloud/aws/az auth probes, minus bundle runtime). |
 | `GET /api/events`, `/api/agents`, `/api/capabilities` | System-overview feeds for the `/system` route. |
 | `POST /api/dashboard-event` | Dispatcher proxy (bearer-authed against `~/.mindframe/secrets/dispatcher-bearer.token`). |
-| `GET /api/health` | `{ ok, port, agentId, daemons }`. |
+| `GET /api/health` | `{ ok, port, dispatcher_url, dispatcher_bearer_present }`. |
 | `/artifacts/<sid>/<path>` | Static artifacts written by an agent. |
 | `/` and `/system` | The SPA (home: create-a-mindframe + your mindframes + the KB + sources; `/system`: bundle overview). |
 
