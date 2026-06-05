@@ -318,8 +318,9 @@ model was cut (2026-06-04). A mindframe is now a persistent agent that owns ONE
 live HTML page it rewrites in place, plus a message box — nothing else. The
 operator creates one from the home ("create a mindframe"), which spawns the
 agent (`POST /api/frames/create`) and opens its surface at `/m/<id>`; the agent
-rewrites its page as it works and the browser reloads on change. See
-`docs/onboarding-ux.md`, `setup/brief.md`, and the `surface/` substrate.
+rewrites its page as it works and the browser reloads on change. The dashboard
+is the one surface server (it serves every mindframe at `/m/<id>`). See
+`docs/onboarding-ux.md` and `setup/brief.md`.
 
 ### Step 9.1 — Start the dashboard as a managed daemon
 

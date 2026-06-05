@@ -75,8 +75,8 @@ DISPATCHER_URL = os.environ.get("MINDFRAME_DISPATCHER_URL", "http://127.0.0.1:89
 DISPATCHER_BEARER_FILE = Path(
     os.environ.get("MINDFRAME_DISPATCHER_BEARER_FILE", str(Path.home() / ".mindframe/secrets/dispatcher-bearer.token"))
 )
-# Agent-runtime daemon (taskpilot) — message delivery + spawn. Same endpoint the
-# surface substrate uses (MF_DAEMON). Mindframe agents idle until messaged.
+# Agent-runtime daemon (taskpilot) — message delivery + spawn. Mindframe agents
+# idle until messaged; /api/frame/<id>/message wakes one through this daemon.
 TASKPILOT_DAEMON = os.environ.get("MINDFRAME_TASKPILOT_DAEMON", "http://127.0.0.1:8912")
 TASKPILOT_HOME = Path(os.environ.get("MINDFRAME_TASKPILOT_HOME", str(Path.home() / ".taskpilot")))
 
@@ -322,8 +322,10 @@ def create_mindframe(body: CreateMindframe) -> Response:
 
 # --------------------------- mindframe surface (viewing) ---------------------------
 #
-# Multi-tenant fold-in of surface/server.py: one dashboard serves every
-# mindframe. /m/<id> renders the shell; the agent owns <framedir>/index.html and
+# The surface: one server serves every mindframe. A mindframe is a conversation
+# where the agent's replies are full web pages — the agent owns ONE
+# <framedir>/index.html and rewrites it in place; the user has ONE message box.
+# /m/<id> renders the shell; the agent owns <framedir>/index.html and
 # rewrites it in place; the shell polls /api/frame/<id>/rev and reloads. User
 # messages reach the agent through the taskpilot daemon (which wakes a dormant
 # agent on contact); /activity tails the agent's transcript for the cognition log.

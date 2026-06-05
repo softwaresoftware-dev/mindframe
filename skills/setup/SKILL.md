@@ -40,7 +40,7 @@ mindframe drives.
 - **PHASE 0.W** — Windows preflight (WSL2 required)
 - **PHASE 1** — bootstrap the softwaresoftware marketplace + resolver
 - **PHASE 2** — install mindframe + dependencies
-- **PHASE 3** — BIRTH THE FIRST MINDFRAME: minimal config + vault, fill the setup brief (`${CLAUDE_PLUGIN_ROOT}/setup/brief.md`), spawn the `mindframe-setup` agent, run the surface server (`${CLAUDE_PLUGIN_ROOT}/surface/server.py`) as a managed daemon, open the browser
+- **PHASE 3** — BIRTH THE FIRST MINDFRAME: minimal config + vault, fill the setup brief (`${CLAUDE_PLUGIN_ROOT}/setup/brief.md`), spawn the `mindframe-setup` agent into a frame dir, run the dashboard (`${CLAUDE_PLUGIN_ROOT}/dashboard/server/server.py`) as a managed daemon, open its surface at `/m/mindframe-setup`
 - **PHASE 4** — HAND OFF: the terminal agent steps out; setup continues in the surface
 
 The setup mindframe (an agent owning one HTML surface it rewrites + a message

@@ -188,9 +188,11 @@ full web pages instead of text:
 - The operator has **one message box.** Input is linear (free text); presentation
   is not (the full mutated page). Affordances the agent draws are decorative in
   v0; the message box is the only input channel until v0.1.
-- The substrate is ~80 lines, shipped in the plugin at `surface/`: a server that
-  owns the shell + message rail and serves the agent's `index.html`; the agent
-  rewrites the file; the shell polls a revision and reloads.
+- The substrate is the **dashboard** (`dashboard/`): one server that serves every
+  mindframe's surface at `/m/<id>` — it owns the shell + message rail and serves
+  the agent's `index.html`; the agent rewrites the file; the shell polls a
+  revision and reloads. (The standalone single-tenant `surface/server.py` was
+  collapsed into the dashboard 2026-06-05.)
 - **Human-in-the-loop** stays first-class, just rendered: the agent draws the
   pending act onto the page (what it wants to do, why, the consequence) and waits
   for a message to approve. On-surface approve/deny buttons are v0.1.
@@ -222,9 +224,11 @@ drift, and spawned agents have a sandboxed `$HOME` so `gh` needs
 
 ## Update (2026-06-02, later) — v0 substrate shipped + setup migrated
 
-- The **v0 substrate** is shipped in the plugin at `surface/` (`server.py` +
-  `shell.html`), promoted from the `slice/` prototype. The intent primitive is
-  cut; see "The v0 interaction model" above.
+- The **v0 substrate** shipped as a standalone server at `surface/` (`server.py`
+  + `shell.html`), promoted from the `slice/` prototype. The intent primitive is
+  cut; see "The v0 interaction model" above. **(2026-06-05: collapsed into the
+  dashboard — one surface server serving every mindframe at `/m/<id>`; `surface/`
+  deleted.)**
 - **Setup is migrated to the UI-based flow.** The hosted `install.txt` is now a
   small terminal bootstrap (rules → marketplace → install mindframe → birth the
   setup mindframe → hand off). The onboarding arc lives in `setup/brief.md` (the
