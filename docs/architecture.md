@@ -27,7 +27,7 @@ Each clause is one of the seven buckets.
 | # | Bucket | Components | Role |
 |---|--------|-----------|------|
 | 1 | Agent runtime | `taskpilot` + `session-bridge` | Spawns and supervises `claude` processes (tmux-backed, reboot-persistent). A mesh carries inter-agent and agent-to-human messages. |
-| 2 | Knowledge base | customer vault + `librarian` agent | Persistent memory of how the org works: services, projects, decisions, people, past incidents. Markdown + frontmatter; schema in [`kb-schema.md`](kb-schema.md). |
+| 2 | Knowledge base | customer vault (`knowledge-base` capability) | Persistent memory of how the org works: services, projects, decisions, people, past incidents. Markdown + frontmatter; schema in [`kb-schema.md`](kb-schema.md); populated at setup and by deliverable skills. |
 | 3 | Event router | `dispatcher` | The push path: public webhook ingress, a router, an audit log. Turns events into agent spawns. |
 | 4 | Setup wizard | `/mindframe:setup` | Claude-driven onboarding: discovers the environment, collects credentials, bootstraps the vault, wires triggers, runs a smoke test. **Redesigned 2026-06-02** into a UI-based, setup-as-a-mindframe flow (terminal bootstrap births the setup mindframe, which onboards in a web surface) — see [`onboarding-ux.md`](onboarding-ux.md), the hosted `install.txt`, and `setup/brief.md`. |
 | 5 | Deliverable skills | *(none ship in the current bundle — prior triage skills were deleted 2026-05-19 pending redesign)* | The work: a library of skills that ground a request in the knowledge base and produce something a human can use. Incident triage is the first slated entry; the library grows. |
@@ -109,7 +109,7 @@ external event ──webhook──▶ dispatcher-ingress ──▶ route ──�
                           ┌─────────────────────┬────────────────┼────────────────┐
                           ▼                     ▼                ▼                ▼
                     knowledge base        perception MCPs    recent commits   output channel
-                    (vault + librarian)   (provider MCPs)    (provider MCPs)  (notification provider)
+                    (the vault)           (provider MCPs)    (provider MCPs)  (notification provider)
                           │
                   taskboard observes everything  ◀── always-on, pull path
 ```
@@ -170,7 +170,7 @@ decision:
 
 | State | Home | Lifetime |
 |---|---|---|
-| Customer domain knowledge | the vault (git repo) | persistent; curated by the librarian |
+| Customer domain knowledge | the vault (git repo) | persistent; written at setup and by deliverable skills |
 | Event audit + dedupe | dispatcher-ingress SQLite DB | rolling; dedupe entries expire |
 | A deliverable run's working data | the spawned agent's task directory + recipe cache | the life of the run; cache enables idempotent replay |
 | Agent ↔ agent / human messages | the session-bridge mesh | transient |

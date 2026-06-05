@@ -1,6 +1,6 @@
 # KB Schema — Customer Knowledge Base
 
-The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer, queried and maintained by the librarian agent.
+The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer — a git repo of notes, populated at setup and by the deliverable skills that read and write it.
 
 ## What this document is
 
@@ -11,7 +11,7 @@ Different organizations have different entities — a software company has Servi
 - **The meta-schema** — the universal, fixed rules every entity obeys regardless of domain. This *is* the contract, and it never changes without a version bump.
 - **The entity library** — core entities (every install gets them) and custom entities (synthesized per install). Core is fixed; everything domain-specific is custom, minted at setup.
 
-Each deployment assembles its own schema from the library and records it in the vault's **`schema.yaml` manifest** (see "The schema manifest"). The manifest is the contract *for that vault*. The librarian and skills read the manifest — never a hardcoded entity list.
+Each deployment assembles its own schema from the library and records it in the vault's **`schema.yaml` manifest** (see "The schema manifest"). The manifest is the contract *for that vault*. Skills read the manifest — never a hardcoded entity list.
 
 ## Design principles
 
@@ -20,7 +20,7 @@ Each deployment assembles its own schema from the library and records it in the 
 3. **Foreign keys are names, not paths.** Resilient to reorganization.
 4. **CATALOG.md is the index.** Agents read it first; opening notes is the second hop.
 5. **Per-customer single-tenant.** One vault, one customer, one git repo.
-6. **The librarian is the only writer.** Other agents request changes through the librarian over the session-bridge mesh.
+6. **Every writer validates against the schema.** The vault is written by setup's bootstrap and by deliverable skills; each conforms a note to `schema.yaml` before it commits. The schema is the gate, not a dedicated agent.
 7. **Live state is not in the vault.** Active alerts, current PRs, deploy status: queried from source systems at runtime.
 8. **Secrets are referenced, never stored.** Frontmatter holds a keychain entry name; the value never appears in markdown.
 9. **The schema is per-install.** The meta-schema is fixed; the entity set is assembled at setup and recorded in `schema.yaml`.
@@ -83,7 +83,7 @@ Self-referential FKs are allowed (`manager: person`) but must not form cycles.
 
 ## The schema manifest
 
-Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; the librarian and skills read it.
+Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; the deliverable skills read it.
 
 ```yaml
 schema_version: 2
@@ -271,7 +271,7 @@ affected: [payment-api]                 # FK -> any:thing (service, product, mac
 root_cause: "Connection pool exhaustion under a traffic spike"
 resolution: "Pool size raised 20 -> 100"
 related_process: payment-api-oom        # FK -> any:process (a runbook, a deployment, …)
-authored_by: librarian                  # human | librarian | <skill>
+authored_by: setup                      # human | setup | <skill>
 ---
 ```
 
@@ -328,7 +328,7 @@ Setup's custom-entity step:
 3. **Define against the meta-schema** — pick the layer, name the `type`, choose fields and FKs, with the operator.
 4. **Record** — write it into `schema.yaml` with `source: custom`.
 
-From that point the custom entity is first-class *in that install*: the librarian validates and writes it, the catalog indexes it — because it conforms to the meta-schema.
+From that point the custom entity is first-class *in that install*: writers validate and write it, the catalog indexes it — because it conforms to the meta-schema.
 
 When a custom entity recurs across many deployments, that is the signal to consider promoting it into the core set in a future schema version.
 
@@ -336,7 +336,7 @@ When a custom entity recurs across many deployments, that is the signal to consi
 
 ## CATALOG.md
 
-The librarian reads CATALOG.md first on every query. It has one section per *active* entity type (read from the manifest), encoding the most-queried fields so an agent can filter without opening every note.
+A reading agent (a deliverable skill) reads CATALOG.md first on every query. It has one section per *active* entity type (read from the manifest), encoding the most-queried fields so an agent can filter without opening every note.
 
 ```markdown
 # Catalog
@@ -368,7 +368,7 @@ Flat-by-type. Each entity type's `directory` comes from the manifest:
 <customer-vault>/
   schema.yaml                # the assembled schema for this deployment
   CATALOG.md
-  CLAUDE.md                  # operating procedures for the librarian
+  CLAUDE.md                  # operating procedures for vault writers
   Glossary.md
 
   People/        Teams/        Customers/     Partners/      Projects/      Products/
@@ -392,7 +392,7 @@ These hold for every vault, driven by its `schema.yaml` — never a hardcoded li
 
 Validation has two homes:
 
-- **Runtime — the librarian.** The librarian is the vault's sole writer, so it is the only thing that can introduce a violation. It knows these invariants and checks each note against `schema.yaml` before it commits. Because nothing else writes to the vault, that write-time check is the gate — no separate pre-commit hook is needed.
+- **Runtime — the writer.** The vault is written by setup's bootstrap and by deliverable skills; each checks its notes against `schema.yaml` before committing, so validation happens at write time. (An automated curator that once owned this gate — the `vault_keeper`/`vault_query` agents — was removed 2026-06-05 pending a redesign; until it returns, each writer is responsible for conformance.)
 - **Development — a plugin test.** The invariants are codified as a test in the knowledge-base plugin: fixture vaults, well-formed and intentionally broken, run through the checks under `make test`. That is where the rules are pinned down precisely and regression-guarded.
 
 ## Bootstrap
@@ -405,7 +405,7 @@ Setup populates the vault after it has assembled and written `schema.yaml`. Thre
 
 ## Authoring discipline
 
-The librarian is the sole writer. Other agents send change requests over the session-bridge mesh; the librarian validates against `schema.yaml`, writes the note, updates CATALOG.md and bidirectional links, and commits per change.
+The vault is written by setup's bootstrap and by deliverable skills. A writer validates against `schema.yaml`, writes the note, updates CATALOG.md and bidirectional links, and commits per change. (There is no dedicated curator agent today — the prior automated write/read loop was removed 2026-06-05 pending a redesign.)
 
 ## What is NOT in the vault
 
@@ -419,5 +419,5 @@ The librarian is the sole writer. Other agents send change requests over the ses
 ## Versioning
 
 - The vault is a customer-owned git repository.
-- `schema.yaml` carries `schema_version`. Because each vault owns its schema, there is no central schema to migrate against — a vault evolves its own `schema.yaml`, and the librarian validates against the new version.
-- The librarian commits per change, small-grained.
+- `schema.yaml` carries `schema_version`. Because each vault owns its schema, there is no central schema to migrate against — a vault evolves its own `schema.yaml`, and writers validate against the new version.
+- Writers commit per change, small-grained.

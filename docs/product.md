@@ -20,7 +20,7 @@ Mindframe's answer is to make that knowledge a first-class, queryable thing — 
 
 ## What Mindframe does
 
-**It builds and maintains a knowledge base.** A guided setup probes the systems a team uses and bootstraps a per-customer vault — plain Markdown with structured frontmatter, grep-friendly, no embeddings, owned by the customer as a git repo. A librarian agent keeps it correct over time.
+**It builds a knowledge base.** A guided setup probes the systems a team uses and bootstraps a per-customer vault — plain Markdown with structured frontmatter, grep-friendly, no embeddings, owned by the customer as a git repo. Setup seeds it, and the deliverable skills add to it as they run.
 
 **It runs agents that act on that knowledge**, on two paths:
 
@@ -36,7 +36,7 @@ Mindframe installs seven components as one product:
 | Component | What it is |
 |---|---|
 | **Agent runtime** | Spawns and supervises `claude` processes — reboot-persistent, tmux-backed — plus a mesh so agents and humans can message each other. |
-| **Knowledge base** | The customer vault and a librarian agent that keeps it correct. Persistent memory for the whole system. |
+| **Knowledge base** | The customer vault — persistent memory for the whole system. Seeded at setup, grown by the deliverable skills. |
 | **Event router** | A public webhook ingress and a router that turns events into agent spawns. |
 | **Setup wizard** | `/mindframe:setup` — a Claude-driven onboarding that discovers the environment, collects credentials, bootstraps the knowledge base, and runs a smoke test. |
 | **Deliverable skills** | A library of skills that turn the knowledge base into work — incident triage, reviews and reports, answers. Incident triage (Sentry, Kubernetes) ships first; the library grows. |

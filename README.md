@@ -11,7 +11,7 @@ work here."
 Mindframe-the-plugin is **manifest-first**: it ships skills, the customer-domain
 knowledge-base schema (`docs/kb-schema.md`), and a `requires` list. The actual
 work is done by the bundled providers (taskpilot, session-bridge, taskboard,
-dispatcher, librarian, browser-bridge).
+dispatcher, knowledge-base, browser-bridge).
 
 ## Architecture
 

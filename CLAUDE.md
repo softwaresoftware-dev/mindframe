@@ -9,7 +9,7 @@ This plugin is **manifest-first** — ships skills, customer templates, and a `r
 Mental model: **runs agents → gives them memory → wakes them up → sets it up → is what they do → shows the human → connects to the world.**
 
 1. **Agent runtime** — `taskpilot` + `session-bridge`. Spawns and manages claude processes (tmux-backed, reboot-persistent). Mesh for inter-agent + agent-to-human messaging.
-2. **Knowledge base** — customer vault + librarian agent. Markdown + frontmatter, schema in `docs/kb-schema.md`. Persistent memory: services, repos, runbooks, owners, on-call, past incidents.
+2. **Knowledge base** — customer vault (`knowledge-base` capability). Markdown + frontmatter, schema in `docs/kb-schema.md`. Persistent memory: services, repos, runbooks, owners, on-call, past incidents. Populated at setup and by deliverable skills (no automated curator ships right now — see "Vault agents removed" below).
 3. **Event router** — `dispatcher`. Push-path: public webhook ingress + LLM/direct router + audit. Spawns ephemeral agents on demand.
 4. **Setup wizard** — `/mindframe:setup`. Claude-driven onboarding. Walks user through credentials per data system, validates connections live, bootstraps the vault, configures triggers, runs end-to-end smoke test.
 5. **Deliverable skills** — a library of skills that turn the knowledge base into work: incident triage (RCA → draft fix → notify), reviews and reports, answers about how the org runs. What the customer asks the agents for. **No deliverable skills currently ship in the bundle** (the prior `sentry-triage` and `k8s-triage` were deleted 2026-05-19 pending redesign). New deliverables are added to the library; incident triage is the first slated entry.
@@ -32,7 +32,7 @@ Mental model: **runs agents → gives them memory → wakes them up → sets it 
 agent-       channel    knowledge-   event-     status-      browser-     daemon    notification
 spawning                base         routing    dashboard    automation
    │              │            │       │            │            │          │
- taskpilot   session-bridge librarian  dispatcher  taskboard   browser-bridge  daemon-manager
+ taskpilot   session-bridge knowledge-base dispatcher taskboard  browser-bridge  daemon-manager
                                                                               (runs the dashboard
                                                                               as a managed service)
 ```
@@ -47,7 +47,7 @@ external event → dispatcher (webhook) → spawn ephemeral claude → /mindfram
                                       ┌───────────────────────────┼──────────────────────┐
                                       ▼                           ▼                      ▼
                                   knowledge-base          browser-bridge MCP     output channel
-                                  (vault + librarian)     (provider MCPs)        (notification provider)
+                                  (the vault)             (provider MCPs)        (notification provider)
                                       │
                                   taskboard observes everything ← always-on
 ```
@@ -61,7 +61,7 @@ external event → dispatcher (webhook) → spawn ephemeral claude → /mindfram
 
 ## Status, decisions, open threads
 
-Lives in the vault at `Projects/mindframe-rollout.md`. Ask the librarian — don't re-record state here. The librarian owns the customer-domain KB schema and will keep cross-references correct.
+Lives in the project vault at `Projects/mindframe-rollout.md`. Ask the librarian (the session-bridge project-vault agent) — don't re-record state here; it keeps the note and its cross-references current. (This is the dev-side project tracker, not a mindframe-bundle component.)
 
 ## In-directory artifacts
 

@@ -42,7 +42,7 @@ The bundle is `mindframe` plus the providers bound to its required capabilities.
 |---|---|---|
 | `agent-spawning` | taskpilot | yes |
 | `session-mesh` | session-bridge | yes |
-| `knowledge-base` | librarian + the customer vault | yes |
+| `knowledge-base` | knowledge-base provider + the customer vault | yes |
 | `event-routing` | dispatcher | yes |
 | `status-dashboard` | taskboard | yes |
 | `browser-automation` | claude-browser-bridge | yes |
@@ -81,15 +81,15 @@ Then check the agent runtime itself:
 
   Independent of which branch fires, treat `has_autostart=false` on an otherwise-healthy `session-bridge` row as a **Tier 2 warning** — the mesh works now but will be dead after the next reboot. Fix: `daemon_install_autostart(daemon_name="session-bridge")`. Same treatment for any other bundle daemon (`mindframe-dashboard`, `dispatcher-ingress`) with `has_autostart=false`.
 
-### [check 4/7] knowledge base — vault & librarian
+### [check 4/7] knowledge base — vault
 
 Against `VAULT` from check 1 (skip with an `unknown` finding if check 1 was blocked):
 
 - **Git repo.** `git -C "$VAULT" rev-parse --git-dir` must succeed. If the directory exists but is not a repo → Tier 1: `git -C "$VAULT" init`, then re-probe. Report uncommitted changes (`git -C "$VAULT" status --porcelain`) as a warning — the vault should be committed after every write.
 - **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML. It is the deployment's contract (`docs/interfaces.md` §5). Missing → Tier 2: the fix is `/mindframe:setup` step 4 (assemble the schema); do not write `schema.yaml` yourself.
 - **Catalog.** `$VAULT/CATALOG.md` should exist with one section per entity type declared in `schema.yaml`. Missing or stale (an entity-type directory exists with notes but has no catalog section) → Tier 1: regenerate `CATALOG.md` from the directories the schema declares, commit it, re-probe.
-- **Schema drift.** For each entity-type directory under the vault, confirm the type is declared in `schema.yaml`. A directory of notes for an *undeclared* type is drift — Tier 2 finding (the librarian validates writes against the schema; an undeclared type means notes are bypassing it). Report the directory and note count; don't delete anything.
-- **Librarian.** Confirm the `knowledge-base` provider exposes the librarian agent (it showed up in check 2). If installed but the vault is empty of notes, that's a "setup incomplete" warning, not a break.
+- **Schema drift.** For each entity-type directory under the vault, confirm the type is declared in `schema.yaml`. A directory of notes for an *undeclared* type is drift — Tier 2 finding (writers are expected to validate against the schema; an undeclared type means notes were written bypassing it). Report the directory and note count; don't delete anything.
+- **Provider + population.** Confirm the `knowledge-base` provider is installed (it showed up in check 2). If installed but the vault is empty of notes, that's a "setup incomplete" warning, not a break.
 
 ### [check 5/7] event router — dispatcher config
 
@@ -150,7 +150,7 @@ Then, for every `BROKEN` / Tier-2 row, give the **exact** remedy — the command
 - **Evidence or it didn't happen.** Every `ok` names its probe; every `broken` carries the literal output. No pattern-matched "looks fine."
 - **Heal only Tier 1, and only after confirming.** Re-probe after every heal. A heal whose re-probe fails becomes a Tier-2 finding — never loop a restart.
 - **Never read or print secrets.** Tokens, keys, credential file *contents* — presence is evidence, values are not. Same rule as `/mindframe:setup` check 2.
-- **Don't delete vault data.** Schema drift, stale notes, uncommitted changes — report them; the operator and the librarian own the vault.
+- **Don't delete vault data.** Schema drift, stale notes, uncommitted changes — report them; the operator owns the vault.
 - **Don't hardcode provider names in remedies.** Use the capability and the resolved provider from check 2. The fix for a missing capability is always `/softwaresoftware:install mindframe`, which re-resolves for the environment.
 - **Idempotent.** Running doctor twice on a healthy bundle changes nothing and reports the same all-`ok` table.
 

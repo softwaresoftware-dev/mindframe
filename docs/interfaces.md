@@ -229,8 +229,8 @@ handing the agent a literal `{{output_path}}`.
 
 The customer vault is a git repository of Markdown notes with YAML
 frontmatter — one note per entity, organized by the four layers (Thing,
-Event, Knowledge, Process) — plus a `CATALOG.md` index and a `librarian`
-agent that maintains it. The vault is **read by grep**, not by embeddings.
+Event, Knowledge, Process) — plus a `CATALOG.md` index. It is populated at
+setup and by deliverable skills, and is **read by grep**, not by embeddings.
 
 The schema is **per-install**. [`kb-schema.md`](kb-schema.md) is the
 *library*: the fixed meta-schema (the rules every entity obeys), the core
@@ -244,11 +244,11 @@ The interface, then, is two-layer:
 
 - **Fixed** — the meta-schema in `kb-schema.md`. Never changes without a
   version bump. Contributors build against this.
-- **Per-vault** — the deployment's `schema.yaml`. The librarian and skills
-  read *this* to know what entity types exist; they never assume a hardcoded
-  list. A software vault has `service`/`repository`; a paper-mill vault has
-  `machine`/`mill` and neither of those. The librarian also enforces the
-  schema invariants against `schema.yaml` as it writes — see `kb-schema.md`.
+- **Per-vault** — the deployment's `schema.yaml`. Skills read *this* to know
+  what entity types exist; they never assume a hardcoded list. A software vault
+  has `service`/`repository`; a paper-mill vault has `machine`/`mill` and
+  neither of those. Whatever writes the vault (setup's bootstrap, deliverable
+  skills) validates against `schema.yaml` at write time — see `kb-schema.md`.
 
 Deliverable skills depend on the grep contract documented per-vault in its
 `README.md` — the entity directories and frontmatter keys they can rely on
