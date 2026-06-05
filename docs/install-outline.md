@@ -267,7 +267,7 @@ Then the agent watches and narrates:
 - dispatcher audit row appears (`event-received`)
 - route matches, taskpilot spawns the agent (`static-spawn`)
 - agent runs the skill, produces its artifact, notifies
-- dashboard pane materializes (PHASE 9)
+- the run shows up on the dashboard's system overview (PHASE 9)
 - operator sees the closed loop
 
 This is the canonical "first run" experience. If it works, the operator gets it — they can repeat it for any future event source.
@@ -306,65 +306,52 @@ Produces: nothing on disk by default. If operator authors a second utility now, 
 
 ---
 
-## PHASE 9 — Launch dashboard: static frame + ephemeral panes on one canvas
+## PHASE 9 — Launch the dashboard (the mindframe home)
 
-The dashboard is the human-facing surface of the whole bundle. Two element lifespans co-exist on one canvas: a **static frame** (persistent topology + user-pinned elements) and **ephemeral panes** (per-task agent-authored surfaces with live action buttons). See `project_mindframe_dashboard_model.md` and `project_mindframe_dashboard_taskboard.md` for the architectural rationale and merge intent.
+The dashboard is the bundle's human-facing home: a local web app that lists the
+operator's **mindframes**, the single knowledge base, the connected sources, and
+a read-only system overview. It runs as a **managed daemon** (via the `daemon`
+capability) so it survives reboots.
 
-**No persistent dashboard agent.** The previous "dashboard agent" was removed 2026-05-21 — it was a structural mismatch for this model. The static frame is config the server reads at startup; ephemeral panes are HTML written by per-event taskpilot agents the dispatcher spawns. The dashboard server is now a thin static-shell + artifact-viewer.
+**A mindframe is a surface.** The block-stream / static-frame / ephemeral-panes
+model was cut (2026-06-04). A mindframe is now a persistent agent that owns ONE
+live HTML page it rewrites in place, plus a message box — nothing else. The
+operator creates one from the home ("create a mindframe"), which spawns the
+agent (`POST /api/frames/create`) and opens its surface at `/m/<id>`; the agent
+rewrites its page as it works and the browser reloads on change. See
+`docs/onboarding-ux.md`, `setup/brief.md`, and the `surface/` substrate.
 
-### Step 9.1 — Write the static frame from setup context
+### Step 9.1 — Start the dashboard as a managed daemon
 
-The setup agent already has rich context after PHASE 4 (discovery) and PHASE 6 (vault bootstrap): discovered systems, services / repos / data sources, vault entities, deployment name. It writes a first-pass static frame to `mindframe/dashboard/state/static-frame.<deployment>.json` — tiles for the most important systems, recent-events feed, an empty "recent investigations" lane for archived ephemeral panes.
+Run `mindframe/dashboard/server/server.py` through the daemon-management tool
+(reboot-persistent). It serves the SPA, the vault / sources / system APIs, and
+the per-mindframe surfaces; it has no taskpilot or session-bridge of its own.
+Probe `/api/health`, then open the URL in the operator's browser via
+browser-bridge.
 
-The dashboard server reads this file at boot. **No code surgery on the plugin itself.** No agent prompt to regenerate, no hardcoded vault path. Everything that varies per customer lives in the deployment's config file or vault.
+During setup itself the operator is already inside a surface — the setup
+mindframe born in PHASE 3 — so this step is really "bring up the durable home
+they return to," the place where they spawn and manage further mindframes.
 
-### Step 9.2 — Operator alters the static frame as first-class first-run UX
+### Step 9.2 — Action buttons close the loop
 
-Setup explicitly walks the operator through customizing the dashboard:
-- The setup agent shows the seeded frame and proposes adjustments: *"I added tiles for your top three services. Want me to add an Azure spend tile too? A pinned link to your status page?"*
-- Operator can be specific: *"Add a Power BI tile linking to our daily refresh dashboard."*
-- Each change writes the same `static-frame.<deployment>.json`; the operator reloads to see the dashboard update.
-
-**Mutability of the static frame is on the critical path, not a v2 feature.** A dashboard the operator can't reshape from day 1 will rot. Rollback / version history is "nice to have, not POC-required."
-
-### Step 9.3 — Start the dashboard server locally
-
-`cd mindframe/dashboard && python server.py` (via daemon-manager for reboot-persistence). No taskpilot or session-bridge dependency — the server just serves the SPA, artifacts, and shares. Probe `/api/health`; open the URL in the operator's browser via the browser-bridge.
-
-### Step 9.4 — Ephemeral panes spec (what triggers them, what they do)
-
-When PHASE 7's simulated event fires (or any real event later), the dispatcher spawns a taskpilot agent. That agent produces an ephemeral pane:
-
-- Agent writes HTML to `mindframe/dashboard/artifacts/<sid>/latest.html` — relevant context, charts pulled live from MCPs, draft artifacts editable inline.
-- The dashboard SPA notices the new artifact (poll or SSE-on-mtime — POC choice) and materializes the pane on the canvas.
-- HTML includes **action buttons** that POST synthetic events back to the dispatcher (`source: dashboard-button`, payload describes the button's intent). Dispatcher routes them through the same `channels.yaml` machinery as external webhooks — closes the loop using existing infra.
-- When the agent finishes (the artifact stops changing), the pane **auto-archives** into a "recent investigations" lane on the static frame. POC-grade lifecycle; long-term TBD.
-
-The agent's primary notification becomes *"investigation ready — see [link]"* where the link is the ephemeral pane. The dashboard is the medium, not a side effect.
-
-### Forward pointer — taskboard merge
-
-The merge with the taskboard plugin lands after the POC stands up. taskboard owns the dashboard chassis (D3 topology, probes, layout); mindframe contributes the dispatcher-event-driven pane spawning that lands artifacts in the same place. Mindframe stops "owning a dashboard" — it just emits events any dashboard can render. The static frame written here becomes the seed input for taskboard's topology view.
+A mindframe's page can embed action buttons that POST to the dashboard's
+`/api/dashboard-event`. The server attaches the dispatcher bearer (read from
+disk, never exposed to the browser) and forwards to the dispatcher, which routes
+the event through the same `channels.yaml` machinery as external webhooks —
+closing the loop on existing infra. Anything irreversible or outward-facing is
+drawn on the page as a pending action and waits for the operator to confirm it
+in a message before the agent acts.
 
 ### Asks
 
-- Confirm seeded frame; add/remove tiles (9.2)
-- Optional — port to bind on, whether to expose externally via `deploy` capability
+- Optional — port to bind on, whether to expose externally via the `deploy` capability.
 
 ### Produces
 
-- Dashboard server running locally (static shell + artifact viewer; no daemons)
-- Static frame `static-frame.<deployment>.json` composed from setup context, mutated by operator
-- Server already prepared to materialize ephemeral panes when artifacts land
-- Action-button → dispatcher event protocol live
-- Operator's browser open to the URL
-
-### POC simplifications worth naming
-
-- Action button contract: POST to dispatcher. Might switch to mesh messages via session-bridge later if button work needs to address a specific running agent. Not v1.
-- Pane lifecycle: auto-archive on completion. Long-term retention, deep-linking, share permissions all deferred.
-- Static-frame storage: file-based. DB + version control deferred.
-- Pane materialization mechanism (poll vs SSE-on-mtime): defer to whichever ships first when wiring up the new SPA.
+- Dashboard running as a managed daemon; `/api/health` green.
+- Operator's browser open to the home (their mindframes + knowledge base + sources + system overview).
+- Action-button → dispatcher event protocol live.
 
 ---
 
@@ -421,7 +408,7 @@ These are choices implicit in the structure above. Worth naming so they don't sn
 
 2. **Deliverable skills: shipped vs generated.** PHASE 8's open question. The "delete the triage skills, redesign from scratch" thread loops back here — whatever you decide for the rebuild is what gets installed during PHASE 8.
 
-3. **Dashboard launch is now part of install.** Today the dashboard is "you cd into it and run server.py if you want." The flow above requires install to leave it running. Small implementation lift; the dashboard agent was killed 2026-05-21 so there's no per-customer prompt regeneration to do — PHASE 9 just writes `static-frame.<deployment>.json` and starts the (now-thin) server.
+3. **Dashboard launch is now part of install.** The flow above requires install to leave the dashboard running as a managed daemon, not "cd in and run server.py if you want." Small implementation lift: PHASE 9 just starts `dashboard/server/server.py` under the `daemon` capability and opens the home — there is no per-customer config to generate; the dashboard reads the single vault and live state directly.
 
 4. **Idempotency.** Re-pasting install.txt should be safe. Each phase needs to detect "already done" and skip cleanly. Specified in the preamble as a rule, but needs concrete checkpoint conventions per phase.
 

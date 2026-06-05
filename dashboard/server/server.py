@@ -546,7 +546,7 @@ def frame_activity(mid: str, offset: int = 0, file: str = "") -> Response:
 class DashboardEvent(BaseModel):
     """Action-button payload from agent-authored HTML.
 
-    The agent embeds `<button onclick="postEvent({...})">` in its pane; the
+    The agent embeds `<button onclick="postEvent({...})">` in its page; the
     SPA wraps that helper and POSTs here. We forward to the dispatcher's
     /api/event with our held bearer; the browser never sees the token.
 
