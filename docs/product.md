@@ -20,7 +20,7 @@ Mindframe's answer is to make that knowledge a first-class, queryable thing — 
 
 ## What Mindframe does
 
-**It builds a knowledge base.** A guided setup probes the systems a team uses and bootstraps a per-customer vault — plain Markdown with structured frontmatter, grep-friendly, no embeddings, owned by the customer as a git repo. Setup seeds it, and the deliverable skills add to it as they run.
+**It builds a knowledge base.** A guided setup probes the systems a team uses and bootstraps a per-customer vault — plain Markdown with structured frontmatter, grep-friendly, no embeddings, stored as a local directory the customer owns. Setup seeds it, and the deliverable skills add to it as they run.
 
 **It runs agents that act on that knowledge**, on two paths:
 

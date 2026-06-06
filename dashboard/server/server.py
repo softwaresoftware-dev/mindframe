@@ -656,38 +656,23 @@ def _count_entries_per_type(vault_path: Path) -> dict[str, int]:
     return out
 
 
-def _vault_last_commit(vault_path: Path) -> dict | None:
-    """Latest git commit metadata, or None if not a repo."""
-    if not (vault_path / ".git").exists():
-        return None
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(vault_path), "log", "-1",
-             "--format=%H%n%cI%n%s%n%an"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode != 0:
-            return None
-        parts = r.stdout.strip().split("\n", 3)
-        if len(parts) < 4:
-            return None
-        return {"sha": parts[0][:8], "committed_at": parts[1],
-                "subject": parts[2], "author": parts[3]}
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+def _vault_last_modified(vault_path: Path) -> str | None:
+    """ISO timestamp of the most recently modified note, or None if empty.
 
-
-def _vault_remote(vault_path: Path) -> str | None:
-    if not (vault_path / ".git").exists():
+    The vault is a plain local directory (no git), so its freshness signal is
+    simply the newest note's mtime.
+    """
+    newest = 0.0
+    for child in vault_path.iterdir():
+        if child.is_dir() and not child.name.startswith((".", "_")):
+            for md in child.glob("*.md"):
+                try:
+                    newest = max(newest, md.stat().st_mtime)
+                except OSError:
+                    continue
+    if newest == 0.0:
         return None
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(vault_path), "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.stdout.strip() or None if r.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    return datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
 
 
 def _resolve_vault_or_error() -> tuple[Path, str, Response | None]:
@@ -723,8 +708,7 @@ def vault_info() -> Response:
         "exists": exists,
         "entry_counts": counts,
         "total_entries": sum(counts.values()),
-        "remote": _vault_remote(path) if exists else None,
-        "last_commit": _vault_last_commit(path) if exists else None,
+        "last_modified": _vault_last_modified(path) if exists else None,
     })
 
 

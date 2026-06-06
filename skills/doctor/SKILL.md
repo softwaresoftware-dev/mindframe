@@ -14,7 +14,7 @@ The terminal output is a diagnostic log. Use `[check N/7] <subsystem>...` lines.
 
 ## What "heal" means — two tiers
 
-- **Tier 1 — safe, reversible, no data loss.** Restart a dead daemon, regenerate `CATALOG.md`, `git init` an untracked vault, clear a stale pidfile, fix a malformed `channels.yaml` route against a known-good shape. Apply automatically, then **re-probe** to confirm the fix took. Log it as `healed`.
+- **Tier 1 — safe, reversible, no data loss.** Restart a dead daemon, regenerate `CATALOG.md`, create the vault directory if missing, clear a stale pidfile, fix a malformed `channels.yaml` route against a known-good shape. Apply automatically, then **re-probe** to confirm the fix took. Log it as `healed`.
 - **Tier 2 — installs, credentials, destructive edits, or judgment calls.** Installing a missing plugin, re-running setup, rewriting `schema.yaml`, anything touching a token or secret. Do **not** apply. Report the finding with the exact command or steps, and let the operator decide. For a Tier-2 finding that blocks everything downstream (missing bundle config), use `AskUserQuestion` to offer the fix inline.
 
 If a Tier-1 heal fails or its re-probe still fails, stop healing that subsystem and downgrade the finding to Tier 2 — don't loop.
@@ -85,9 +85,9 @@ Then check the agent runtime itself:
 
 Against `VAULT` from check 1 (skip with an `unknown` finding if check 1 was blocked):
 
-- **Git repo.** `git -C "$VAULT" rev-parse --git-dir` must succeed. If the directory exists but is not a repo → Tier 1: `git -C "$VAULT" init`, then re-probe. Report uncommitted changes (`git -C "$VAULT" status --porcelain`) as a warning — the vault should be committed after every write.
+- **Directory.** `$VAULT` must exist as a directory. The vault is a plain local directory (not a git repo) — there are no commit/clean checks. Missing → Tier 2: the fix is `/mindframe:setup`, which creates it.
 - **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML. It is the deployment's contract (`docs/interfaces.md` §5). Missing → Tier 2: the fix is `/mindframe:setup` step 4 (assemble the schema); do not write `schema.yaml` yourself.
-- **Catalog.** `$VAULT/CATALOG.md` should exist with one section per entity type declared in `schema.yaml`. Missing or stale (an entity-type directory exists with notes but has no catalog section) → Tier 1: regenerate `CATALOG.md` from the directories the schema declares, commit it, re-probe.
+- **Catalog.** `$VAULT/CATALOG.md` should exist with one section per entity type declared in `schema.yaml`. Missing or stale (an entity-type directory exists with notes but has no catalog section) → Tier 1: regenerate `CATALOG.md` from the directories the schema declares, then re-probe.
 - **Schema drift.** For each entity-type directory under the vault, confirm the type is declared in `schema.yaml`. A directory of notes for an *undeclared* type is drift — Tier 2 finding (writers are expected to validate against the schema; an undeclared type means notes were written bypassing it). Report the directory and note count; don't delete anything.
 - **Provider + population.** Confirm the `knowledge-base` provider is installed (it showed up in check 2). If installed but the vault is empty of notes, that's a "setup incomplete" warning, not a break.
 
@@ -131,7 +131,7 @@ mindframe doctor — <deployment_name>
   subsystem            state     finding
   ───────────────────────────────────────────────────────────────
   agent-spawning       healed    dispatcher-ingress was down — restarted, /api/health ok
-  knowledge-base       ok        vault git repo, schema.yaml (12 entities), CATALOG.md current
+  knowledge-base       ok        vault dir, schema.yaml (12 entities), CATALOG.md current
   event-routing        BROKEN    recipe 'calendar-reader': required brief key {{window}} unfilled
   status-dashboard     warn      taskboard installed, dashboard not running (never started)
   notification         warn      no notify-* provider — skills will use file fallback
@@ -150,7 +150,7 @@ Then, for every `BROKEN` / Tier-2 row, give the **exact** remedy — the command
 - **Evidence or it didn't happen.** Every `ok` names its probe; every `broken` carries the literal output. No pattern-matched "looks fine."
 - **Heal only Tier 1, and only after confirming.** Re-probe after every heal. A heal whose re-probe fails becomes a Tier-2 finding — never loop a restart.
 - **Never read or print secrets.** Tokens, keys, credential file *contents* — presence is evidence, values are not. Same rule as `/mindframe:setup` check 2.
-- **Don't delete vault data.** Schema drift, stale notes, uncommitted changes — report them; the operator owns the vault.
+- **Don't delete vault data.** Schema drift, stale notes — report them; the operator owns the vault.
 - **Don't hardcode provider names in remedies.** Use the capability and the resolved provider from check 2. The fix for a missing capability is always `/softwaresoftware:install mindframe`, which re-resolves for the environment.
 - **Idempotent.** Running doctor twice on a healthy bundle changes nothing and reports the same all-`ok` table.
 

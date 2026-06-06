@@ -1,6 +1,6 @@
 # KB Schema — Customer Knowledge Base
 
-The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer — a git repo of notes, populated at setup and by the deliverable skills that read and write it.
+The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer — a plain local directory of notes, populated at setup and by the deliverable skills that read and write it.
 
 ## What this document is
 
@@ -19,8 +19,8 @@ Each deployment assembles its own schema from the library and records it in the 
 2. **Frontmatter is the contract.** The body is prose that humans and agents both read.
 3. **Foreign keys are names, not paths.** Resilient to reorganization.
 4. **CATALOG.md is the index.** Agents read it first; opening notes is the second hop.
-5. **Per-customer single-tenant.** One vault, one customer, one git repo.
-6. **Every writer validates against the schema.** The vault is written by setup's bootstrap and by deliverable skills; each conforms a note to `schema.yaml` before it commits. The schema is the gate, not a dedicated agent.
+5. **Per-customer single-tenant.** One vault, one customer, one local directory.
+6. **Every writer validates against the schema.** The vault is written by setup's bootstrap and by deliverable skills; each conforms a note to `schema.yaml` before it writes. The schema is the gate, not a dedicated agent.
 7. **Live state is not in the vault.** Active alerts, current PRs, deploy status: queried from source systems at runtime.
 8. **Secrets are referenced, never stored.** Frontmatter holds a keychain entry name; the value never appears in markdown.
 9. **The schema is per-install.** The meta-schema is fixed; the entity set is assembled at setup and recorded in `schema.yaml`.
@@ -392,7 +392,7 @@ These hold for every vault, driven by its `schema.yaml` — never a hardcoded li
 
 Validation has two homes:
 
-- **Runtime — the writer.** The vault is written by setup's bootstrap and by deliverable skills; each checks its notes against `schema.yaml` before committing, so validation happens at write time. (An automated curator that once owned this gate — the `vault_keeper`/`vault_query` agents — was removed 2026-06-05 pending a redesign; until it returns, each writer is responsible for conformance.)
+- **Runtime — the writer.** The vault is written by setup's bootstrap and by deliverable skills; each checks its notes against `schema.yaml` before writing, so validation happens at write time. (An automated curator that once owned this gate — the `vault_keeper`/`vault_query` agents — was removed 2026-06-05 pending a redesign; until it returns, each writer is responsible for conformance.)
 - **Development — a plugin test.** The invariants are codified as a test in the knowledge-base plugin: fixture vaults, well-formed and intentionally broken, run through the checks under `make test`. That is where the rules are pinned down precisely and regression-guarded.
 
 ## Bootstrap
@@ -405,7 +405,7 @@ Setup populates the vault after it has assembled and written `schema.yaml`. Thre
 
 ## Authoring discipline
 
-The vault is written by setup's bootstrap and by deliverable skills. A writer validates against `schema.yaml`, writes the note, updates CATALOG.md and bidirectional links, and commits per change. (There is no dedicated curator agent today — the prior automated write/read loop was removed 2026-06-05 pending a redesign.)
+The vault is written by setup's bootstrap and by deliverable skills. A writer validates against `schema.yaml`, writes the note, and updates CATALOG.md and bidirectional links. (There is no dedicated curator agent today — the prior automated write/read loop was removed 2026-06-05 pending a redesign.)
 
 ## What is NOT in the vault
 
@@ -418,6 +418,5 @@ The vault is written by setup's bootstrap and by deliverable skills. A writer va
 
 ## Versioning
 
-- The vault is a customer-owned git repository.
+- The vault is a plain local directory the customer owns — it holds the current state, with no built-in version history. A customer who wants history can place it under version control themselves; mindframe neither requires nor manages that.
 - `schema.yaml` carries `schema_version`. Because each vault owns its schema, there is no central schema to migrate against — a vault evolves its own `schema.yaml`, and writers validate against the new version.
-- Writers commit per change, small-grained.

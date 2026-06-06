@@ -188,7 +188,7 @@ Three sub-steps.
 
 **6c. Manual seeding.** Top Products, active Projects, foundational Decisions, Conventions, Glossary terms.
 
-Produces: `<vault>/` is a git repo with `schema.yaml`, `CATALOG.md`, `CLAUDE.md`, `Glossary.md`, and entity directories populated. Every pass commits.
+Produces: `<vault>/` is a local directory with `schema.yaml`, `CATALOG.md`, `CLAUDE.md`, `Glossary.md`, and entity directories populated.
 
 Asks: a lot. This phase is the slowest and most conversational.
 

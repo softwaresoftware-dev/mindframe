@@ -170,8 +170,8 @@ function el(tag, attrs = {}, children = []) {
 // ----- Knowledge base panel (single vault) -----
 
 function vaultLastTouched(v) {
-  if (!v.last_commit?.committed_at) return "no commits yet";
-  return relativeTime(new Date(v.last_commit.committed_at).getTime());
+  if (!v.last_modified) return "no notes yet";
+  return relativeTime(new Date(v.last_modified).getTime());
 }
 
 async function refreshVault() {
@@ -191,14 +191,11 @@ async function refreshVault() {
       .slice(0, 4)
       .map(([t, n]) => `<span class="vault-type-chip">${escapeHtml(t)}: ${n}</span>`)
       .join("");
-    const remoteBadge = v.remote
-      ? `<span class="vault-remote-badge" title="${escapeHtml(v.remote)}">⇄ remote</span>`
-      : `<span class="vault-remote-badge vault-remote-local">● local only</span>`;
     list.innerHTML = `
       <div class="vault-tile">
         <div class="vault-tile-header">
           <span class="vault-name">${escapeHtml(v.name)}</span>
-          ${remoteBadge}
+          <span class="vault-remote-badge vault-remote-local">● local</span>
         </div>
         <div class="vault-tile-meta">
           <span class="vault-total">${v.total_entries} entries</span>
@@ -796,7 +793,7 @@ async function fillKnowledge() {
     body.innerHTML = `
       <div class="sys-group">
         <div class="sys-group-head">${escapeHtml(v.name)}
-          ${v.remote ? '<span class="sys-tag sys-tag-faint">⇄ remote</span>' : ""}
+          <span class="sys-tag sys-tag-faint">local</span>
         </div>
         <div class="sys-row-sub"><span class="sys-faint">${v.total_entries} entries · ${escapeHtml(vaultLastTouched(v))}</span></div>
         <div class="sys-skill-chips">${types || '<span class="sys-faint">empty</span>'}</div>

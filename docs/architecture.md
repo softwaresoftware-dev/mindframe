@@ -170,12 +170,12 @@ decision:
 
 | State | Home | Lifetime |
 |---|---|---|
-| Customer domain knowledge | the vault (git repo) | persistent; written at setup and by deliverable skills |
+| Customer domain knowledge | the vault (local directory) | persistent; written at setup and by deliverable skills |
 | Event audit + dedupe | dispatcher-ingress SQLite DB | rolling; dedupe entries expire |
 | A deliverable run's working data | the spawned agent's task directory + recipe cache | the life of the run; cache enables idempotent replay |
 | Agent ↔ agent / human messages | the session-bridge mesh | transient |
 | Bundle + per-deployment config | `~/.claude/settings.json` (`pluginConfigs`) | persistent |
 
 Nothing in the bundle keeps customer state in a cloud service. The vault is a
-local git repository; the audit log is a local database; agents are local
+local directory; the audit log is a local database; agents are local
 processes.

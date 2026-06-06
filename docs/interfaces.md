@@ -227,7 +227,7 @@ handing the agent a literal `{{output_path}}`.
 
 ## 5. Knowledge base
 
-The customer vault is a git repository of Markdown notes with YAML
+The customer vault is a local directory of Markdown notes with YAML
 frontmatter — one note per entity, organized by the four layers (Thing,
 Event, Knowledge, Process) — plus a `CATALOG.md` index. It is populated at
 setup and by deliverable skills, and is **read by grep**, not by embeddings.
