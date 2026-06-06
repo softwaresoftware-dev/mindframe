@@ -239,35 +239,29 @@ def _mint_frame_id(n: int = 10) -> str:
     return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(n))
 
 
-def _find_spawner_cli() -> Path | None:
-    """Locate taskpilot's spawner_cli.py via the installed-plugins manifest."""
-    manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    try:
-        data = json.loads(manifest.read_text("utf-8"))
-    except (OSError, ValueError):
-        return None
-    for key, installs in (data.get("plugins") or {}).items():
-        if key.split("@")[0] == "taskpilot" and installs:
-            p = Path(installs[0].get("installPath", "")) / "spawner_cli.py"
-            if p.is_file():
-                return p
-    return None
-
-
 class CreateMindframe(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=4000)
     title: str | None = None
 
 
 @app.post("/api/frames/create")
-def create_mindframe(body: CreateMindframe) -> Response:
+async def create_mindframe(body: CreateMindframe) -> Response:
     """Create a surface mindframe: mint a frame dir, drop a placeholder page,
-    then spawn a persistent agent (cwd = frame dir) that owns index.html.
+    then spawn a persistent agent (cwd = frame dir) that owns index.html via the
+    taskpilot daemon's create_and_spawn endpoint. The daemon slugifies the name
+    into the task_id; mindframe ids are already [0-9a-z]+, so task_id == mid and
+    later /api/frame/<id>/message routes to the same agent.
     Returns the new id + url so the SPA can open /m/<id> immediately."""
-    spawner_cli = _find_spawner_cli()
-    if spawner_cli is None:
+    # Probe the daemon before minting a frame dir, so a down spawner doesn't
+    # leave an orphan frame behind (mirrors the old pre-mint availability check).
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            health = await client.get(f"{TASKPILOT_DAEMON}/health")
+        if health.status_code >= 300:
+            raise httpx.HTTPError(f"health {health.status_code}")
+    except httpx.HTTPError:
         return JSONResponse(
-            {"error": "taskpilot (agent-spawning) not found — can't spawn a mindframe agent."},
+            {"error": "taskpilot daemon (agent-spawning) not reachable — can't spawn a mindframe agent."},
             status_code=503)
 
     for _ in range(5):
@@ -299,20 +293,25 @@ def create_mindframe(body: CreateMindframe) -> Response:
     }, indent=2), "utf-8")
 
     brief = MINDFRAME_BRIEF.format(index=str(index), prompt=body.prompt.strip())
+    # create_and_spawn blocks ~16s while tmux launches; allow generous headroom.
     try:
-        proc = subprocess.run(
-            ["python3", str(spawner_cli), brief, "--name", mid, "--cwd", str(fdir)],
-            capture_output=True, text=True, timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"{TASKPILOT_DAEMON}/tasks/create_and_spawn",
+                json={"name": mid, "description": brief, "cwd": str(fdir)},
+            )
+    except httpx.HTTPError as e:
         return JSONResponse({"id": mid, "url": f"/m/{mid}",
                              "spawn": "error", "error": f"spawn failed: {e}"})
-    spawn_result: dict = {}
+    if r.status_code >= 300:
+        return JSONResponse({
+            "id": mid, "url": f"/m/{mid}", "spawn": "error",
+            "spawn_result": {"ok": False, "error": f"daemon {r.status_code}: {r.text[:400]}"},
+        })
     try:
-        spawn_result = json.loads((proc.stdout or "").strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        spawn_result = {"ok": False,
-                        "error": (proc.stderr or proc.stdout or "no spawner output")[:400]}
+        spawn_result = r.json()
+    except ValueError:
+        spawn_result = {"ok": False, "error": (r.text or "no spawner output")[:400]}
     return JSONResponse({
         "id": mid, "url": f"/m/{mid}",
         "spawn": "ok" if spawn_result.get("ok") else "error",
