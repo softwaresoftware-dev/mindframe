@@ -3,8 +3,9 @@
 // Two views:
 //   /        → home: a hub graph — a central "New" node ringed by satellites
 //              (Mindframes, Knowledge base, Agents, Connections, Events,
-//              System). A satellite opens a drawer; the center opens the create
-//              overlay. Reached via /mindframe:open ("open up mindframe").
+//              System). A satellite opens a drawer; the center spawns a
+//              launchpad mindframe (KB-grounded suggestions) in a new tab.
+//              Reached via /mindframe:open ("open up mindframe").
 //   /system  → structured overview of the whole bundle (events, agents,
 //              mindframes, skills+MCPs, knowledge bases)
 //
@@ -484,8 +485,11 @@ async function openBrowseDialog() {
 // The home is a node graph: a central "New" node ringed by satellites —
 // Mindframes, Knowledge base, Agents, Connections, Events, System. Clicking a
 // satellite opens a drawer over the graph (System routes to its own page);
-// clicking the center opens the create-a-mindframe overlay. Edges live in an
-// SVG layer painted behind the nodes; layout is recomputed on resize.
+// clicking the center spawns a launchpad mindframe — an agent that surveys the
+// vault + connections and opens, in a new tab, a page of grounded suggestions
+// (add a watch, create an agent, start a working mindframe), each a button that
+// messages the agent to pursue it. Edges live in an SVG layer painted behind
+// the nodes; layout is recomputed on resize.
 
 const HUB_NODES = [
   { key: "mindframes",  label: "Mindframes",     hint: "live agent surfaces", render: drawerMindframes },
@@ -531,9 +535,9 @@ function buildHubNodes() {
   const center = el("button", { class: "hub-node hub-center", id: "hub-center", type: "button" }, [
     el("span", { class: "hub-center-plus" }, "+"),
     el("span", { class: "hub-node-label" }, "New"),
-    el("span", { class: "hub-node-hint" }, "start a mindframe"),
+    el("span", { class: "hub-node-hint" }, "where to start"),
   ]);
-  center.addEventListener("click", openCreateOverlay);
+  center.addEventListener("click", startLaunchpad);
   wrap.appendChild(center);
 
   for (const n of HUB_NODES) {
@@ -648,6 +652,79 @@ function openCreateOverlay() {
 function closeCreateOverlay() {
   const o = $("create-overlay");
   if (o) o.remove();
+}
+
+// ----- Launchpad (the center "New" node) -----
+//
+// Clicking "New" spawns a launchpad mindframe and opens it in a new tab. The
+// launchpad agent surveys the operator's knowledge base, connections, and
+// already-wired watches, then composes a page of concrete, grounded suggestions
+// — add an event source, create an agent, or start a working mindframe — each a
+// button that messages the same agent to pursue it. The whole brief rides in the
+// spawn prompt; the generic surface brief (server-side) wraps it.
+
+const LAUNCHPAD_PROMPT = `You are the LAUNCHPAD — the operator just clicked "New" on the mindframe home and you opened in a fresh tab. Your job is to help them choose what to do next, grounded in what you actually know about them. Do NOT ask an open-ended "what do you want?" — survey their world first, then offer concrete, specific suggestions.
+
+STEP 1 — Survey (do real work, never guess):
+- Knowledge base: list ~/.mindframe/vault and read enough to know the entity types, rough counts, and a few notable nodes (real repos, people, projects, incidents, decisions).
+- Connections: run "claude mcp list"; check "gh auth status", and "gcloud auth list" / "aws sts get-caller-identity" if those CLIs exist. Note what is actually reachable.
+- Already wired (so you do not suggest duplicates): read ~/.dispatcher/channels.yaml (existing routes) and list ~/.dispatcher/recipes (existing agents).
+- You may also GET {origin}/api/vault, {origin}/api/connections, {origin}/api/events, and {origin}/api/agents for a fast aggregated view of the same facts.
+
+STEP 2 — Compose ONE page (the whole index.html):
+- Open with a short, warm orientation line that names real things you found (their connected tools, their repos) — proof you actually looked, not a template.
+- Then 3 to 6 suggestions as buttons, spanning these kinds. Ground EVERY one in a real fact; omit a kind if you cannot ground it. No generic placeholders.
+  1. Add an event source (a "watch"): a connected tool that is not yet wired as a route. e.g. "Add GitHub pull requests as an event source so I get prepped when one opens."
+  2. Create an agent (a recipe that runs on a trigger): e.g. if Google Calendar is connected and no meeting-prep recipe exists, "Create an agent that preps me before each calendar meeting."
+  3. Start a working mindframe (real work now), grounded in the KB: e.g. "Review the open PRs on <a real repo> and flag anything risky", or "Summarize my last few incidents and what we changed."
+- Group the suggestions clearly by kind. Keep copy in the operator's second person ("you"/"your"). Inline all CSS, calm and legible, no emoji.
+
+STEP 3 — Make each suggestion a button that messages THIS mindframe so you pursue it. Use EXACTLY this pattern so the frame id is automatic (the page is served at /api/frame/<id>/page; swapping /page for /message hits this frame's message endpoint):
+
+  <button onclick="fetch(location.pathname.replace('/page','/message'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'PUT THE ACTIVITY HERE, phrased as a clear instruction to you'})}).then(function(r){this.disabled=true;this.textContent='on it…'}.bind(this)).catch(function(){this.textContent='failed — use the message box below'}.bind(this))">Button label</button>
+
+When the operator clicks one, you will receive its text as a message. Then actually pursue that activity on this same page: research and draft it, and for anything irreversible or outward-facing (creating a route, spawning an agent, sending anything) draw it as a pending action and wait for the operator to confirm in a message before doing it.
+
+Never declare yourself done. The suggestions stand and the message box is always open for "or just tell me what you want to do." Compose your launchpad index.html now.`;
+
+async function startLaunchpad() {
+  // Open the tab synchronously (inside the click) so the popup isn't blocked,
+  // then redirect it once the frame id comes back from the spawn.
+  const tab = window.open("", "_blank");
+  if (tab) {
+    tab.document.write(
+      "<!doctype html><meta charset=utf-8><title>composing…</title>" +
+      "<body style='margin:0;height:100vh;display:grid;place-items:center;" +
+      "font:16px system-ui;color:#8A8580;background:#0D0D0D'>" +
+      "<div style='text-align:center'>Composing your launchpad…<br>" +
+      "<small style='color:#5A5650'>surveying your knowledge base and connections</small></div>");
+  }
+  showToast("Spawning your launchpad…", "info");
+  try {
+    const r = await fetch("/api/frames/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: LAUNCHPAD_PROMPT.replace(/\{origin\}/g, location.origin),
+        title: "Where to start",
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      showToast(`couldn't open a launchpad: ${j.error || r.statusText}`, "err");
+      if (tab) tab.close();
+      return;
+    }
+    if (j.spawn !== "ok") {
+      showToast(`launchpad created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
+    }
+    if (tab) tab.location = j.url;     // redirect the opened tab to /m/<id>
+    else location.href = j.url;        // popup blocked — fall back to same tab
+    loadHubCounts();                   // the new mindframe bumps the Mindframes count
+  } catch (e) {
+    showToast(`network error: ${e.message}`, "err");
+    if (tab) tab.close();
+  }
 }
 
 async function createMindframe(text) {
