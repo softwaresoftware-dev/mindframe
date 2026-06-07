@@ -1183,3 +1183,302 @@ a:hover { color: var(--color-accent-hover); }
   padding: var(--space-sm) 0;
 }
 .sys-empty-err { color: var(--color-err); font-style: normal; }
+
+/* ===================================================================
+   Buttons (base) — primary + generic. (Previously only btn-default
+   and btn-sm existed; the home's primary button had no base rule.)
+   =================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  font-family: var(--font-heading);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.6rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+.btn:hover { border-color: var(--color-border-hover); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: default; transform: none; }
+
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #1A1208;
+}
+.btn-primary:hover { background: var(--color-accent-hover); border-color: var(--color-accent-hover); }
+
+/* ===================================================================
+   Home — the mindframe hub graph
+   =================================================================== */
+
+.hub {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  min-height: calc(100vh - var(--topbar-h));
+  overflow: hidden;
+  /* a soft glow behind the center node */
+  background:
+    radial-gradient(circle at 50% 48%, rgba(212, 168, 83, 0.10), transparent 42%),
+    var(--color-bg);
+}
+
+.hub-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.hub-edge {
+  stroke: var(--color-border);
+  stroke-width: 1.25;
+  transition: stroke var(--transition), stroke-width var(--transition);
+}
+.hub-edge.active { stroke: var(--color-accent); stroke-width: 2; }
+
+.hub-nodes { position: absolute; inset: 0; z-index: 2; }
+
+.hub-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  text-align: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  cursor: pointer;
+  font-family: var(--font-heading);
+  transition: border-color var(--transition), background var(--transition),
+              box-shadow var(--transition), transform var(--transition);
+}
+
+/* satellites: rounded tiles */
+.hub-sat {
+  width: 150px;
+  padding: var(--space-md) var(--space-sm);
+  border-radius: var(--radius-lg);
+}
+.hub-sat:hover,
+.hub-sat.active {
+  border-color: var(--color-accent);
+  background: var(--color-surface-hover);
+  box-shadow: 0 0 0 1px var(--color-accent), 0 8px 24px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%) translateY(-2px);
+}
+
+/* center: the "New" node */
+.hub-center {
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  gap: 0.2rem;
+  border-color: var(--color-accent);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(212, 168, 83, 0.22), rgba(26, 26, 26, 0.95) 70%),
+    var(--color-surface);
+  box-shadow: 0 0 0 1px rgba(212, 168, 83, 0.4), 0 10px 40px rgba(212, 168, 83, 0.12);
+  z-index: 3;
+}
+.hub-center:hover {
+  background:
+    radial-gradient(circle at 50% 38%, rgba(212, 168, 83, 0.32), rgba(31, 31, 31, 0.95) 70%),
+    var(--color-surface-hover);
+  box-shadow: 0 0 0 1px var(--color-accent), 0 12px 48px rgba(212, 168, 83, 0.22);
+  transform: translate(-50%, -50%) scale(1.03);
+}
+.hub-center-plus {
+  font-size: 2rem;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--color-accent);
+}
+
+.hub-node-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.hub-center .hub-node-label { font-size: 1.05rem; }
+.hub-node-count {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-accent);
+}
+.hub-node-hint {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--color-text-faint);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.hub-tagline {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-xl);
+  transform: translateX(-50%);
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-faint);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* ---------- drawer (satellite click) ---------- */
+
+.drawer-scrim {
+  position: fixed;
+  inset: var(--topbar-h) 0 0 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 40;
+}
+
+.drawer {
+  position: fixed;
+  top: var(--topbar-h);
+  right: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  background: var(--color-bg);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.4);
+  transform: translateX(100%);
+  transition: transform var(--transition);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+}
+.drawer.open { transform: translateX(0); }
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-lg) var(--space-xl);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+.drawer-title {
+  font-family: var(--font-heading);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.drawer-close {
+  background: none;
+  border: 0;
+  color: var(--color-text-muted);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.drawer-close:hover { color: var(--color-text); background: var(--color-surface); }
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-lg) var(--space-xl) var(--space-2xl);
+}
+.drawer-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-lg);
+}
+
+.kb-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.kb-big {
+  font-family: var(--font-heading);
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: var(--color-accent);
+  line-height: 1;
+}
+.kb-big span {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  margin-left: 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.kb-touch {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-faint);
+}
+
+/* ---------- create overlay (center node) ---------- */
+
+.create-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--space-xl);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(3px);
+}
+.create-card {
+  width: min(560px, 100%);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+.create-headline {
+  font-family: var(--font-heading);
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  margin-bottom: var(--space-lg);
+}
+.create-card form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-md);
+}
+.create-card .home-sub {
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 640px) {
+  .hub-sat { width: 118px; padding: var(--space-sm); }
+  .hub-center { width: 132px; height: 132px; }
+  .hub-node-label { font-size: 0.85rem; }
+  .hub-node-hint { display: none; }
+}

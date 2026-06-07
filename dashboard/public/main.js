@@ -1,7 +1,10 @@
 // Mindframe dashboard SPA.
 //
 // Two views:
-//   /        → home: vaults + data sources
+//   /        → home: a hub graph — a central "New" node ringed by satellites
+//              (Mindframes, Knowledge base, Agents, Connections, Events,
+//              System). A satellite opens a drawer; the center opens the create
+//              overlay. Reached via /mindframe:open ("open up mindframe").
 //   /system  → structured overview of the whole bundle (events, agents,
 //              mindframes, skills+MCPs, knowledge bases)
 //
@@ -174,179 +177,131 @@ function vaultLastTouched(v) {
   return relativeTime(new Date(v.last_modified).getTime());
 }
 
-async function refreshVault() {
-  const list = $("vault-list");
+// ----- Drawer renderers -----
+//
+// Each hub satellite opens a drawer over the graph; these fill its body from the
+// same read-only APIs the /system view uses. They reuse the sys-* row markup
+// (and helpers stateDot / statusBadge / parseTs, hoisted from the system block).
+
+async function drawerMindframes(body) {
+  try {
+    const j = await (await fetch("/api/frames")).json();
+    const frames = j.frames || [];
+    const head = `<div class="drawer-actions"><button class="btn btn-primary btn-sm" id="drawer-new">+ new mindframe</button></div>`;
+    if (!frames.length) {
+      body.innerHTML = head + `<div class="empty"><p>No mindframes yet — create one to spin up an agent on a live page.</p></div>`;
+    } else {
+      body.innerHTML = head + `<div class="frame-list">` + frames.map(f => `
+        <a class="frame-row" href="/m/${encodeURIComponent(f.id)}">
+          <span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>
+          <span class="frame-title-wrap">
+            <span class="frame-title">${escapeHtml(f.title)}</span>
+            <span class="frame-sub"><span class="mono">${escapeHtml(f.id)}</span></span>
+          </span>
+          <span class="frame-meta"><span class="frame-time">${relativeTime(f.modified)}</span></span>
+          <span class="frame-open">→</span>
+        </a>`).join("") + `</div>`;
+    }
+    const nb = $("drawer-new");
+    if (nb) nb.addEventListener("click", openCreateOverlay);
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load mindframes: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function drawerKnowledge(body) {
   try {
     const r = await fetch("/api/vault");
     const v = await r.json();
     if (!r.ok || v.error || !v.exists) {
-      $("vault-count").textContent = "—";
-      list.innerHTML = `<div class="empty"><p>No knowledge base yet.
+      body.innerHTML = `<div class="empty"><p>No knowledge base yet.
         Run <code>/mindframe:setup</code> to create one at <code>~/.mindframe/vault</code>.</p></div>`;
       return;
     }
-    $("vault-count").textContent = v.total_entries;
-    const typeCounts = Object.entries(v.entry_counts || {})
+    const types = Object.entries(v.entry_counts || {})
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 4)
       .map(([t, n]) => `<span class="vault-type-chip">${escapeHtml(t)}: ${n}</span>`)
       .join("");
-    list.innerHTML = `
-      <div class="vault-tile">
-        <div class="vault-tile-header">
-          <span class="vault-name">${escapeHtml(v.name)}</span>
-          <span class="vault-remote-badge vault-remote-local">● local</span>
-        </div>
-        <div class="vault-tile-meta">
-          <span class="vault-total">${v.total_entries} entries</span>
-          <span class="vault-touched">last touched ${vaultLastTouched(v)}</span>
-        </div>
-        <div class="vault-type-chips">${typeCounts || '<span class="vault-empty-note">empty</span>'}</div>
-        <div class="vault-tile-actions">
-          <button class="btn btn-sm btn-default vault-action-browse" type="button">browse</button>
-        </div>
+    body.innerHTML = `
+      <div class="drawer-actions"><button class="btn btn-primary btn-sm" id="drawer-graph">open graph</button></div>
+      <div class="kb-summary">
+        <div class="kb-big">${v.total_entries}<span>entries</span></div>
+        <div class="kb-touch">${escapeHtml(v.name)} · last touched ${vaultLastTouched(v)}</div>
       </div>
-    `;
-    const browse = list.querySelector(".vault-action-browse");
-    if (browse) browse.addEventListener("click", () => openBrowseDialog());
+      <div class="vault-type-chips">${types || '<span class="vault-empty-note">empty</span>'}</div>`;
+    $("drawer-graph").addEventListener("click", openBrowseDialog);
   } catch (e) {
-    list.innerHTML = `<div class="empty"><p>knowledge base error: ${escapeHtml(String(e))}</p></div>`;
+    body.innerHTML = `<div class="empty"><p>knowledge base error: ${escapeHtml(String(e))}</p></div>`;
   }
 }
 
-// ----- Data sources panel (v0.8.2) -----
-//
-// Mirrors the vaults panel. Each tile shows a known source mindframe can
-// ingest from — connected sources first, then the catalog of "you could
-// connect this." The connect/disconnect flow is intentionally minimal: a
-// connect click pops a modal with the exact slash command to run in Claude
-// Code, because OAuth/credential flows are agent-driven and shouldn't
-// be re-implemented in the dashboard JS.
-
-async function refreshSources() {
+async function drawerAgents(body) {
   try {
-    const r = await fetch("/api/sources");
-    const j = await r.json();
-    const sources = j.sources || [];
-    $("source-count").textContent = `${j.connected}/${j.total} connected`;
-    const list = $("source-list");
-    if (!sources.length) {
-      list.innerHTML = `<div class="empty"><p>No data sources defined.</p></div>`;
+    const j = await (await fetch("/api/agents")).json();
+    const defs = (j.definitions || []).map(d => `
+      <div class="sys-row sys-row-stack">
+        <span class="sys-row-main">${escapeHtml(d.name)}
+          <span class="sys-tag">${escapeHtml(d.kind)}${d.model ? " · " + escapeHtml(d.model) : ""}</span></span>
+        <span class="sys-trigger-line">${(d.triggered_by || []).map(t =>
+          `<span class="sys-chip">↯ ${escapeHtml(t)}</span>`).join("") || '<span class="sys-faint">manual trigger</span>'}</span>
+      </div>`).join("") || `<div class="sys-empty">no recipes installed.</div>`;
+    const live = (j.live || []).map(a => `
+      <div class="sys-row">
+        <span class="sys-row-main">${a.live ? '<span class="sys-dot sys-dot-ok"></span>' : ""}${escapeHtml(a.name)}</span>
+        <span class="sys-row-sub">${statusBadge(a.status)}<span class="sys-faint">${relativeTime(parseTs(a.updated_at))}</span></span>
+      </div>`).join("") || `<div class="sys-empty">nothing running right now.</div>`;
+    body.innerHTML = `
+      <div class="sys-subhead">Definitions <span>${j.definition_count}</span></div>${defs}
+      <div class="sys-subhead">Live <span>${j.running_count} live · ${j.live_count} shown</span></div>${live}`;
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>agents error: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function drawerConnections(body) {
+  try {
+    const j = await (await fetch("/api/connections")).json();
+    const conns = j.connections || [];
+    if (!conns.length) {
+      body.innerHTML = `<div class="empty"><p>No connections discovered. Authenticate a CLI
+        (<code>gh</code>, <code>gcloud</code>, <code>aws</code>) or connect an MCP, then reopen.</p></div>`;
       return;
     }
-    // Connected first, then catalog.
-    sources.sort((a, b) => (b.connected ? 1 : 0) - (a.connected ? 1 : 0));
-    list.innerHTML = sources.map(s => {
-      const statusBadge = s.connected
-        ? `<span class="source-status source-connected">● connected</span>`
-        : `<span class="source-status source-disconnected">○ not connected</span>`;
-      const accountLine = s.account
-        ? `<div class="source-account">${escapeHtml(s.account)}</div>`
-        : "";
-      const touched = s.credential_mtime
-        ? `<span class="source-touched">creds: ${relativeTime(new Date(s.credential_mtime).getTime())}</span>`
-        : "";
-      const action = s.connected
-        ? `<button class="btn btn-sm btn-default source-action-disconnect" type="button">disconnect</button>`
-        : `<button class="btn btn-sm btn-primary source-action-connect" type="button">connect</button>`;
-      return `
-        <div class="source-tile ${s.connected ? 'source-tile-on' : 'source-tile-off'}" data-source="${escapeHtml(s.id)}">
-          <div class="source-tile-header">
-            <span class="source-name">${escapeHtml(s.name)}</span>
-            ${statusBadge}
-          </div>
-          ${accountLine}
-          <div class="source-tile-desc">${escapeHtml(s.description)}</div>
-          <div class="source-tile-meta">${touched}</div>
-          <div class="source-tile-actions">${action}</div>
-        </div>
-      `;
-    }).join("");
-
-    list.querySelectorAll(".source-action-connect").forEach(btn => {
-      btn.addEventListener("click", (e) => {
-        const tile = e.target.closest(".source-tile");
-        openConnectSourceDialog(tile.dataset.source);
-      });
-    });
-    list.querySelectorAll(".source-action-disconnect").forEach(btn => {
-      btn.addEventListener("click", async (e) => {
-        const tile = e.target.closest(".source-tile");
-        const id = tile.dataset.source;
-        if (!confirm(`Disconnect ${id}? This removes the stored credentials but does not revoke remote-side access.`)) return;
-        e.target.disabled = true;
-        e.target.textContent = "disconnecting…";
-        try {
-          const r = await fetch(`/api/sources/${encodeURIComponent(id)}/disconnect`, { method: "POST" });
-          const j = await r.json();
-          if (r.ok) {
-            showToast(`disconnected ${id}`, "ok");
-            refreshSources();
-          } else {
-            showToast(`disconnect failed: ${j.error || r.statusText}`, "err");
-            e.target.disabled = false;
-            e.target.textContent = "disconnect";
-          }
-        } catch (err) {
-          showToast(`network error: ${err.message}`, "err");
-        }
-      });
-    });
+    body.innerHTML = `<div class="sys-subhead">Reachable <span>${j.reachable}/${conns.length}</span></div>` +
+      conns.map(c => `
+        <div class="sys-row">
+          <span class="sys-row-main">${stateDot(c.state)}${escapeHtml(c.name)}<span class="sys-tag sys-tag-faint">${escapeHtml(c.kind)}</span></span>
+          <span class="sys-row-sub">${c.account ? `<span class="sys-faint">${escapeHtml(c.account)}</span>` : ""}</span>
+        </div>`).join("");
   } catch (e) {
-    $("source-list").innerHTML = `<div class="empty"><p>source list error: ${escapeHtml(String(e))}</p></div>`;
+    body.innerHTML = `<div class="empty"><p>connections error: ${escapeHtml(String(e))}</p></div>`;
   }
 }
 
-async function openConnectSourceDialog(sourceId) {
-  const existing = document.getElementById("connect-dialog");
-  if (existing) existing.remove();
-  const dialog = document.createElement("div");
-  dialog.id = "connect-dialog";
-  dialog.className = "modal-overlay";
-  dialog.innerHTML = `
-    <div class="modal">
-      <h3 class="modal-title">Connect ${escapeHtml(sourceId)}</h3>
-      <div class="modal-form">
-        <p class="modal-hint">Loading connect instructions…</p>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-default" id="connect-close">close</button>
-        </div>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(dialog);
-  dialog.querySelector("#connect-close").addEventListener("click", () => dialog.remove());
-  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.remove(); });
+async function drawerEvents(body) {
   try {
-    const r = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/connect`, { method: "POST" });
-    const j = await r.json();
-    const body = dialog.querySelector(".modal-form");
-    if (r.ok) {
-      body.innerHTML = `
-        <p class="modal-hint">The agent-driven OAuth flow for <strong>${escapeHtml(j.source.name)}</strong> isn't shipped yet. For now, create this file manually:</p>
-        <pre class="modal-codeblock">${escapeHtml(j.credential_path || '')}</pre>
-        <p class="modal-hint">…with this shape:</p>
-        <pre class="modal-codeblock">${escapeHtml(j.example_blob || '{}')}</pre>
-        <p class="modal-hint">Then click <em>refresh</em>.</p>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-default" id="connect-close">close</button>
-          <button type="button" class="btn btn-primary" id="connect-refresh">refresh</button>
-        </div>
-      `;
-      dialog.querySelector("#connect-close").addEventListener("click", () => dialog.remove());
-      dialog.querySelector("#connect-refresh").addEventListener("click", () => {
-        refreshSources();
-        dialog.remove();
-      });
-    } else {
-      body.innerHTML = `<p class="modal-hint">Error: ${escapeHtml(j.error || r.statusText)}</p>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-default" id="connect-close">close</button>
-        </div>`;
-      dialog.querySelector("#connect-close").addEventListener("click", () => dialog.remove());
+    const j = await (await fetch("/api/events")).json();
+    if (!j.dispatcher_present) {
+      body.innerHTML = `<div class="empty"><p>dispatcher not configured — no event routes.</p></div>`;
+      return;
     }
-  } catch (err) {
-    dialog.querySelector(".modal-form").innerHTML = `<p class="modal-hint">Network error: ${escapeHtml(err.message)}</p>`;
+    if (!j.sources.length) {
+      body.innerHTML = `<div class="empty"><p>no routes yet. Add one with <code>/dispatcher:route</code>.</p></div>`;
+      return;
+    }
+    body.innerHTML = j.sources.map(s => `
+      <div class="sys-group">
+        <div class="sys-group-head">${escapeHtml(s.source)}</div>
+        ${s.routes.map(rt => `
+          <div class="sys-row">
+            <span class="sys-row-main">${escapeHtml(rt.event_type)}</span>
+            <span class="sys-row-sub">
+              <span class="sys-tgt sys-tgt-${escapeHtml(rt.target_kind)}">${escapeHtml(rt.target_kind)}</span>
+              <span class="mono">${escapeHtml(rt.target_name)}</span></span>
+          </div>`).join("")}
+      </div>`).join("");
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>events error: ${escapeHtml(String(e))}</p></div>`;
   }
 }
 
@@ -524,95 +479,175 @@ async function openBrowseDialog() {
 }
 
 
-async function renderBoardsIndex() {
+// ===== Home: the mindframe hub graph =====
+//
+// The home is a node graph: a central "New" node ringed by satellites —
+// Mindframes, Knowledge base, Agents, Connections, Events, System. Clicking a
+// satellite opens a drawer over the graph (System routes to its own page);
+// clicking the center opens the create-a-mindframe overlay. Edges live in an
+// SVG layer painted behind the nodes; layout is recomputed on resize.
+
+const HUB_NODES = [
+  { key: "mindframes",  label: "Mindframes",     hint: "live agent surfaces", render: drawerMindframes },
+  { key: "knowledge",   label: "Knowledge base", hint: "what you know",       render: drawerKnowledge },
+  { key: "agents",      label: "Agents",         hint: "what can run",        render: drawerAgents },
+  { key: "connections", label: "Connections",    hint: "reachable sources",   render: drawerConnections },
+  { key: "events",      label: "Events",         hint: "wired routes",        render: drawerEvents },
+  { key: "system",      label: "System",         hint: "the whole bundle",    href: "/system" },
+];
+
+function renderHome() {
   root().innerHTML = `
-    <div class="index-wrap">
-      <section class="home-chat">
-        <p class="home-eyebrow">mindframe</p>
-        <h1 class="home-headline">What should I look into?</h1>
-        <form id="create-form" class="chat-form" autocomplete="off">
-          <textarea
-            id="create-input"
-            class="chat-input"
-            rows="3"
-            placeholder="e.g. give me a live overview of this machine, or review the open PRs on my main repo and flag anything risky."
-          ></textarea>
-          <div class="chat-form-row">
-            <span class="chat-hint">⌘/Ctrl + Enter to create</span>
-            <button type="submit" class="btn btn-primary chat-submit">Create mindframe</button>
-          </div>
-        </form>
-        <p class="home-sub">A mindframe is an agent that works for you on a live page it composes. Or see the whole bundle on the <a href="/system">System overview</a>.</p>
-      </section>
-
-      <section class="frame-section">
-        <div class="index-header">
-          <h2>Your mindframes</h2>
-          <span id="frame-count" class="count">…</span>
-        </div>
-        <div id="frame-list" class="frame-list">
-          <div class="loading">loading…</div>
-        </div>
-      </section>
-
-      <section class="vaults-section">
-        <div class="index-header">
-          <h2>Your knowledge base</h2>
-          <span id="vault-count" class="count">…</span>
-        </div>
-        <div id="vault-list" class="vault-list">
-          <div class="loading">loading knowledge base…</div>
-        </div>
-      </section>
-
-      <section class="sources-section">
-        <div class="index-header">
-          <h2>Data sources</h2>
-          <span id="source-count" class="count">…</span>
-        </div>
-        <div id="source-list" class="source-list">
-          <div class="loading">loading sources…</div>
-        </div>
-      </section>
+    <div class="hub" id="hub">
+      <svg class="hub-edges" id="hub-edges" aria-hidden="true"></svg>
+      <div class="hub-nodes" id="hub-nodes"></div>
+      <p class="hub-tagline">Open a node, or start something new.</p>
     </div>
+    <aside class="drawer" id="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <h2 class="drawer-title" id="drawer-title">—</h2>
+        <button class="drawer-close" id="drawer-close" type="button" aria-label="close">✕</button>
+      </div>
+      <div class="drawer-body" id="drawer-body"></div>
+    </aside>
+    <div class="drawer-scrim" id="drawer-scrim" hidden></div>
   `;
 
-  refreshVault();
-  refreshSources();
-  refreshHomeFrames();
+  buildHubNodes();
+  layoutHub();
+  window.addEventListener("resize", layoutHub);
   setConn("ok", "ready");
+  loadHubCounts();
 
-  const form = $("create-form");
+  $("drawer-close").addEventListener("click", closeDrawer);
+  $("drawer-scrim").addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeDrawer(); closeCreateOverlay(); }
+  });
+}
+
+function buildHubNodes() {
+  const wrap = $("hub-nodes");
+  const center = el("button", { class: "hub-node hub-center", id: "hub-center", type: "button" }, [
+    el("span", { class: "hub-center-plus" }, "+"),
+    el("span", { class: "hub-node-label" }, "New"),
+    el("span", { class: "hub-node-hint" }, "start a mindframe"),
+  ]);
+  center.addEventListener("click", openCreateOverlay);
+  wrap.appendChild(center);
+
+  for (const n of HUB_NODES) {
+    const node = el("button", { class: "hub-node hub-sat", type: "button", "data-key": n.key }, [
+      el("span", { class: "hub-node-label" }, n.label),
+      // Navigate-only nodes (href) have no live count — skip the placeholder dot.
+      el("span", { class: "hub-node-count", id: `hub-count-${n.key}` }, n.href ? "" : "·"),
+      el("span", { class: "hub-node-hint" }, n.hint),
+    ]);
+    node.addEventListener("click", () => {
+      if (n.href) { location.href = n.href; return; }
+      openDrawer(n);
+    });
+    wrap.appendChild(node);
+  }
+}
+
+function layoutHub() {
+  const hub = $("hub");
+  if (!hub) return;
+  const rect = hub.getBoundingClientRect();
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+
+  const center = $("hub-center");
+  if (center) { center.style.left = `${cx}px`; center.style.top = `${cy}px`; }
+
+  const sats = [...document.querySelectorAll(".hub-sat")];
+  const count = sats.length || 1;
+  const radius = Math.max(150, Math.min(rect.width * 0.40, rect.height * 0.38));
+
+  const svg = $("hub-edges");
+  svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+  let edges = "";
+  sats.forEach((node, i) => {
+    const ang = -Math.PI / 2 + (i * 2 * Math.PI) / count; // start at top, go clockwise
+    const x = cx + radius * Math.cos(ang);
+    const y = cy + radius * Math.sin(ang);
+    node.style.left = `${x}px`;
+    node.style.top = `${y}px`;
+    edges += `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" class="hub-edge" data-key="${node.dataset.key}"/>`;
+  });
+  svg.innerHTML = edges;
+}
+
+async function loadHubCounts() {
+  const set = (key, val) => { const e = $(`hub-count-${key}`); if (e) e.textContent = val; };
+  const j = (r) => r.ok ? r.json() : Promise.reject(r.status);
+  fetch("/api/frames").then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
+  fetch("/api/vault").then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
+  fetch("/api/agents").then(j).then(d => set("agents", `${d.running_count || 0}/${d.definition_count || 0}`)).catch(() => {});
+  fetch("/api/connections").then(j).then(d => set("connections", `${d.reachable || 0}/${(d.connections || []).length}`)).catch(() => {});
+  fetch("/api/events").then(j).then(d => set("events", d.route_count || 0)).catch(() => {});
+}
+
+// ----- Drawer open / close -----
+
+function openDrawer(node) {
+  $("drawer-title").textContent = node.label;
+  const body = $("drawer-body");
+  body.innerHTML = `<div class="loading">loading…</div>`;
+  $("drawer").classList.add("open");
+  $("drawer").setAttribute("aria-hidden", "false");
+  $("drawer-scrim").hidden = false;
+  document.querySelectorAll(".hub-sat").forEach(s =>
+    s.classList.toggle("active", s.dataset.key === node.key));
+  document.querySelectorAll(".hub-edge").forEach(e =>
+    e.classList.toggle("active", e.dataset.key === node.key));
+  node.render(body);
+}
+
+function closeDrawer() {
+  const d = $("drawer");
+  if (!d) return;
+  d.classList.remove("open");
+  d.setAttribute("aria-hidden", "true");
+  $("drawer-scrim").hidden = true;
+  document.querySelectorAll(".hub-sat.active, .hub-edge.active")
+    .forEach(e => e.classList.remove("active"));
+}
+
+// ----- Create overlay (the center node) -----
+
+function openCreateOverlay() {
+  if ($("create-overlay")) return;
+  const ov = el("div", { class: "create-overlay", id: "create-overlay" });
+  ov.innerHTML = `
+    <div class="create-card">
+      <p class="home-eyebrow">new mindframe</p>
+      <h2 class="create-headline">What should I look into?</h2>
+      <form id="create-form" autocomplete="off">
+        <textarea id="create-input" class="chat-input" rows="3"
+          placeholder="e.g. give me a live overview of this machine, or review the open PRs on my main repo and flag anything risky."></textarea>
+        <div class="chat-form-row">
+          <span class="chat-hint">⌘/Ctrl + Enter to create · Esc to cancel</span>
+          <button type="submit" class="btn btn-primary chat-submit">Create mindframe</button>
+        </div>
+      </form>
+      <p class="home-sub">A mindframe is an agent that works for you on a live page it composes.</p>
+    </div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener("click", (e) => { if (e.target === ov) closeCreateOverlay(); });
+
   const input = $("create-input");
-  form.addEventListener("submit", (e) => { e.preventDefault(); createMindframe(input.value); });
+  input.focus();
+  $("create-form").addEventListener("submit", (e) => { e.preventDefault(); createMindframe(input.value); });
   input.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); createMindframe(input.value); }
   });
 }
 
-async function refreshHomeFrames() {
-  try {
-    const j = await (await fetch("/api/frames")).json();
-    const frames = j.frames || [];
-    $("frame-count").textContent = frames.length;
-    const list = $("frame-list");
-    if (!frames.length) {
-      list.innerHTML = `<div class="empty"><p>No mindframes yet — describe one above and I'll spin up an agent for it.</p></div>`;
-      return;
-    }
-    list.innerHTML = frames.map(f => `
-      <a class="frame-row" href="/m/${encodeURIComponent(f.id)}">
-        <span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>
-        <span class="frame-title-wrap">
-          <span class="frame-title">${escapeHtml(f.title)}</span>
-          <span class="frame-sub"><span class="mono">${escapeHtml(f.id)}</span></span>
-        </span>
-        <span class="frame-meta"><span class="frame-time">${relativeTime(f.modified)}</span></span>
-        <span class="frame-open">→</span>
-      </a>`).join("");
-  } catch (e) {
-    $("frame-list").innerHTML = `<div class="empty"><p>couldn't load mindframes: ${escapeHtml(String(e))}</p></div>`;
-  }
+function closeCreateOverlay() {
+  const o = $("create-overlay");
+  if (o) o.remove();
 }
 
 async function createMindframe(text) {
@@ -848,7 +883,7 @@ function route() {
   if (path === "/system" || path === "/system/") {
     renderSystem();
   } else {
-    renderBoardsIndex();
+    renderHome();
   }
 }
 
