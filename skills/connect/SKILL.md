@@ -67,7 +67,7 @@ Rules:
 - **`auth` is a POINTER, never the secret.** The credential lives in the provider's own store, an env var, or a file — never inline in the skill.
 - **`check` must exit non-zero when the connection is not usable** (logged out, no key) and be cheap and read-only.
 - **`docs` points a future agent at the reference** — almost always `<tool> --help` for a CLI door, or the API docs URL. Prefer the live `--help` (version-accurate) over a stale URL.
-- Worked examples ship at `${CLAUDE_PLUGIN_ROOT}/connectors/` (the four seed connectors github/aws/gcp/azure) with the full format in `${CLAUDE_PLUGIN_ROOT}/connectors/README.md`.
+- A worked example for **every door kind** is in **Examples by door kind** at the end of this skill — adapt the one matching your door.
 
 ## Step 4 — Get the credential in place
 
@@ -90,3 +90,95 @@ Never report a connection working you didn't actually run the `check` against.
 ## Step 6 — Confirm
 
 Tell the operator plainly: `<service>` is connected, it shows on the dashboard's Connections node, and any agent can now use it (the connector's body is the how-to). End by asking whether they want to connect anything else, or to put this connection to work now.
+
+## Examples by door kind
+
+One reference per door. Copy the shape, fill in only values you actually verified.
+
+### CLI — the operator already has an authed CLI
+```yaml
+---
+name: github
+description: GitHub — repos, issues, PRs, releases. Use when a task needs GitHub data or actions.
+connection:
+  label: GitHub
+  kind: cli
+  access: gh
+  auth: gh-cli                          # uses gh's own login; no token here
+  check: ["gh", "auth", "status"]
+  account: ["gh", "api", "user", "-q", ".login"]
+  docs: gh --help
+---
+Reach GitHub via `gh` (runs as the operator). e.g. `gh pr list`, `gh api <endpoint>`.
+```
+
+### MCP — there's an MCP server for it
+**Don't write a connector skill** — an MCP *is* the connection. Install/register it; the dashboard lists it automatically.
+```bash
+claude mcp add <name> -- <command...>    # or use the bundle's install flow
+claude mcp list                          # confirm <name> appears
+```
+
+### HTTP API — no CLI/MCP, but a REST API with a token
+```yaml
+---
+name: hubspot
+description: HubSpot — CRM contacts, deals, companies. Use when a task needs HubSpot data.
+connection:
+  label: HubSpot
+  kind: http-api
+  access: https://api.hubapi.com
+  auth: env:HUBSPOT_TOKEN               # pointer; the token lives in the env, never here
+  check: ["bash","-lc","curl -fsS -H \"Authorization: Bearer $HUBSPOT_TOKEN\" https://api.hubapi.com/account-info/v3/details >/dev/null"]
+  docs: https://developers.hubspot.com/docs/api/overview
+---
+curl the v3 REST API with `Authorization: Bearer $HUBSPOT_TOKEN`. Read-only by default.
+```
+
+### SQL — a database (often a read replica)
+```yaml
+---
+name: analytics-db
+description: Analytics Postgres (read replica) — metrics, events, users. Use for analytical questions.
+connection:
+  label: Analytics DB
+  kind: sql
+  access: file:~/.mindframe/secrets/analytics.dsn   # the connection string lives in this file
+  auth: file:~/.mindframe/secrets/analytics.dsn
+  check: ["bash","-lc","psql \"$(cat ~/.mindframe/secrets/analytics.dsn)\" -c 'select 1' >/dev/null"]
+  docs: psql --help
+---
+psql with the DSN in the file above. Read-only replica — SELECT only unless told otherwise.
+```
+
+### Browser — no API at all; drive the web UI
+```yaml
+---
+name: vendor-portal
+description: Vendor Portal — the only way in is the web UI (no API). Use to read/act in the portal.
+connection:
+  label: Vendor Portal
+  kind: browser
+  access: https://portal.vendor.com
+  auth: browser-session                 # operator stays logged in; no token
+  # no cheap check — verifying means driving the browser, so list by presence only
+  docs: https://portal.vendor.com/help
+---
+Reach it with an available browser-automation tool; the operator keeps a logged-in session.
+```
+
+### File — a folder of dumps or a mounted share
+```yaml
+---
+name: exports
+description: Exports — CSV/JSON dumps in a local folder. Use when a task needs the exported data.
+connection:
+  label: Exports
+  kind: file
+  access: ~/Exports
+  auth: ~                               # local files, no auth
+  check: ["bash","-lc","test -d ~/Exports"]
+  docs: ~
+---
+Read files under `~/Exports` (CSV/JSON); parse with the appropriate tool.
+```
