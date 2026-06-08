@@ -23,6 +23,7 @@ connection:
   auth: gh-cli                     # POINTER to creds: gh-cli | env:NAME | file:PATH | oauth
   check: ["gh", "auth", "status"]  # exit 0 = connected; non-zero = needs-auth; can't run = hidden
   account: ["gh", "api", "user", "-q", ".login"]   # optional: prints the identity label
+  docs: gh --help                  # optional: where a future agent learns to use it
 ---
 # the body is the how-to an agent follows to use the connection
 Reach GitHub through the `gh` CLI ...
@@ -37,6 +38,10 @@ Rules:
   command can't run at all (tool missing), the dashboard hides the connector.
 - **`auth` is a pointer, never a secret.** Point at the provider's own credential
   store (`gh-cli`), an env var (`env:HUBSPOT_TOKEN`), or a file (`file:~/.config/...`).
+- **`docs` points a future agent at the reference.** For a CLI it's almost always
+  the help command (`gh --help`, `tailscale --help`); for an API it's the docs URL.
+  An agent runs it (CLI) or fetches it (URL) when the body's common moves aren't
+  enough — the live `--help` is version-accurate, so prefer it over a stale URL.
 - **The body is the recipe** — the instructions an agent follows once it picks this
   connection. Keep irreversible/outward actions behind operator confirmation.
 

@@ -34,7 +34,7 @@ Investigate how to actually reach this service, best option first. Use your own 
 4. **SQL** — a connection string or read replica.
 5. **Browser** — if there's no API at all, the door is driving the web UI.
 
-Pick the best door you can actually stand up. Note the door, the auth method, and the `check` before you propose anything. Never invent an endpoint or auth scheme — if you can't verify it from real docs or a real probe, say so.
+Pick the best door you can actually stand up. Note the door, the auth method, the `check`, and the `docs` pointer (the CLI's `--help` command, or the service's API docs URL) before you propose anything. Never invent an endpoint or auth scheme — if you can't verify it from real docs or a real probe, say so.
 
 ## Step 3 — Branch on the door
 
@@ -57,6 +57,7 @@ connection:
   auth: <pointer — gh-cli | env:NAME | file:PATH | oauth — NEVER the secret>
   check: [...]                   # argv that exits 0 only when usable; non-zero = needs-auth
   account: [...]                 # optional: prints the identity label
+  docs: <help-cmd or URL>        # where a future agent learns to use it (CLI: `<tool> --help`; API: docs URL)
 ---
 <body: the how-to an agent follows to use this connection. Keep irreversible
 or outward-facing actions behind operator confirmation.>
@@ -65,6 +66,7 @@ or outward-facing actions behind operator confirmation.>
 Rules:
 - **`auth` is a POINTER, never the secret.** The credential lives in the provider's own store, an env var, or a file — never inline in the skill.
 - **`check` must exit non-zero when the connection is not usable** (logged out, no key) and be cheap and read-only.
+- **`docs` points a future agent at the reference** — almost always `<tool> --help` for a CLI door, or the API docs URL. Prefer the live `--help` (version-accurate) over a stale URL.
 - Worked examples ship at `${CLAUDE_PLUGIN_ROOT}/connectors/` (the four seed connectors github/aws/gcp/azure) with the full format in `${CLAUDE_PLUGIN_ROOT}/connectors/README.md`.
 
 ## Step 4 — Get the credential in place

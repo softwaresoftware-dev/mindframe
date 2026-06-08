@@ -8,6 +8,7 @@ connection:
   auth: aws-cli
   check: ["aws", "sts", "get-caller-identity"]
   account: ["aws", "sts", "get-caller-identity", "--query", "Arn", "--output", "text"]
+  docs: aws help
 ---
 Reach AWS through the `aws` CLI, which runs as the operator's configured profile/credentials.
 

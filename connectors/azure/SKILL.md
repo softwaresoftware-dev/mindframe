@@ -8,6 +8,7 @@ connection:
   auth: az-cli
   check: ["az", "account", "show"]
   account: ["az", "account", "show", "--query", "user.name", "-o", "tsv"]
+  docs: az --help
 ---
 Reach Azure through the `az` CLI, which runs as the logged-in user.
 

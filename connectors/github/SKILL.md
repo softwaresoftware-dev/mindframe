@@ -8,6 +8,7 @@ connection:
   auth: gh-cli
   check: ["gh", "auth", "status"]
   account: ["gh", "api", "user", "-q", ".login"]
+  docs: gh --help
 ---
 Reach GitHub through the `gh` CLI, which runs as the operator (it inherits their auth — no token needed here).
 

@@ -8,6 +8,7 @@ connection:
   auth: gcloud-cli
   check: ["gcloud", "auth", "print-access-token"]
   account: ["gcloud", "config", "get-value", "account"]
+  docs: gcloud --help
 ---
 Reach Google Cloud through the `gcloud` CLI, which runs as the active account.
 
