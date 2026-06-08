@@ -180,7 +180,7 @@ function vaultLastTouched(v) {
 //
 // Each hub satellite opens a drawer over the graph; these fill its body from the
 // the read-only system APIs (/api/events, /api/agents, /api/connections, …).
-// They reuse the sys-* row markup and helpers stateDot / statusBadge / parseTs.
+// They reuse the sys-* row markup and helpers statusBadge / parseTs.
 
 async function drawerMindframes(body) {
   try {
@@ -262,15 +262,16 @@ async function drawerConnections(body) {
     const j = await (await fetch("/api/connections")).json();
     const conns = j.connections || [];
     if (!conns.length) {
-      body.innerHTML = `<div class="empty"><p>No connections discovered. Authenticate a CLI
-        (<code>gh</code>, <code>gcloud</code>, <code>aws</code>) or connect an MCP, then reopen.</p></div>`;
+      body.innerHTML = `<div class="empty"><p>No connections yet. Connect an MCP, or add a
+        connector skill (a <code>SKILL.md</code> with a <code>connection:</code> block).</p></div>`;
       return;
     }
-    body.innerHTML = `<div class="sys-subhead">Reachable <span>${j.reachable}/${conns.length}</span></div>` +
+    // Presence only for now — live status (connected / needs-auth / account) is
+    // deferred, so this just lists what exists by name + kind.
+    body.innerHTML = `<div class="sys-subhead">Connections <span>${conns.length}</span></div>` +
       conns.map(c => `
         <div class="sys-row">
-          <span class="sys-row-main">${stateDot(c.state)}${escapeHtml(c.name)}<span class="sys-tag sys-tag-faint">${escapeHtml(c.kind)}</span></span>
-          <span class="sys-row-sub">${c.account ? `<span class="sys-faint">${escapeHtml(c.account)}</span>` : ""}</span>
+          <span class="sys-row-main">${escapeHtml(c.name)}<span class="sys-tag sys-tag-faint">${escapeHtml(c.kind)}</span></span>
         </div>`).join("");
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>connections error: ${escapeHtml(String(e))}</p></div>`;
@@ -493,7 +494,7 @@ const HUB_NODES = [
   { key: "mindframes",  label: "Mindframes",     hint: "live agent surfaces", render: drawerMindframes },
   { key: "knowledge",   label: "Knowledge base", hint: "what you know",       render: drawerKnowledge },
   { key: "agents",      label: "Agents",         hint: "what can run",        render: drawerAgents },
-  { key: "connections", label: "Connections",    hint: "reachable sources",   render: drawerConnections },
+  { key: "connections", label: "Connections",    hint: "mcps & connectors",   render: drawerConnections },
   { key: "events",      label: "Events",         hint: "wired routes",        render: drawerEvents },
 ];
 
@@ -586,7 +587,7 @@ async function loadHubCounts() {
   fetch("/api/frames").then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
   fetch("/api/vault").then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
   fetch("/api/agents").then(j).then(d => set("agents", `${d.running_count || 0}/${d.definition_count || 0}`)).catch(() => {});
-  fetch("/api/connections").then(j).then(d => set("connections", `${d.reachable || 0}/${(d.connections || []).length}`)).catch(() => {});
+  fetch("/api/connections").then(j).then(d => set("connections", `${(d.connections || []).length}`)).catch(() => {});
   fetch("/api/events").then(j).then(d => set("events", d.route_count || 0)).catch(() => {});
 }
 
@@ -772,16 +773,8 @@ async function pollHealth() {
 
 // ----- shared row helpers (used by the satellite drawers) -----
 //
-// stateDot / statusBadge / parseTs back the Agents, Connections, and Events
-// drawers. The standalone /system overview was deprecated 2026-06-08 — the
-// hub's drawers replaced every panel it had.
-
-const stateDot = (state) => {
-  const s = state === "connected" ? "ok"
-    : state === "needs-auth" ? "warn"
-    : state === "unknown" ? "faint" : "faint";
-  return `<span class="sys-dot sys-dot-${s}" title="${escapeHtml(state)}"></span>`;
-};
+// statusBadge / parseTs back the Agents drawer. The standalone /system overview
+// was deprecated 2026-06-08 — the hub's drawers replaced every panel it had.
 
 const statusBadge = (status) => {
   const map = { running: "ok", completed: "ok", pending: "warn",

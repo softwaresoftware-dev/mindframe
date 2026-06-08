@@ -44,6 +44,12 @@ Rules:
 
 `dashboard/server/server.py` → `_discover_connections()` scans the skill
 directories (`_skill_dirs()`), keeps every SKILL.md with a `connection:` block
-(`_connector_skills()`), probes each `check`, and merges the results with the MCPs
-Claude is connected to. `/api/connections` returns the union; the home hub's
-**Connections** node renders it.
+(`_connector_skills()`), and merges the results with the MCPs Claude is connected
+to. `/api/connections` returns the union; the home hub's **Connections** node
+renders it.
+
+**Live status is deferred.** Today the dashboard lists connections by presence
+only — it does *not* run the `check`/`account` commands, so there is no
+connected/needs-auth dot or identity label yet. The fields stay in the
+fingerprint (forward-compatible); re-enabling status means probing them again,
+in the background, off the request path.
