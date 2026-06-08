@@ -1,19 +1,17 @@
 // Mindframe dashboard SPA.
 //
-// Two views:
+// One view:
 //   /        → home: a hub graph — a central "New" node ringed by satellites
-//              (Mindframes, Knowledge base, Agents, Connections, Events,
-//              System). A satellite opens a drawer; the center spawns a
-//              launchpad mindframe (KB-grounded suggestions) in a new tab.
-//              Reached via /mindframe:open ("open up mindframe").
-//   /system  → structured overview of the whole bundle (events, agents,
-//              mindframes, skills+MCPs, knowledge bases)
+//              (Mindframes, Knowledge base, Agents, Connections, Events).
+//              A satellite opens a drawer; the center spawns a launchpad
+//              mindframe (KB-grounded suggestions) in a new tab. Reached via
+//              /mindframe:open ("open up mindframe"). The old /system overview
+//              was deprecated 2026-06-08 — the drawers replaced its panels.
 //
 // A mindframe is a surface (the agent owns one index.html it rewrites). Block-
 // stream rendering was removed 2026-06-04; per-mindframe viewing is rebuilt on
 // the surface model in a later migration step.
 
-const POLL_INTERVAL_MS = 3000;
 const HEALTH_POLL_MS = 15000;
 
 const $ = (id) => document.getElementById(id);
@@ -181,8 +179,8 @@ function vaultLastTouched(v) {
 // ----- Drawer renderers -----
 //
 // Each hub satellite opens a drawer over the graph; these fill its body from the
-// same read-only APIs the /system view uses. They reuse the sys-* row markup
-// (and helpers stateDot / statusBadge / parseTs, hoisted from the system block).
+// the read-only system APIs (/api/events, /api/agents, /api/connections, …).
+// They reuse the sys-* row markup and helpers stateDot / statusBadge / parseTs.
 
 async function drawerMindframes(body) {
   try {
@@ -483,9 +481,9 @@ async function openBrowseDialog() {
 // ===== Home: the mindframe hub graph =====
 //
 // The home is a node graph: a central "New" node ringed by satellites —
-// Mindframes, Knowledge base, Agents, Connections, Events, System. Clicking a
-// satellite opens a drawer over the graph (System routes to its own page);
-// clicking the center spawns a launchpad mindframe — an agent that surveys the
+// Mindframes, Knowledge base, Agents, Connections, Events. Clicking a
+// satellite opens a drawer over the graph; clicking the center spawns a
+// launchpad mindframe — an agent that surveys the
 // vault + connections and opens, in a new tab, a page of grounded suggestions
 // (add a watch, create an agent, start a working mindframe), each a button that
 // messages the agent to pursue it. Edges live in an SVG layer painted behind
@@ -497,7 +495,6 @@ const HUB_NODES = [
   { key: "agents",      label: "Agents",         hint: "what can run",        render: drawerAgents },
   { key: "connections", label: "Connections",    hint: "reachable sources",   render: drawerConnections },
   { key: "events",      label: "Events",         hint: "wired routes",        render: drawerEvents },
-  { key: "system",      label: "System",         hint: "the whole bundle",    href: "/system" },
 ];
 
 function renderHome() {
@@ -773,10 +770,11 @@ async function pollHealth() {
   }
 }
 
-// ----- System overview — structured map of the whole bundle -----
-
-const sysEmpty = (msg) => `<div class="sys-empty">${escapeHtml(msg)}</div>`;
-const sysErr = (e) => `<div class="sys-empty sys-empty-err">error: ${escapeHtml(String(e))}</div>`;
+// ----- shared row helpers (used by the satellite drawers) -----
+//
+// stateDot / statusBadge / parseTs back the Agents, Connections, and Events
+// drawers. The standalone /system overview was deprecated 2026-06-08 — the
+// hub's drawers replaced every panel it had.
 
 const stateDot = (state) => {
   const s = state === "connected" ? "ok"
@@ -792,176 +790,21 @@ const statusBadge = (status) => {
   return `<span class="sys-badge sys-badge-${s}">${escapeHtml(status)}</span>`;
 };
 
-async function fillEvents() {
-  try {
-    const j = await (await fetch("/api/events")).json();
-    $("sys-events-count").textContent = j.route_count;
-    const body = $("sys-events-body");
-    if (!j.dispatcher_present) {
-      body.innerHTML = sysEmpty("dispatcher not configured — no event routes.");
-      return;
-    }
-    if (!j.sources.length) {
-      body.innerHTML = sysEmpty("no routes yet. Add one with /dispatcher:route.");
-      return;
-    }
-    body.innerHTML = j.sources.map(s => `
-      <div class="sys-group">
-        <div class="sys-group-head">${escapeHtml(s.source)}</div>
-        ${s.routes.map(rt => `
-          <div class="sys-row">
-            <span class="sys-row-main">${escapeHtml(rt.event_type)}</span>
-            <span class="sys-row-sub">
-              <span class="sys-tgt sys-tgt-${escapeHtml(rt.target_kind)}">${escapeHtml(rt.target_kind)}</span>
-              <span class="mono">${escapeHtml(rt.target_name)}</span>
-            </span>
-          </div>`).join("")}
-      </div>`).join("");
-  } catch (e) { $("sys-events-body").innerHTML = sysErr(e); }
-}
-
 const parseTs = (s) => {
   if (!s) return Date.now();
   const t = new Date(s.replace(" ", "T") + (s.includes("Z") ? "" : "Z")).getTime();
   return Number.isFinite(t) ? t : Date.now();
 };
 
-async function fillAgents() {
-  try {
-    const j = await (await fetch("/api/agents")).json();
-    $("sys-agents-count").textContent = `${j.running_count} live · ${j.definition_count} def`;
-    const defs = (j.definitions || []).map(d => `
-      <div class="sys-row sys-row-stack">
-        <span class="sys-row-main">${escapeHtml(d.name)}
-          <span class="sys-tag">${escapeHtml(d.kind)}${d.model ? " · " + escapeHtml(d.model) : ""}</span>
-        </span>
-        <span class="sys-trigger-line">${(d.triggered_by || []).map(t =>
-          `<span class="sys-chip">↯ ${escapeHtml(t)}</span>`).join("") || '<span class="sys-faint">manual trigger</span>'}</span>
-      </div>`).join("") || sysEmpty("no recipes installed.");
-    const live = (j.live || []).map(a => `
-      <div class="sys-row">
-        <span class="sys-row-main">${a.live ? '<span class="sys-dot sys-dot-ok" title="tmux session live"></span>' : ""}${escapeHtml(a.name)}</span>
-        <span class="sys-row-sub">${statusBadge(a.status)}<span class="sys-faint">${relativeTime(parseTs(a.updated_at))}</span></span>
-      </div>`).join("") || sysEmpty("nothing running right now.");
-    $("sys-agents-body").innerHTML = `
-      <div class="sys-subhead">Definitions <span>${j.definition_count}</span></div>
-      ${defs}
-      <div class="sys-subhead">Live tasks <span>${j.running_count} live · ${j.live_count} shown</span></div>
-      ${live}`;
-  } catch (e) { $("sys-agents-body").innerHTML = sysErr(e); }
-}
-
-async function fillMindframes() {
-  try {
-    const j = await (await fetch("/api/frames")).json();
-    const frames = j.frames || [];
-    $("sys-frames-count").textContent = frames.length;
-    const body = $("sys-frames-body");
-    if (!frames.length) { body.innerHTML = sysEmpty("no surface mindframes yet."); return; }
-    body.innerHTML = frames.map(f => `
-      <a class="sys-row sys-row-link" href="/m/${encodeURIComponent(f.id)}">
-        <span class="sys-row-main"><span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>${escapeHtml(f.title)}</span>
-        <span class="sys-row-sub"><span class="sys-faint">${relativeTime(f.modified)}</span><span class="sys-open">→</span></span>
-      </a>`).join("");
-  } catch (e) { $("sys-frames-body").innerHTML = sysErr(e); }
-}
-
-async function fillCapabilities() {
-  try {
-    const j = await (await fetch("/api/capabilities")).json();
-    $("sys-caps-count").textContent = `${j.mcp_count} MCPs · ${j.skill_count} skills`;
-    const mcps = (j.mcps || []).map(m => `
-      <div class="sys-row">
-        <span class="sys-row-main">${stateDot(m.state)}${escapeHtml(m.name)}${m.bundle ? '<span class="sys-tag sys-tag-faint">bundle</span>' : ""}</span>
-      </div>`).join("") || sysEmpty("no MCPs connected.");
-    const skills = (j.skills || []).map(p => `
-      <div class="sys-group">
-        <div class="sys-group-head">${escapeHtml(p.plugin)} <span class="sys-faint">${escapeHtml(p.version)}</span></div>
-        <div class="sys-skill-chips">${p.skills.map(s =>
-          `<span class="sys-chip" title="${escapeHtml(s.description)}">${escapeHtml(s.name)}</span>`).join("")}</div>
-      </div>`).join("") || sysEmpty("no plugin skills found.");
-    $("sys-caps-body").innerHTML = `
-      <div class="sys-subhead">MCPs <span>${j.mcp_count}</span></div>
-      ${mcps}
-      <div class="sys-subhead">Skills <span>${j.skill_count}</span></div>
-      ${skills}`;
-  } catch (e) { $("sys-caps-body").innerHTML = sysErr(e); }
-}
-
-async function fillKnowledge() {
-  try {
-    const r = await fetch("/api/vault");
-    const v = await r.json();
-    const body = $("sys-kb-body");
-    if (!r.ok || v.error || !v.exists) {
-      $("sys-kb-count").textContent = "—";
-      body.innerHTML = sysEmpty("no knowledge base. Run /mindframe:setup.");
-      return;
-    }
-    $("sys-kb-count").textContent = v.total_entries;
-    const types = Object.entries(v.entry_counts || {})
-      .sort((a, b) => b[1] - a[1]).slice(0, 4)
-      .map(([t, n]) => `<span class="sys-chip">${escapeHtml(t)}: ${n}</span>`).join("");
-    body.innerHTML = `
-      <div class="sys-group">
-        <div class="sys-group-head">${escapeHtml(v.name)}
-          <span class="sys-tag sys-tag-faint">local</span>
-        </div>
-        <div class="sys-row-sub"><span class="sys-faint">${v.total_entries} entries · ${escapeHtml(vaultLastTouched(v))}</span></div>
-        <div class="sys-skill-chips">${types || '<span class="sys-faint">empty</span>'}</div>
-      </div>`;
-  } catch (e) { $("sys-kb-body").innerHTML = sysErr(e); }
-}
-
-async function renderSystem() {
-  root().innerHTML = `
-    <div class="system-wrap">
-      <div class="system-head">
-        <a class="back" href="/">← home</a>
-        <h1 class="system-title">System overview</h1>
-        <p class="system-sub">the live shape of your mindframe bundle</p>
-      </div>
-      <div class="sys-grid">
-        <section class="sys-card">
-          <div class="sys-card-head"><h2>Event sources</h2><span id="sys-events-count" class="count">…</span></div>
-          <div id="sys-events-body" class="sys-card-body"><div class="loading">loading…</div></div>
-        </section>
-        <section class="sys-card">
-          <div class="sys-card-head"><h2>Agents</h2><span id="sys-agents-count" class="count">…</span></div>
-          <div id="sys-agents-body" class="sys-card-body"><div class="loading">loading…</div></div>
-        </section>
-        <section class="sys-card">
-          <div class="sys-card-head"><h2>Mindframes</h2><span id="sys-frames-count" class="count">…</span></div>
-          <div id="sys-frames-body" class="sys-card-body"><div class="loading">loading…</div></div>
-        </section>
-        <section class="sys-card">
-          <div class="sys-card-head"><h2>Skills + MCPs</h2><span id="sys-caps-count" class="count">…</span></div>
-          <div id="sys-caps-body" class="sys-card-body"><div class="loading">loading…</div></div>
-        </section>
-        <section class="sys-card">
-          <div class="sys-card-head"><h2>Knowledge base</h2><span id="sys-kb-count" class="count">…</span></div>
-          <div id="sys-kb-body" class="sys-card-body"><div class="loading">loading…</div></div>
-        </section>
-      </div>
-    </div>`;
-
-  const refreshAll = () => {
-    fillEvents(); fillAgents(); fillMindframes(); fillCapabilities(); fillKnowledge();
-    setConn("ok", "system overview");
-  };
-  refreshAll();
-  return setInterval(refreshAll, POLL_INTERVAL_MS);
-}
-
 // ----- Router -----
 
 function route() {
-  const path = location.pathname;
-  if (path === "/system" || path === "/system/") {
-    renderSystem();
-  } else {
-    renderHome();
+  // /system was deprecated 2026-06-08 (the hub's drawers replaced it). Normalize
+  // any lingering /system link back to the home hub.
+  if (location.pathname.startsWith("/system")) {
+    history.replaceState(null, "", "/");
   }
+  renderHome();
 }
 
 pollHealth();
