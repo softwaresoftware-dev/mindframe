@@ -234,75 +234,102 @@ async function drawerKnowledge(body) {
   }
 }
 
-async function drawerAgents(body) {
+// ----- Domain spawns (a fresh mindframe per hub button) -----
+//
+// Agents / Connections / Events are NOT pages we hand-build. Each is a button
+// that spawns a fresh mindframe with a domain-focused prompt, then drops you
+// onto its surface so you WATCH it survey + compose. The only thing that makes
+// "Agents" different from "New" is the prompt — the special sauce below. Same
+// primitive (an agent that owns one page + a message box), same create flow as
+// the launchpad; just a narrower brief.
+
+// Shared spine every domain prompt drops into {body}: survey for real, compose
+// one calm page, make suggestions self-messaging buttons, gate irreversible
+// actions behind a pending-action confirm. {origin} is filled in at spawn time.
+const DOMAIN_SPINE = `
+
+HOW YOU WORK (every turn):
+- Survey for real before you draw anything — run the commands/APIs below, never guess. If something is unreachable, say so on the page rather than inventing.
+- Compose ONE calm page: the WHOLE index.html, all CSS inlined, the operator's second person ("you"/"your"), no emoji, no transcript/log — just the current state. Legible and scannable beats an exhaustive grid.
+- Lead with what matters: surface PROBLEMS first if there are any, then what exists, then what to do next.
+- Make every suggestion a button that messages THIS mindframe so you carry it out. Use EXACTLY this (the page is served at /api/frame/<id>/page; swapping /page for /message hits this frame):
+  <button onclick="fetch(location.pathname.replace('/page','/message'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'A CLEAR INSTRUCTION TO YOU'})}).then(function(r){this.disabled=true;this.textContent='on it…'}.bind(this)).catch(function(){this.textContent='failed — use the message box below'}.bind(this))">Button label</button>
+- Anything irreversible or outward-facing (writing/removing a recipe or route, killing a task, sending anything): draw it as a PENDING ACTION showing exactly what you'll do, and wait for the operator to confirm in a message first. After any change, re-survey and rewrite the page.
+- Never declare yourself done. End with a clear next step or question; the message box stays open. Compose your page now.`;
+
+const DOMAIN_PROMPTS = {
+  agents: {
+    title: "Agents",
+    composing: "surveying your recipes and live tasks",
+    prompt: `You are the AGENTS view. The operator opened you to see and manage what can run for them — agent recipes (templates an event can spawn) and the live taskpilot tasks running now. Show them what they have, flag anything in trouble, and suggest what to do.
+
+SURVEY: GET {origin}/api/agents for the aggregated view (recipes + live tasks, each task's status and age). Go deeper where it matters: list ~/.dispatcher/recipes and read a recipe.yaml; note any task marked crashed/stale.
+SHOW + JUDGE: your recipes (what CAN run, and which event triggers each) and your live tasks (what IS running). Flag problems plainly: a crashed task, a long-running zombie, a recipe no event ever triggers (dead weight), a recipe that targets a tool you aren't connected to. If nothing is wrong, say so and suggest one useful agent to add.
+SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never fires — wire or remove it", "you have Calendar connected but no meeting-prep agent — create one". Creating an agent means authoring a recipe at ~/.dispatcher/recipes/<name>/recipe.yaml.`,
+  },
+  connections: {
+    title: "Connections",
+    composing: "probing your MCPs, CLIs, and connectors",
+    prompt: `You are the CONNECTIONS view. The operator opened you to see and manage what their mindframe can reach — MCPs Claude is connected to, authed CLIs (gh/gcloud/aws/az), and connector skills (a SKILL.md carrying a connection: fingerprint). Show what's connected, flag what's broken, and suggest what to connect next.
+
+SURVEY: GET {origin}/api/connections for the list. Probe real status yourself: run "claude mcp list" (look for Connected vs needs-auth vs failed), "gh auth status", "gcloud auth list", "aws sts get-caller-identity" where those CLIs exist.
+SHOW + JUDGE: group by kind (CLIs, MCP servers, connectors). Flag problems plainly: an MCP that's down or failed to start, a connection that needs auth. Healthy ones can be quiet; broken ones should stand out.
+SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the finance MCP is down — diagnose it", or, if everything's healthy, an obvious useful tool they haven't connected. Connecting means walking them through the tool's auth (an MCP, a CLI login, or authoring a connector SKILL.md) and verifying it.`,
+  },
+  events: {
+    title: "Event sources",
+    composing: "reading your dispatcher routes",
+    prompt: `You are the EVENT SOURCES view. The operator opened you to see and manage what wakes an agent — dispatcher routes in ~/.dispatcher/channels.yaml, each mapping (source, event_type) to spawn:<recipe> or session:<name>. Show their routes, flag anything wrong, and suggest what to wire.
+
+SURVEY: GET {origin}/api/events for the routes grouped by source. Cross-check the source of truth: read ~/.dispatcher/channels.yaml and list ~/.dispatcher/recipes. Also GET {origin}/api/connections to see which tools are connected but not yet wired.
+SHOW + JUDGE: your routes, grouped by source, each showing what it spawns. Flag problems plainly: a route pointing at a recipe that doesn't exist, a connected tool with no route (events passing by unused), or no routes at all.
+SUGGEST (grounded, as buttons): e.g. "you have GitHub connected but nothing watches it — prep me when a PR opens", "Slack is connected but no mention wakes an agent". Wiring a source means adding a route to ~/.dispatcher/channels.yaml mapping (source, event_type) to spawn:<recipe> (creating the recipe too if it doesn't exist yet).`,
+  },
+};
+
+// Spawn a fresh mindframe for a domain and land on its surface so the operator
+// watches it compose. Shows an immediate "spawning" screen (the create call
+// blocks ~16s while tmux launches), then navigates to /m/<id>, where the
+// surface's placeholder → cognition log → composed page IS the "being created".
+let _spawnPending = false;
+async function openDomain(key) {
+  const d = DOMAIN_PROMPTS[key];
+  if (!d || _spawnPending) return;
+  _spawnPending = true;
+  renderSpawning(d.title, d.composing);
   try {
-    const j = await (await fetch("/api/agents")).json();
-    const defs = (j.definitions || []).map(d => `
-      <div class="sys-row sys-row-stack">
-        <span class="sys-row-main">${escapeHtml(d.name)}
-          <span class="sys-tag">${escapeHtml(d.kind)}${d.model ? " · " + escapeHtml(d.model) : ""}</span></span>
-        <span class="sys-trigger-line">${(d.triggered_by || []).map(t =>
-          `<span class="sys-chip">↯ ${escapeHtml(t)}</span>`).join("") || '<span class="sys-faint">manual trigger</span>'}</span>
-      </div>`).join("") || `<div class="sys-empty">no recipes installed.</div>`;
-    const live = (j.live || []).map(a => `
-      <div class="sys-row">
-        <span class="sys-row-main">${a.live ? '<span class="sys-dot sys-dot-ok"></span>' : ""}${escapeHtml(a.name)}</span>
-        <span class="sys-row-sub">${statusBadge(a.status)}<span class="sys-faint">${relativeTime(parseTs(a.updated_at))}</span></span>
-      </div>`).join("") || `<div class="sys-empty">nothing running right now.</div>`;
-    body.innerHTML = `
-      <div class="sys-subhead">Definitions <span>${j.definition_count}</span></div>${defs}
-      <div class="sys-subhead">Live <span>${j.running_count} live · ${j.live_count} shown</span></div>${live}`;
+    const r = await fetch("/api/frames/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: (d.prompt + DOMAIN_SPINE).replace(/\{origin\}/g, location.origin),
+        title: d.title,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) { showToast(`couldn't spawn ${d.title}: ${j.error || r.statusText}`, "err"); route(); return; }
+    if (j.spawn && j.spawn !== "ok") {
+      showToast(`spawned, but the agent didn't start: ${j.spawn_result?.error || "see logs"}`, "warn");
+    }
+    location.href = j.url;   // /m/<id> — watch it compose on the surface
   } catch (e) {
-    body.innerHTML = `<div class="empty"><p>agents error: ${escapeHtml(String(e))}</p></div>`;
+    showToast(`network error: ${e.message}`, "err");
+    route();
+  } finally {
+    _spawnPending = false;
   }
 }
 
-async function drawerConnections(body) {
-  try {
-    const j = await (await fetch("/api/connections")).json();
-    const conns = j.connections || [];
-    if (!conns.length) {
-      body.innerHTML = `<div class="empty"><p>No connections yet. Connect an MCP, or add a
-        connector skill (a <code>SKILL.md</code> with a <code>connection:</code> block).</p></div>`;
-      return;
-    }
-    // Presence only for now — live status (connected / needs-auth / account) is
-    // deferred, so this just lists what exists by name + kind.
-    body.innerHTML = `<div class="sys-subhead">Connections <span>${conns.length}</span></div>` +
-      conns.map(c => `
-        <div class="sys-row">
-          <span class="sys-row-main">${escapeHtml(c.name)}<span class="sys-tag sys-tag-faint">${escapeHtml(c.kind)}</span></span>
-        </div>`).join("");
-  } catch (e) {
-    body.innerHTML = `<div class="empty"><p>connections error: ${escapeHtml(String(e))}</p></div>`;
-  }
-}
-
-async function drawerEvents(body) {
-  try {
-    const j = await (await fetch("/api/events")).json();
-    if (!j.dispatcher_present) {
-      body.innerHTML = `<div class="empty"><p>dispatcher not configured — no event routes.</p></div>`;
-      return;
-    }
-    if (!j.sources.length) {
-      body.innerHTML = `<div class="empty"><p>no routes yet. Add one with <code>/dispatcher:route</code>.</p></div>`;
-      return;
-    }
-    body.innerHTML = j.sources.map(s => `
-      <div class="sys-group">
-        <div class="sys-group-head">${escapeHtml(s.source)}</div>
-        ${s.routes.map(rt => `
-          <div class="sys-row">
-            <span class="sys-row-main">${escapeHtml(rt.event_type)}</span>
-            <span class="sys-row-sub">
-              <span class="sys-tgt sys-tgt-${escapeHtml(rt.target_kind)}">${escapeHtml(rt.target_kind)}</span>
-              <span class="mono">${escapeHtml(rt.target_name)}</span></span>
-          </div>`).join("")}
-      </div>`).join("");
-  } catch (e) {
-    body.innerHTML = `<div class="empty"><p>events error: ${escapeHtml(String(e))}</p></div>`;
-  }
+// Immediate full-screen "spawning" state so the click feels alive while the
+// create call runs. Replaced by the surface once the frame id comes back.
+function renderSpawning(title, sub) {
+  root().innerHTML = `
+    <div class="spawning">
+      <div class="spawning-pulse"></div>
+      <p class="spawning-title">Spawning your ${escapeHtml(title)} mindframe…</p>
+      <p class="spawning-sub">${escapeHtml(sub)}</p>
+    </div>`;
+  setConn("ok", "spawning");
 }
 
 // Type → color palette for graph nodes. Stable per type so the same kind
@@ -493,9 +520,12 @@ async function openBrowseDialog() {
 const HUB_NODES = [
   { key: "mindframes",  label: "Mindframes",     hint: "live agent surfaces", render: drawerMindframes },
   { key: "knowledge",   label: "Knowledge base", hint: "what you know",       render: drawerKnowledge },
-  { key: "agents",      label: "Agents",         hint: "what can run",        render: drawerAgents },
-  { key: "connections", label: "Connections",    hint: "mcps & connectors",   render: drawerConnections },
-  { key: "events",      label: "Events",         hint: "wired routes",        render: drawerEvents },
+  // Agents / Connections / Events each spawn a fresh mindframe with a
+  // domain-focused prompt (DOMAIN_PROMPTS) — you watch it compose, then talk
+  // to it. Same primitive as "New", just a narrower brief.
+  { key: "agents",      label: "Agents",         hint: "what can run",        domain: "agents" },
+  { key: "connections", label: "Connections",    hint: "mcps & connectors",   domain: "connections" },
+  { key: "events",      label: "Events",         hint: "wired routes",        domain: "events" },
 ];
 
 function renderHome() {
@@ -541,12 +571,11 @@ function buildHubNodes() {
   for (const n of HUB_NODES) {
     const node = el("button", { class: "hub-node hub-sat", type: "button", "data-key": n.key }, [
       el("span", { class: "hub-node-label" }, n.label),
-      // Navigate-only nodes (href) have no live count — skip the placeholder dot.
-      el("span", { class: "hub-node-count", id: `hub-count-${n.key}` }, n.href ? "" : "·"),
+      el("span", { class: "hub-node-count", id: `hub-count-${n.key}` }, "·"),
       el("span", { class: "hub-node-hint" }, n.hint),
     ]);
     node.addEventListener("click", () => {
-      if (n.href) { location.href = n.href; return; }
+      if (n.domain) { openDomain(n.domain); return; }
       openDrawer(n);
     });
     wrap.appendChild(node);

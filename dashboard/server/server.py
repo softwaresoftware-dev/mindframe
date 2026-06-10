@@ -239,6 +239,62 @@ def _mint_frame_id(n: int = 10) -> str:
     return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(n))
 
 
+async def _spawn_surface_frame(mid: str, title: str, prompt: str,
+                              spawned_by: dict[str, Any]) -> dict[str, Any]:
+    """Mint frames/<mid>, drop the 'composing…' placeholder + meta.json, and
+    spawn the owning agent via the taskpilot daemon. Shared by the random-id
+    create path and the singleton manager. Caller has already chosen `mid`,
+    confirmed it is free, and verified the daemon is reachable. mkdir raises
+    FileExistsError if the dir appeared since (caller decides what that means)."""
+    fdir = FRAMES_ROOT / mid
+    fdir.mkdir(parents=True, mode=0o755)   # no exist_ok: surface a lost race to the caller
+    index = fdir / "index.html"
+    safe_title = title.replace("&", "&amp;").replace("<", "&lt;")
+    index.write_text(
+        "<!doctype html><meta charset=utf-8><title>composing…</title>"
+        "<body style='margin:0;height:100vh;display:grid;place-items:center;"
+        "font:16px system-ui;color:#888;background:#0d0d0f'>"
+        f"<div style='text-align:center'>Composing this mindframe…<br>"
+        f"<small style='color:#555'>{safe_title}</small></div>",
+        "utf-8",
+    )
+    (fdir / "meta.json").write_text(json.dumps({
+        "id": mid, "title": title, "task_id": mid, "status": "active",
+        "prompt": prompt, "spawned_by": spawned_by,
+    }, indent=2), "utf-8")
+
+    brief = MINDFRAME_BRIEF.format(index=str(index), prompt=prompt.strip())
+    # create_and_spawn blocks ~16s while tmux launches; allow generous headroom.
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"{TASKPILOT_DAEMON}/tasks/create_and_spawn",
+                json={"name": mid, "description": brief, "cwd": str(fdir)},
+            )
+    except httpx.HTTPError as e:
+        return {"id": mid, "url": f"/m/{mid}", "spawn": "error", "error": f"spawn failed: {e}"}
+    if r.status_code >= 300:
+        return {"id": mid, "url": f"/m/{mid}", "spawn": "error",
+                "spawn_result": {"ok": False, "error": f"daemon {r.status_code}: {r.text[:400]}"}}
+    try:
+        spawn_result = r.json()
+    except ValueError:
+        spawn_result = {"ok": False, "error": (r.text or "no spawner output")[:400]}
+    return {"id": mid, "url": f"/m/{mid}",
+            "spawn": "ok" if spawn_result.get("ok") else "error",
+            "spawn_result": spawn_result}
+
+
+async def _daemon_reachable() -> bool:
+    """True if the taskpilot (agent-spawning) daemon answers a health probe."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            health = await client.get(f"{TASKPILOT_DAEMON}/health")
+        return health.status_code < 300
+    except httpx.HTTPError:
+        return False
+
+
 class CreateMindframe(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=4000)
     title: str | None = None
@@ -254,69 +310,24 @@ async def create_mindframe(body: CreateMindframe) -> Response:
     Returns the new id + url so the SPA can open /m/<id> immediately."""
     # Probe the daemon before minting a frame dir, so a down spawner doesn't
     # leave an orphan frame behind (mirrors the old pre-mint availability check).
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            health = await client.get(f"{TASKPILOT_DAEMON}/health")
-        if health.status_code >= 300:
-            raise httpx.HTTPError(f"health {health.status_code}")
-    except httpx.HTTPError:
+    if not await _daemon_reachable():
         return JSONResponse(
             {"error": "taskpilot daemon (agent-spawning) not reachable — can't spawn a mindframe agent."},
             status_code=503)
 
     for _ in range(5):
         mid = _mint_frame_id()
-        fdir = FRAMES_ROOT / mid
-        if not fdir.exists():
+        if not (FRAMES_ROOT / mid).exists():
             break
     else:
         return JSONResponse({"error": "could not mint a unique frame id"}, status_code=500)
+
+    title = (body.title or body.prompt.strip().split("\n", 1)[0])[:120]
     try:
-        fdir.mkdir(parents=True, mode=0o755)
+        result = await _spawn_surface_frame(mid, title, body.prompt, {"kind": "dashboard"})
     except OSError as e:
         return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
-
-    index = fdir / "index.html"
-    title = (body.title or body.prompt.strip().split("\n", 1)[0])[:120]
-    safe_title = title.replace("&", "&amp;").replace("<", "&lt;")
-    index.write_text(
-        "<!doctype html><meta charset=utf-8><title>composing…</title>"
-        "<body style='margin:0;height:100vh;display:grid;place-items:center;"
-        "font:16px system-ui;color:#888;background:#0d0d0f'>"
-        f"<div style='text-align:center'>Composing this mindframe…<br>"
-        f"<small style='color:#555'>{safe_title}</small></div>",
-        "utf-8",
-    )
-    (fdir / "meta.json").write_text(json.dumps({
-        "id": mid, "title": title, "task_id": mid, "status": "active",
-        "prompt": body.prompt, "spawned_by": {"kind": "dashboard"},
-    }, indent=2), "utf-8")
-
-    brief = MINDFRAME_BRIEF.format(index=str(index), prompt=body.prompt.strip())
-    # create_and_spawn blocks ~16s while tmux launches; allow generous headroom.
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                f"{TASKPILOT_DAEMON}/tasks/create_and_spawn",
-                json={"name": mid, "description": brief, "cwd": str(fdir)},
-            )
-    except httpx.HTTPError as e:
-        return JSONResponse({"id": mid, "url": f"/m/{mid}",
-                             "spawn": "error", "error": f"spawn failed: {e}"})
-    if r.status_code >= 300:
-        return JSONResponse({
-            "id": mid, "url": f"/m/{mid}", "spawn": "error",
-            "spawn_result": {"ok": False, "error": f"daemon {r.status_code}: {r.text[:400]}"},
-        })
-    try:
-        spawn_result = r.json()
-    except ValueError:
-        spawn_result = {"ok": False, "error": (r.text or "no spawner output")[:400]}
-    return JSONResponse({
-        "id": mid, "url": f"/m/{mid}",
-        "spawn": "ok" if spawn_result.get("ok") else "error",
-        "spawn_result": spawn_result,
-    })
+    return JSONResponse(result)
 
 
 # --------------------------- mindframe surface (viewing) ---------------------------
