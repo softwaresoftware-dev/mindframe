@@ -60,7 +60,9 @@ Produces: `softwaresoftware` resolver loaded and callable as a skill. Ready for 
 
 Inside Claude Code, with `softwaresoftware` now loaded.
 
-**Step 2.1 — run the resolver.** Agent invokes the `softwaresoftware:install` skill (callable directly, since it's a plugin skill not a built-in slash command) with target `mindframe`. The resolver probes the host, picks providers for `agent-spawning`, `session-mesh`, `knowledge-base`, `event-routing`, `browser-automation`, and (optional) `notification`, installs in dependency order, starts daemons. (The Surface — the dashboard — ships inside mindframe; it is not a resolved capability.)
+**Step 2.1 — run the resolver.** Agent invokes the `softwaresoftware:install` skill (callable directly, since it's a plugin skill not a built-in slash command) with target `mindframe`. The resolver probes the host, picks providers for `agent-spawning`, `session-mesh`, `event-routing`, `browser-automation`, and `daemon`, installs in dependency order, starts daemons. (The Surface — the dashboard — ships inside mindframe; it is not a resolved capability. Notification is not a bundle capability; agents fall back to a file artifact when no notification tool is present.)
+
+> **Prerequisite — `uv`.** The softwaresoftware resolver runs its MCP server via `uv run python server.py`. On a machine without `uv`, that MCP silently fails to connect and the resolver can't run — `claude plugin install softwaresoftware` reports success but Step 2.1 then dead-ends. PHASE 1 ensures `uv` is installed (`command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh`) before this step.
 
 **Step 2.2 — reload plugins.** Agent asks the operator to type `/reload-plugins` so mindframe's own skills (`/mindframe:setup`, `/mindframe:doctor`) are available. Second unavoidable manual step.
 

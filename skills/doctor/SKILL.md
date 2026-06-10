@@ -44,7 +44,6 @@ The bundle is `mindframe` plus the providers bound to its required capabilities.
 | `session-mesh` | session-bridge | yes |
 | `event-routing` | dispatcher | yes |
 | `browser-automation` | claude-browser-bridge | yes |
-| `notification` | a `notify-*` provider | yes (skills degrade to file fallback) |
 | `daemon` | daemon-manager | yes |
 
 Two layers mindframe owns directly are **not** resolved capabilities but still
@@ -59,7 +58,7 @@ For each capability, record one row: provider name, installed version, and state
 /softwaresoftware:install mindframe
 ```
 
-which re-resolves and installs the whole bundle. A missing **optional** `notification` provider is a warning, not a failure — agents fall back to writing an artifact file (`docs/interfaces.md` §8).
+which re-resolves and installs the whole bundle. Notification is **not** a bundle capability — when an agent wants to notify a human and no notification tool is available, it falls back to writing an artifact file (`docs/interfaces.md` §8); that is the expected path, never a finding.
 
 ### [check 3/7] runtime — daemons & agents
 
@@ -137,12 +136,11 @@ mindframe doctor — <deployment_name>
   knowledge (vault)    ok        vault dir, schema.yaml (12 entities), CATALOG.md current
   event-routing        BROKEN    recipe 'calendar-reader': required brief key {{window}} unfilled
   surface (dashboard)  warn      daemon installed, dashboard not running (never started)
-  notification         warn      no notify-* provider — skills will use file fallback
   ...
 
   healed:   2   (re-probed, confirmed)
   broken:   1   (needs operator — see below)
-  warn:     2
+  warn:     1
   unknown:  0
 ```
 
