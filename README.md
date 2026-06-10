@@ -1,43 +1,64 @@
 # mindframe
 
-Gives an organization a knowledge base of how it works, and AI agents that act
-on it. Mindframe builds the knowledge base from the systems a team already uses
-(Slack, GitHub, Gmail, infrastructure), then runs agents that turn that
-knowledge into work: reports and reviews, incident triage, answers to "how does
-X actually work here."
-
-Mindframe is **manifest-first**: it ships skills, the customer-domain
-knowledge-base schema (`docs/kb-schema.md`), and a `requires` list. The work is
-done by the layers it composes. The one exception is the **Surface** (the
-dashboard), which mindframe owns and ships directly.
-
-## The stack
-
-Six runtime layers, each a plugin or MCP bound by capability (except the Surface):
-
-| Layer | What runs it |
-|---|---|
-| **Surface** | the dashboard (`dashboard/`) — one server for every mindframe |
-| **Agent runtime** | `taskpilot` — tmux-backed `claude`, fed over the Mesh |
-| **Event ingress** | `dispatcher` (`:8911`) — dedupe, route, spawn |
-| **Knowledge** | the vault at `~/.mindframe/vault` *(under redesign)* |
-| **Mesh** | `session-bridge` (`:8910`) — agent↔agent↔human |
-| **Perception** | `claude-browser-bridge` + adopt-on-install MCPs |
-
-See [`CLAUDE.md`](CLAUDE.md) for the layer table with state and providers, and
-[`docs/architecture.md`](docs/architecture.md) for the full reference.
+Mindframe gives an organization a knowledge base of how it works and AI agents
+that act on it. It installs a six-layer agentic stack as one Claude Code plugin
+bundle: a local web dashboard (the Surface) hosting persistent agents that each
+own one live HTML page, an agent runtime, an event router, a plain-files
+knowledge vault, a session mesh, and browser-based perception. Everything runs
+locally, on the operator's Claude Code subscription, with no API keys and no
+stored third-party credentials.
 
 ## Commands
 
-- `/mindframe:setup` — onboarding. A terminal bootstrap births the operator's
-  first mindframe, which runs the rest of setup inside the Surface: probes the
-  environment, inherits the operator's identity, assembles and bootstraps the
-  vault, and wires the first event.
-- `/mindframe:doctor` — diagnose and heal the bundle. Walks every layer, checks
-  for missing capabilities, dead daemons, and broken config, fixes what is safe,
-  and reports the rest with evidence.
+| Command | What it does |
+|---|---|
+| `/mindframe:setup` | Onboard a deployment — a terminal bootstrap births your first mindframe, which runs the rest of setup inside the web surface. |
+| `/mindframe:open` | Open the mindframe home (the hub graph) in your browser, starting the dashboard daemon if needed. |
+| `/mindframe:connect <service>` | Research the best way into a tool (MCP / CLI / API / SQL / browser), author the connector, and verify it. |
+| `/mindframe:doctor` | Diagnose and heal the bundle — probe every daemon and config, fix what's safe, report the rest with evidence. |
 
-A mindframe agent does the work directly — interactively in its surface, or per
-event via a dispatcher recipe an operator wires. Mindframe ships no pre-built
-workflow artifacts. See [`docs/`](docs/) for the product overview, architecture,
-and interfaces.
+## Install
+
+```
+claude plugin marketplace add softwaresoftware-dev/softwaresoftware-plugins
+claude plugin install softwaresoftware@softwaresoftware-plugins
+```
+
+Then, inside Claude Code:
+
+```
+/softwaresoftware:install mindframe
+```
+
+The resolver installs the bundle's providers (agent-spawning, session-mesh,
+event-routing, browser-automation, daemon) in dependency order. Run
+`/mindframe:setup` to onboard.
+
+## Tests
+
+```bash
+python3 -m pytest dashboard/tests/ tests/e2e_wire/ tests/e2e_fresh/
+```
+
+Three tiers: `dashboard/tests/` (unit — vault graph), `tests/e2e_wire/`
+(Tier 1 — hermetic surface-API wire tests against a stub taskpilot daemon),
+`tests/e2e_fresh/` (Tier 3 — fresh-install invariants + dashboard boot). CI
+runs all three on Linux/macOS/Windows × Python 3.11/3.12.
+
+## Operations
+
+- **Uninstall:** `/softwaresoftware:uninstall mindframe` removes the bundle
+  and any dependencies no other plugin needs.
+- **Vault:** your knowledge base lives at `~/.mindframe/vault` as plain
+  Markdown files. Back it up by copying the directory or putting it under git.
+- **Security:** the dashboard binds `127.0.0.1` only and is unauthenticated by
+  design — never expose it beyond localhost. See
+  [`docs/interfaces.md`](docs/interfaces.md#9-security-posture).
+
+## Docs
+
+[`docs/product.md`](docs/product.md) — what it is and who it's for.
+[`docs/architecture.md`](docs/architecture.md) — the six layers in depth.
+[`docs/interfaces.md`](docs/interfaces.md) — the contracts between layers.
+[`docs/kb-schema.md`](docs/kb-schema.md) — the knowledge-base schema *(under redesign)*.
+[`docs/onboarding-ux.md`](docs/onboarding-ux.md) — the setup UX model.

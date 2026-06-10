@@ -89,10 +89,11 @@ fi
 
 ## What the operator sees
 
-The home is a **node graph**: a central **New** node ringed by satellites —
-Mindframes, Knowledge base, Agents, Connections, Events, and System. Clicking a
-satellite opens a panel for that domain; clicking the center starts a new
-mindframe. Each satellite shows a live count.
+The home is a **node graph**: a central **New** node ringed by five
+satellites — Mindframes, Knowledge base, Agents, Connections, and Events.
+Mindframes and Knowledge base open a drawer; Agents, Connections, and Events
+spawn a domain mindframe; clicking the center starts a new mindframe. Each
+satellite shows a live count.
 
 Close with one line: the home URL and that it is open — e.g. "Mindframe is open
 at http://127.0.0.1:5174/." Nothing more unless something failed.

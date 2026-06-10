@@ -26,5 +26,7 @@ jobs:
           pip install pytest -r dashboard/server/requirements.txt
       - name: dashboard unit tests
         run: python -m pytest dashboard/tests/ -v
+      - name: tier-1 surface-api wire tests
+        run: python -m pytest tests/e2e_wire/ -v
       - name: tier-3 fresh-install invariants
         run: python -m pytest tests/e2e_fresh/ -v

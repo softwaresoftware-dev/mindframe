@@ -40,27 +40,40 @@ def test_setup_brief_sed_is_clean(tmp_path):
     assert frame_dir in filled, "__FRAME_DIR__ was never present to substitute"
 
 
-# --------------------------- PHASE 1/2: install-outline contract ---------------------------
+# --------------------------- PHASE 1/2: install.txt contract ---------------------------
+#
+# setup/install.txt is the repo source of truth for the hosted
+# https://mindframe.softwaresoftware.dev/install.txt (deployed verbatim).
 
-def test_install_outline_documents_uv_prereq():
-    """The outline must document the uv prerequisite — without uv the resolver's
+def test_install_txt_documents_uv_prereq():
+    """install.txt must carry the uv prerequisite — without uv the resolver's
     MCP silently fails to connect and PHASE 2 dead-ends. Regression: the hard
     blocker that made fresh installs fail at the resolver."""
-    out = (ROOT / "docs" / "install-outline.md").read_text()
-    assert "astral.sh/uv" in out, "uv install command not documented in the outline"
+    out = (ROOT / "setup" / "install.txt").read_text()
+    assert "astral.sh/uv" in out, "uv install command not documented in install.txt"
     assert re.search(r"\buv\b", out), "uv prerequisite not mentioned"
 
 
-def test_install_outline_drops_notification_from_resolved_capabilities():
+def test_install_txt_capability_list_drops_notification():
     """notification was retired as a bundle capability (its provider repos were
-    private and never cloned on a fresh box). It must not be listed among the
-    providers the resolver picks for mindframe."""
-    out = (ROOT / "docs" / "install-outline.md").read_text()
-    # only the provider list itself — between "picks providers for" and "installs
-    # in dependency order" — not the later prose that explains notification is gone.
-    m = re.search(r"picks providers for(.*?)installs in dependency order", out, re.DOTALL)
-    assert m, "couldn't find the resolver provider list in the outline"
-    assert "notification" not in m.group(1).lower(), "notification is back in the resolver provider list"
+    private and never cloned on a fresh box). PHASE 2's capability list must
+    not include it."""
+    out = (ROOT / "setup" / "install.txt").read_text()
+    m = re.search(r"resolves the capability graph \(([^)]*)\)", out)
+    assert m, "couldn't find the PHASE 2 capability list in install.txt"
+    assert "notification" not in m.group(1).lower(), "notification is back in the capability list"
+
+
+def test_install_txt_never_runs_skills_via_bash():
+    """Skills are invoked in-session, not shelled out. Regression: PHASE 2 used
+    to say 'Run via Bash: /softwaresoftware:install mindframe', which a
+    literal-minded install agent executes as a shell command and fails."""
+    out = (ROOT / "setup" / "install.txt").read_text()
+    for line_no, line in enumerate(out.splitlines(), 1):
+        if "Run via Bash" in line:
+            window = "\n".join(out.splitlines()[line_no - 1:line_no + 4])
+            assert "/softwaresoftware:" not in window, \
+                f"install.txt line {line_no}: a slash-command is labelled 'Run via Bash'"
 
 
 def test_doctor_does_not_require_notification():
@@ -104,6 +117,10 @@ def test_dashboard_boots_and_serves(tmp_path):
         "PORT": str(port),
         "HOME": str(tmp_path),  # isolate frames/vault under the tmp home
         "MINDFRAME_FRAMES_ROOT": str(tmp_path / "frames"),
+        # Changing HOME drops pip --user site-packages from the child's import
+        # path; propagate this interpreter's sys.path so the server finds its
+        # deps wherever they're installed (user-site, venv, or system).
+        "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
     }
     proc = subprocess.Popen(
         [sys.executable, str(server_py)],

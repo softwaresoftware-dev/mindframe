@@ -8,9 +8,8 @@
 //              /mindframe:open ("open up mindframe"). The old /system overview
 //              was deprecated 2026-06-08 — the drawers replaced its panels.
 //
-// A mindframe is a surface (the agent owns one index.html it rewrites). Block-
-// stream rendering was removed 2026-06-04; per-mindframe viewing is rebuilt on
-// the surface model in a later migration step.
+// A mindframe is a surface: the agent owns one index.html it rewrites in
+// place. Per-mindframe viewing lives in surface.html, served at /m/<id>.
 
 const HEALTH_POLL_MS = 15000;
 
@@ -45,111 +44,6 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
 
-// Tiny inline markdown — enough for text blocks. Handles: # headings,
-// **bold**, *italic*, `inline code`, ```fenced code```, - lists, paragraphs,
-// [text](url). Not GFM-complete; agents writing complex markdown should use
-// a code block.
-function renderMarkdown(src) {
-  const lines = String(src ?? "").split("\n");
-  const out = [];
-  let inCode = false, codeLang = "", codeBuf = [];
-  let inList = false, paraBuf = [];
-
-  const flushPara = () => {
-    if (paraBuf.length) {
-      out.push("<p>" + inlineMd(paraBuf.join(" ")) + "</p>");
-      paraBuf = [];
-    }
-  };
-  const flushList = () => {
-    if (inList) { out.push("</ul>"); inList = false; }
-  };
-
-  for (const raw of lines) {
-    if (inCode) {
-      if (raw.startsWith("```")) {
-        out.push(`<pre class="md-code"><code class="lang-${escapeHtml(codeLang)}">${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
-        inCode = false; codeLang = ""; codeBuf = [];
-      } else {
-        codeBuf.push(raw);
-      }
-      continue;
-    }
-    if (raw.startsWith("```")) {
-      flushPara(); flushList();
-      inCode = true; codeLang = raw.slice(3).trim();
-      continue;
-    }
-    const h = raw.match(/^(#{1,4})\s+(.+)$/);
-    if (h) {
-      flushPara(); flushList();
-      const lvl = h[1].length;
-      out.push(`<h${lvl} class="md-h md-h${lvl}">${inlineMd(h[2])}</h${lvl}>`);
-      continue;
-    }
-    const li = raw.match(/^[-*]\s+(.+)$/);
-    if (li) {
-      flushPara();
-      if (!inList) { out.push("<ul class=\"md-list\">"); inList = true; }
-      out.push(`<li>${inlineMd(li[1])}</li>`);
-      continue;
-    }
-    if (raw.trim() === "") {
-      flushPara(); flushList();
-      continue;
-    }
-    flushList();
-    paraBuf.push(raw);
-  }
-  flushPara(); flushList();
-  if (inCode) {
-    out.push(`<pre class="md-code"><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
-  }
-  return out.join("\n");
-}
-
-function inlineMd(s) {
-  // Escape first, then re-introduce only the markers we recognize.
-  let html = escapeHtml(s);
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code class="md-icode">$1</code>');
-  // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // Italic (single * not adjacent to space)
-  html = html.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
-  // Links [text](url) — url is escaped already
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" rel="noopener">$1</a>');
-  return html;
-}
-
-// ----- window.mindframe.postEvent — called by button-row blocks -----
-
-window.mindframe = {
-  async postEvent(event_type, data) {
-    if (!event_type || typeof event_type !== "string") {
-      showToast("postEvent: event_type required", "err");
-      return { ok: false };
-    }
-    try {
-      const r = await fetch("/api/dashboard-event", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event_type, data: data ?? null }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        showToast(`event failed: ${j.error || r.statusText}`, "err");
-        return { ok: false, ...j };
-      }
-      showToast(`dispatched → ${event_type}`, "ok");
-      return { ok: true, ...j };
-    } catch (e) {
-      showToast(`event failed: ${e}`, "err");
-      return { ok: false };
-    }
-  },
-};
-
 // ----- el(): generic DOM builder helper -----
 
 function el(tag, attrs = {}, children = []) {
@@ -178,9 +72,9 @@ function vaultLastTouched(v) {
 
 // ----- Drawer renderers -----
 //
-// Each hub satellite opens a drawer over the graph; these fill its body from the
-// the read-only system APIs (/api/events, /api/agents, /api/connections, …).
-// They reuse the sys-* row markup and helpers statusBadge / parseTs.
+// The Mindframes and Knowledge-base satellites open a drawer over the graph;
+// these fill its body from the read-only APIs (/api/frames, /api/vault). The
+// other satellites spawn domain mindframes instead (see DOMAIN_PROMPTS).
 
 async function drawerMindframes(body) {
   try {
@@ -351,10 +245,10 @@ function loadVisNetwork() {
     if (window.vis && window.vis.Network) return resolve(window.vis);
     const css = document.createElement("link");
     css.rel = "stylesheet";
-    css.href = "https://unpkg.com/vis-network/styles/vis-network.css";
+    css.href = "https://unpkg.com/vis-network@9.1.9/styles/vis-network.css";
     document.head.appendChild(css);
     const s = document.createElement("script");
-    s.src = "https://unpkg.com/vis-network/standalone/umd/vis-network.min.js";
+    s.src = "https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js";
     s.onload = () => resolve(window.vis);
     s.onerror = () => reject(new Error("failed to load vis-network from CDN"));
     document.head.appendChild(s);
@@ -799,24 +693,6 @@ async function pollHealth() {
     $("dispatcher-state").textContent = "dispatcher: down";
   }
 }
-
-// ----- shared row helpers (used by the satellite drawers) -----
-//
-// statusBadge / parseTs back the Agents drawer. The standalone /system overview
-// was deprecated 2026-06-08 — the hub's drawers replaced every panel it had.
-
-const statusBadge = (status) => {
-  const map = { running: "ok", completed: "ok", pending: "warn",
-    crashed: "err", killed: "faint" };
-  const s = map[status] || "faint";
-  return `<span class="sys-badge sys-badge-${s}">${escapeHtml(status)}</span>`;
-};
-
-const parseTs = (s) => {
-  if (!s) return Date.now();
-  const t = new Date(s.replace(" ", "T") + (s.includes("Z") ? "" : "Z")).getTime();
-  return Number.isFinite(t) ? t : Date.now();
-};
 
 // ----- Router -----
 

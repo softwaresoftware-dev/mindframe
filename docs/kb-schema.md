@@ -2,6 +2,8 @@
 
 The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer — a plain local directory of notes, populated at setup and by the mindframe agents that read and write it.
 
+> **Status:** descriptive of today's vault. The Knowledge layer is under redesign in a separate effort — treat this schema as current, not final.
+
 ## What this document is
 
 This document is the **library**, not the contract.
@@ -393,7 +395,7 @@ These hold for every vault, driven by its `schema.yaml` — never a hardcoded li
 Validation has two homes:
 
 - **Runtime — the writer.** The vault is written by setup's bootstrap and by mindframe agents as they work; each checks its notes against `schema.yaml` before writing, so validation happens at write time. There is no separate curator agent — every writer is responsible for conformance.
-- **Development — a regression test (planned).** The invariants are defined here and enforced by each writer at write time. A fixture-vault test inside mindframe — well-formed and intentionally broken vaults run through the checks under `make test` — is a tracked follow-up. (It previously lived in the `knowledge-base` plugin, archived 2026-06-06; the vault is now owned directly by mindframe, so the test belongs in mindframe's suite when it lands.) Until then, the invariants are pinned by this document and by the writers, not by an automated suite.
+- **Development — a regression test (planned).** A fixture-vault test inside mindframe's pytest suite — well-formed and intentionally broken vaults run through the checks — is a tracked follow-up. Until it lands, the invariants are pinned by this document and by the writers, not by an automated suite.
 
 ## Bootstrap
 

@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Grep, Glob, Edit, Write, AskUserQuestion
 
 # Mindframe — Doctor
 
-You are mindframe's self-diagnostic skill. The bundle is a set of plugins held together by capabilities (see `docs/interfaces.md` §1). Your job: check every component, name each problem with the literal probe output, heal what is safe to heal, and hand the operator a clear report of what is left.
+You are mindframe's self-diagnostic skill. The bundle is a set of plugins held together by capabilities (see `docs/interfaces.md`). Your job: check every component, name each problem with the literal probe output, heal what is safe to heal, and hand the operator a clear report of what is left.
 
 Mindframe is manifest-first — so is this skill. Walk the bundle's `requires` list; each capability is one check. The evidence rule from `/mindframe:setup` holds here too: **never report a component `ok` without naming the probe that proved it, never report it `broken` without the literal failure output, and never fabricate a probe result.** A check that cannot run is `unknown` — with the reason — not `ok`.
 
@@ -36,7 +36,7 @@ The vault is **not configurable** — it always lives at `~/.mindframe/vault`. R
 
 ### [check 2/7] inventory the bundle
 
-The bundle is `mindframe` plus the providers bound to its required capabilities. From `docs/interfaces.md` §1 the contract is:
+The bundle is `mindframe` plus the providers bound to its required capabilities. From `docs/interfaces.md` the contract is:
 
 | Capability | Default provider | Required? |
 |---|---|---|
@@ -58,27 +58,29 @@ For each capability, record one row: provider name, installed version, and state
 /softwaresoftware:install mindframe
 ```
 
-which re-resolves and installs the whole bundle. Notification is **not** a bundle capability — when an agent wants to notify a human and no notification tool is available, it falls back to writing an artifact file (`docs/interfaces.md` §8); that is the expected path, never a finding.
+which re-resolves and installs the whole bundle. Notification is **not** a bundle capability — when an agent wants to notify a human and no notification tool is available, it falls back to writing an artifact file (`docs/interfaces.md`); that is the expected path, never a finding.
 
 ### [check 3/7] runtime — daemons & agents
 
-The bundle ships a live healthcheck. Run it first; it covers the critical daemons in one pass:
+Probe the bundle's daemons directly, one HTTP health check each:
 
 ```bash
-bash tests/e2e/live/healthcheck.sh
+curl -sf -m 5 http://127.0.0.1:8911/api/health   # dispatcher (event-routing)
+curl -sf -m 5 http://127.0.0.1:8910/health       # session-bridge (session-mesh)
+curl -sf -m 5 http://127.0.0.1:8912/health       # taskpilot (agent-spawning)
 ```
 
-It probes `dispatcher-ingress` (`/api/health`), `session-bridge` (port listening), the systemd `--user` units, and `tmux`. Parse its `[ OK ]` / `[FAIL]` / `[warn]` lines into findings.
+Also confirm `tmux` is on PATH (`command -v tmux`) — the agent runtime is tmux-backed — and cross-check the daemon registry with the `daemon` capability (intent: "list managed daemons and their status"; daemon-manager exposes list/start/stop/status). A daemon the registry says is running but whose health probe fails is the finding; record the literal curl exit/output.
 
-For each `[FAIL]` daemon, **heal Tier 1**: restart it. Use the `daemon` capability — intent: "restart the `<unit>` daemon" (daemon-manager exposes start/stop/status; systemd `--user` units can be restarted with `systemctl --user restart <unit>`). After a restart, re-run the relevant probe from `healthcheck.sh` and confirm it now passes. If a daemon will not come up, capture the last lines of its log (`journalctl --user -u <unit> -n 30 --no-pager`) into the finding and downgrade to Tier 2.
+For each failed probe, **heal Tier 1**: restart it via the `daemon` capability — intent: "restart the `<name>` daemon". After a restart, re-run the same curl and confirm it now passes. If a daemon will not come up, capture the last lines of its stderr log (`~/.claude/daemons/<name>.stderr.log`; on Linux with systemd `--user` units, `journalctl --user -u <unit> -n 30 --no-pager` also works) into the finding and downgrade to Tier 2.
 
 Then check the agent runtime itself:
 
-- **taskpilot** — list running tasks (intent: "list taskpilot tasks and their status"). A `service`-kind agent in a crash-loop is a finding; report its task id and last log lines. Stale task dirs under `~/.taskpilot/` for tasks that exited cleanly are cosmetic — note, don't heal.
+- **taskpilot** — list running tasks (intent: "list taskpilot tasks and their status"). Every task is one-shot — there are no service-kind agents. A task stuck in `running` with a dead tmux session, or a `crashed` task that backs a live mindframe, is a finding; report its task id and last log lines. Stale task dirs under `~/.taskpilot/` for tasks that exited cleanly are cosmetic — note, don't heal.
 - **session mesh** — three failure modes, three different fixes. Probe in order; stop at the first that triggers.
 
   1. **Daemon not installed.** No `session-bridge` entry from `daemon_list`, and `curl -sf http://127.0.0.1:8910/health` fails (connection refused). The plugin is enabled but the bundled daemon was never registered with `daemon-manager`. This is the new-install footgun: channel.mjs loads, then silently fails every mesh call. **Tier 2** — the right fix is `/session-bridge:setup`, which creates the daemon venv, registers with `daemon-manager`, and installs autostart. Calling `daemon_start` blind without the venv will crash on the next reboot, so do *not* heal automatically. Report this, point to `/session-bridge:setup`, and stop healing the mesh.
-  2. **Daemon installed but not running.** `daemon_list` shows a `session-bridge` row with `running=false`. **Tier 1** — call `daemon_start` (the on-disk config from a prior install is reused; no args needed). Re-probe `/health`; if it still fails, capture the last 30 lines of `~/.claude/daemons/session-bridge.err.log` into the finding and downgrade to Tier 2.
+  2. **Daemon installed but not running.** `daemon_list` shows a `session-bridge` row with `running=false`. **Tier 1** — call `daemon_start` (the on-disk config from a prior install is reused; no args needed). Re-probe `/health`; if it still fails, capture the last 30 lines of `~/.claude/daemons/session-bridge.stderr.log` into the finding and downgrade to Tier 2.
   3. **Daemon running but the mesh is empty when this session is in it.** `/health` returns 200, `daemon_list` shows running, but listing sessions returns nothing or omits this one. The daemon is wedged or this session's channel registration was dropped. **Tier 1** — bounce it: `daemon_stop` then `daemon_start`; channel.mjs's 30s heartbeat will re-register. If the mesh is still empty after one heartbeat cycle, ask the operator to `/reload-plugins`.
 
   Independent of which branch fires, treat `has_autostart=false` on an otherwise-healthy `session-bridge` row as a **Tier 2 warning** — the mesh works now but will be dead after the next reboot. Fix: `daemon_install_autostart(daemon_name="session-bridge")`. Same treatment for any other bundle daemon (`mindframe-dashboard`, `dispatcher-ingress`) with `has_autostart=false`.
@@ -88,7 +90,7 @@ Then check the agent runtime itself:
 Against `VAULT` from check 1 (skip with an `unknown` finding if check 1 was blocked):
 
 - **Directory.** `$VAULT` must exist as a directory. The vault is a plain local directory (not a git repo) — there are no commit/clean checks. Missing → Tier 2: the fix is `/mindframe:setup`, which creates it.
-- **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML. It is the deployment's contract (`docs/interfaces.md` §5). Missing → Tier 2: the fix is `/mindframe:setup` step 4 (assemble the schema); do not write `schema.yaml` yourself.
+- **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML. It is the deployment's contract (`docs/interfaces.md`). Missing → Tier 2: the fix is `/mindframe:setup` step 4 (assemble the schema); do not write `schema.yaml` yourself.
 - **Catalog.** `$VAULT/CATALOG.md` should exist with one section per entity type declared in `schema.yaml`. Missing or stale (an entity-type directory exists with notes but has no catalog section) → Tier 1: regenerate `CATALOG.md` from the directories the schema declares, then re-probe.
 - **Schema drift.** For each entity-type directory under the vault, confirm the type is declared in `schema.yaml`. A directory of notes for an *undeclared* type is drift — Tier 2 finding (writers are expected to validate against the schema; an undeclared type means notes were written bypassing it). Report the directory and note count; don't delete anything.
 - **Population.** The vault is owned directly by mindframe (plain files, no external provider). If the directory exists but is empty of notes, that's a "setup incomplete" warning, not a break.
@@ -97,31 +99,28 @@ Against `VAULT` from check 1 (skip with an `unknown` finding if check 1 was bloc
 
 The dispatcher daemon health was covered in check 3. Here, validate its **config**, which lives outside the bundle at `~/.dispatcher/` (`DISPATCHER_DIR`):
 
-- **`channels.yaml`** must exist and parse as YAML. Each route needs a `source`; a `spawn:` target needs a `brief:` block (`docs/interfaces.md` §3).
-- **Recipe contract.** Run the bundle's shared checker against the live config:
+- **`channels.yaml`** must exist and parse as YAML (verify with `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" ~/.dispatcher/channels.yaml`). Each route needs a `source` and a `target`.
+- **Recipe contract.** Check it inline against the live config — no shipped checker:
+  1. For every route whose `target` is `spawn:<name>`, the directory `~/.dispatcher/recipes/<name>/` must exist and contain a parseable `recipe.yaml`.
+  2. For each such pair, every `{{placeholder}}` appearing in the recipe's brief template must be fillable from the route's `brief:` block (or the event payload, per the recipe's own declarations). An undeclared required placeholder is a finding; name the recipe and the key.
 
-  ```bash
-  python3 tests/e2e/recipe_contract.py ~/.dispatcher/channels.yaml ~/.dispatcher/recipes
-  ```
-
-  It verifies every `{{placeholder}}` in each `brief.json` is declared in `brief_schema` and every required placeholder is fillable. A non-zero exit is a finding — the checker prints the offending recipe and key.
-
-  Heal tier depends on the failure: a **typo** in a route key or a brief value matching a known-good shape (compare against `tests/e2e/fixtures/channels-good.yaml`) is Tier 1 — fix it with `Edit`, re-run the checker. A **missing recipe directory** or an **unfillable required placeholder** is Tier 2 — report it; the operator owns the routing intent.
+  Heal tier depends on the failure: an obvious **typo** in a route key (a `target` naming a recipe that exists under a near-identical name, a misspelled `source`) is Tier 1 — fix it with `Edit`, re-parse to confirm. A **missing recipe directory** or an **unfillable required placeholder** is Tier 2 — report it; the operator owns the routing intent.
 
 - **Audit log.** If `dispatcher-ingress` is healthy, pull a recent error summary (intent: "get the dispatcher event summary by status" — `GET /api/events/summary`). A spike in `failed` / `spawn-failed` / `exception` is a finding worth surfacing even though doctor can't fix the root cause; include the counts and point at `GET /api/events?status=failed` for detail.
 
 ### [check 6/7] dashboard
 
-The dashboard is the one app mindframe owns directly (`dashboard/`, served by a FastAPI backend — `docs/interfaces.md` §9).
+The dashboard is the one app mindframe owns directly (`dashboard/`, served by a FastAPI backend — `docs/interfaces.md`).
 
-- If it is meant to be running, probe `GET /api/health` on its port → expect `{ ok, port, agentId, daemons }`. No response → Tier 1: restart its daemon, re-probe.
+- Find its port: the `mindframe-dashboard` daemon's registration (daemon capability), the `PORT` env in its config, or the default `5174`. Probe `GET /api/health` → expect `{ ok, port, dispatcher_url, dispatcher_bearer_present }`. No response → Tier 1: restart the `mindframe-dashboard` daemon, re-probe.
+- `dispatcher_bearer_present: false` is a **Tier 2 warning**: agent-page action buttons that go through `/api/dashboard-event` will 503 until a bearer exists at `~/.mindframe/secrets/dispatcher-bearer.token`. Don't generate one yourself — that's a setup step.
 - Confirm `dashboard/public/` has the static frontend and the backend dependencies are installed (`dashboard/README.md` has the run contract). A dashboard that was never started is a warning, not a break — note it and move on.
 
 ### [check 7/7] skills & perception
 
-- **Skills.** For each skill under `skills/` (currently `setup`, `doctor`), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
-- **Perception MCPs.** `claude-browser-bridge` plus the adopt-first MCPs (`github`, `sentry`, `gcp-logging`, `grafana`, `slack`). For each, report registered / not-registered from the `mcpServers` keys in settings. These are mostly informational — an agent degrades gracefully when one is absent (`docs/interfaces.md` §8) — but a Sentry-driven deployment with no Sentry MCP *and* no Sentry CLI is worth flagging Tier 2.
-- **Hermetic tests.** Optionally run `make test` to confirm the plugin's own manifest/contract tests still pass — a quick regression signal. Report pass/fail; don't heal test failures.
+- **Skills.** For each skill under `skills/` (currently `setup`, `doctor`, `open`, `connect`), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
+- **Perception.** `claude-browser-bridge` plus whatever MCPs and connector skills the operator has adopted. Report what `/api/connections` (or `claude mcp list` plus a scan of `~/.claude/skills/*/SKILL.md` for `connection:` fingerprints) discovers. These are informational — an agent degrades gracefully when one is absent — but a deployment whose wired event routes depend on a tool that is no longer reachable is worth flagging Tier 2.
+- **Hermetic tests.** If this is a dev checkout with pytest available, optionally run `python3 -m pytest dashboard/tests/ tests/e2e_fresh/ -q` as a regression signal. Report pass/fail; don't heal test failures. Skip silently on an installed deployment without pytest.
 
 ### report
 
@@ -157,8 +156,6 @@ Then, for every `BROKEN` / Tier-2 row, give the **exact** remedy — the command
 
 ## Reference
 
-- `docs/interfaces.md` — subsystem contracts: capability (§1), dispatcher API (§2), channels.yaml (§3), recipe contract (§4), knowledge base (§5), agent runtime (§6), session mesh (§7), notification (§8), dashboard API (§9).
+- `docs/interfaces.md` — the contracts between layers: dispatcher API, channels.yaml, the recipe contract, the agent-runtime spawn interface, the mesh tools, and the dashboard API.
 - `docs/kb-schema.md` — the KB meta-schema and the `schema.yaml` manifest format.
-- `tests/e2e/live/healthcheck.sh` — the daemon health probe doctor wraps in check 3.
-- `tests/e2e/recipe_contract.py` — the recipe-brief contract checker used in check 5.
-- `skills/setup/SKILL.md` — the onboarding wizard; doctor points the operator back to it for Tier-2 setup gaps.
+- `skills/setup/SKILL.md` — the onboarding flow; doctor points the operator back to it for Tier-2 setup gaps.

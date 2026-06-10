@@ -38,8 +38,9 @@ Capability → provider for each layer:
 | Mesh | `session-mesh` | `session-bridge` |
 | Perception | `browser-automation` | `claude-browser-bridge` + adopted MCPs |
 
-`notification` is an optional capability agents use to notify a human; it is not a
-layer.
+`notification` is **not** a bundle capability. An agent that wants to notify a
+human uses whatever notification tool is available and falls back to writing an
+artifact file if none is.
 
 ## How a request flows
 
@@ -55,9 +56,9 @@ external event ──▶ Event ingress (dispatcher :8911)
                                                 │
                           ┌─────────────────────┼─────────────────────┐
                           ▼                     ▼                      ▼
-                      Knowledge            Perception            output channel
-                      (the vault)          (browser-bridge       (notification
-                                            + adopted MCPs)        capability)
+                      Knowledge            Perception              output
+                      (the vault)          (browser-bridge       (artifact; notify
+                                            + adopted MCPs)       if a tool exists)
 ```
 
 The interactive path is the same runtime, entered from the top: the operator
@@ -72,8 +73,8 @@ box; the Surface serves the page and proxies messages. There is no second
 - **Manifest-first.** Bundle composition lives in `requires`. The only business
   logic mindframe owns is the Surface (`dashboard/`).
 - **Every layer is a plugin or an MCP**, bound by capability. Skills reference a
-  capability by intent ("send a notification"), never by provider name, so any
-  provider is swappable per customer.
+  capability by intent ("spawn a long-running agent"), never by provider name,
+  so any provider is swappable per customer.
 - **The Mesh is the agent transport.** `taskpilot` does not type into the TUI;
   it POSTs the prompt and every message to `session-bridge :8910/sessions/<id>/message`.
   Agent runtime and Mesh are coupled by this.
@@ -93,8 +94,11 @@ These act *on* the stack rather than being part of it:
 - **Setup** — `/mindframe:setup`. A terminal bootstrap births the operator's
   first mindframe, which runs onboarding inside the Surface: it probes the
   environment, inherits the operator's identity, assembles the vault schema,
-  bootstraps the vault, and wires the first event. Model in
-  `docs/onboarding-ux.md`; flow in the hosted `install.txt` and `setup/brief.md`.
+  bootstraps the vault, and surfaces the first signal (event wiring is a later
+  chapter, driven from the surface). Model in
+  `docs/onboarding-ux.md`; flow in `setup/install.txt` (the repo source of
+  truth, deployed verbatim to https://mindframe.softwaresoftware.dev/install.txt)
+  and `setup/brief.md`.
 - **Doctor** — `/mindframe:doctor`. Walks the `requires` list capability by
   capability, probes each provider, heals safe issues, reports the rest with
   evidence.
@@ -122,7 +126,9 @@ These act *on* the stack rather than being part of it:
 - `docs/onboarding-ux.md` — the setup UX model: agent-led onboarding, the
   connections model (live discovery, not a catalog), and the surface model (one
   HTML page the agent rewrites + a message box).
-- `docs/install-outline.md` — the phase-by-phase structure of `install.txt`.
+- `setup/install.txt` — the canonical install + setup flow. Source of truth for
+  the hosted https://mindframe.softwaresoftware.dev/install.txt (deployed
+  verbatim).
 - `setup/brief.md` — the setup mindframe's standing brief (a template
   `install.txt` fills in).
 - `skills/setup/`, `skills/doctor/`, `skills/open/`, `skills/connect/` — the
@@ -134,8 +140,10 @@ These act *on* the stack rather than being part of it:
   file). Nothing is pre-shipped — connectors are authored per operator.
 - `dashboard/` — the Surface: FastAPI server (`server/server.py`) + SPA
   (`public/`). See `dashboard/README.md`.
-- `tests/e2e_wire/` (Tier 1, hermetic), `tests/e2e_real/` (Tier 2, live-agent),
-  `tests/e2e_fresh/` (Tier 3, native fresh-install).
+- `dashboard/tests/` (unit — vault graph), `tests/e2e_wire/` (Tier 1, hermetic
+  surface-API wire tests with a stub taskpilot daemon), `tests/e2e_fresh/`
+  (Tier 3, fresh-install invariants + dashboard boot). CI
+  (`.github/workflows/test.yml`) runs all three on 3 OS × py3.11/3.12.
 
 ## Knowledge layer — redesign in progress
 

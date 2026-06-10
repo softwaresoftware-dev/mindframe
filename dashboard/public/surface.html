@@ -296,8 +296,14 @@
                             { cache: 'no-store' }).then(x => x.json());
       if (r.file !== actFile) { actFile = r.file; actOffset = 0; }
       actOffset = r.offset;
-      if (typeof r.mtime === 'number' && r.mtime > 0) lastMtime = r.mtime;
-      if (r.events && r.events.length) { r.events.forEach(appendLog); lastActAt = Date.now(); }
+      // Liveness comes from the transcript's mtime — a server-side fact — not
+      // from when replayed events happen to arrive in this tab. A first-load
+      // replay of an old transcript must not light up "working…".
+      if (typeof r.mtime === 'number' && r.mtime > 0) {
+        lastMtime = r.mtime;
+        lastActAt = r.mtime * 1000;
+      }
+      if (r.events && r.events.length) r.events.forEach(appendLog);
       if (waiting && lastMtime > mtimeAtSend) sawActSinceSent = true;
       if (r.model) setMeta(r.model, r.context);
       saveLog();
@@ -305,6 +311,13 @@
     if (waiting && !warned && sentAt && Date.now() - sentAt > 40000 && !sawActSinceSent) {
       appendLog({ kind: 'warn', label: 'No response yet — the mindframe agent may not be running. Try resending.' });
       warned = true;
+      waiting = false; send.disabled = false;   // "try resending" needs a usable Send
+    }
+    // The agent can finish a turn by replying in the log without rewriting the
+    // page — don't hold Send hostage to a rev change. Responded + gone idle
+    // means the turn is over.
+    if (waiting && sawActSinceSent && Date.now() - lastActAt > 8000) {
+      waiting = false; send.disabled = false;
     }
     setActive(waiting || (Date.now() - lastActAt < 6000));
   }

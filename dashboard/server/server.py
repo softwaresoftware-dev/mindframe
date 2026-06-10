@@ -20,7 +20,7 @@ Endpoints:
   - GET  /api/frame/<id>/activity          — tail the agent's cognition log
   - POST /api/dashboard-event              — proxy to dispatcher (server holds the bearer)
   - GET  /api/vault[/entries|/graph]       — the single knowledge-base vault
-  - GET  /api/sources, /api/connections    — known-source catalog + live discovery
+  - GET  /api/connections                  — live connection discovery
   - GET  /api/events, /api/agents          — read-only system endpoints
   - GET  /artifacts/<id>/<path>            — serve a frame's sibling files
   - GET  /<path>                           — SPA fallback
@@ -37,12 +37,11 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-
-import sys
 
 import httpx
 import uvicorn
@@ -59,15 +58,11 @@ ARTIFACTS_ROOT = ROOT / "artifacts"
 WEB_ROOT = ROOT / "public"
 FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".mindframe" / "frames")))
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
 
 # The single, static knowledge-base vault. Not configurable — the dashboard and
 # the skills hardcode the same path. Mindframe owns this vault directly.
 VAULT_DIR = Path.home() / ".mindframe" / "vault"
 
-
-# Plugin libs (lib/*.py) live one level above the dashboard.
-sys.path.insert(0, str(ROOT.parent))
 
 PORT = int(os.environ.get("PORT", "5174"))
 
@@ -119,11 +114,12 @@ def _warm_connections_loop() -> None:
     takes ~7s, so a cold /api/connections blocks the home page's count for that
     long. Refreshing just under the TTL means the endpoint is virtually always a
     cache hit (instant); the slow probe runs here, off the request path."""
-    import threading  # noqa: F401  (kept local so module import stays light)
     while True:
         try:
-            _conn_cache["data"] = _discover_connections()
-            _conn_cache["at"] = time.time()
+            data = _discover_connections()
+            with _conn_lock:
+                _conn_cache["data"] = data
+                _conn_cache["at"] = time.time()
         except Exception as e:  # never let the warmer die
             log(f"connections warm failed: {e}")
         time.sleep(max(5.0, _CONN_TTL_S - 5.0))
@@ -135,7 +131,6 @@ async def lifespan(app: FastAPI):
     ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
     log(f"server on http://127.0.0.1:{PORT}")
     log(f"artifacts: {ARTIFACTS_ROOT}")
-    import threading
     threading.Thread(target=_warm_connections_loop, daemon=True).start()
     yield
 
@@ -469,7 +464,12 @@ def frame_rev(mid: str) -> Response:
     if fdir is None:
         return JSONResponse({"error": "mindframe not found"}, status_code=404)
     index = fdir / "index.html"
-    rev = index.stat().st_mtime_ns if index.is_file() else 0
+    try:
+        rev = index.stat().st_mtime_ns
+    except OSError:
+        # The agent may rewrite/delete index.html between an is_file() check
+        # and the stat — treat any race as "no revision yet".
+        rev = 0
     return JSONResponse({"rev": rev})
 
 
@@ -1069,208 +1069,25 @@ def build_vault_graph(path: Path, name: str, limit: int = 500) -> dict:
     }
 
 
-# --------------------------- data sources panel ---------------------------
-#
-# Mirror of the vaults panel. Surfaces every event-source the operator could
-# connect — what's wired up, what's pending creds, when each last pulled
-# successfully. Reads from:
-#
-#   - ~/.mindframe/credentials/<source>.json         — connected accounts
-#   - ~/.dispatcher/channels.yaml                    — static routes
-#   - dispatcher /sources/status (when running)      — live sync state
-#
-# The known-source catalog is intentionally hardcoded for now: it's the
-# user-facing menu of "things you can connect," not a live discovery of
-# what dispatcher adapters happen to be loaded. Adding a new source means
-# adding a row here AND building an adapter — the registry is for humans.
-
-KNOWN_SOURCES = [
-    {
-        "id": "github",
-        "name": "GitHub",
-        "icon": "github",
-        "description": "Repos, issues, PRs, releases, webhooks.",
-        "credential_kinds": ["gh-cli", "pat"],
-    },
-    {
-        "id": "google-drive",
-        "name": "Google Drive",
-        "icon": "drive",
-        "description": "Docs, Sheets, Slides, meeting recordings + transcripts (via Meet).",
-        "credential_kinds": ["oauth"],
-    },
-    {
-        "id": "google-calendar",
-        "name": "Google Calendar",
-        "icon": "calendar",
-        "description": "Meetings, attendees, recurrence.",
-        "credential_kinds": ["oauth"],
-    },
-    {
-        "id": "slack",
-        "name": "Slack",
-        "icon": "slack",
-        "description": "Channel messages, threads, reactions, files.",
-        "credential_kinds": ["bot-token", "oauth"],
-    },
-    {
-        "id": "confluence",
-        "name": "Confluence",
-        "icon": "confluence",
-        "description": "Pages, spaces, comments — Atlassian wiki.",
-        "credential_kinds": ["api-token"],
-    },
-    {
-        "id": "sentry",
-        "name": "Sentry",
-        "icon": "sentry",
-        "description": "Errors, performance, releases — incident triage.",
-        "credential_kinds": ["auth-token"],
-    },
-    {
-        "id": "pagerduty",
-        "name": "PagerDuty",
-        "icon": "pagerduty",
-        "description": "Incidents, on-call rotations, schedules.",
-        "credential_kinds": ["api-key"],
-    },
-    {
-        "id": "gmail",
-        "name": "Gmail",
-        "icon": "gmail",
-        "description": "Inbox, labels, filters — email triage signal.",
-        "credential_kinds": ["oauth"],
-    },
-]
-
-
-def _credentials_dir() -> Path:
-    """The directory where per-source credential blobs live (~/.mindframe/credentials)."""
-    return Path.home() / ".mindframe" / "credentials"
-
-
-def _source_status(source_id: str) -> dict:
-    """Per-source connection + sync status. Cheap, side-effect-free."""
-    creds_dir = _credentials_dir()
-    cred_path = creds_dir / f"{source_id}.json"
-    connected = cred_path.exists()
-    status: dict = {
-        "connected": connected,
-        "credential_path": str(cred_path) if connected else None,
-    }
-    if connected:
-        try:
-            stat = cred_path.stat()
-            status["credential_mtime"] = datetime.fromtimestamp(
-                stat.st_mtime, tz=timezone.utc
-            ).isoformat()
-            # Peek for an account label without leaking the token.
-            try:
-                blob = json.loads(cred_path.read_text())
-                for key in ("account", "user", "email", "login", "workspace"):
-                    if key in blob and isinstance(blob[key], str):
-                        status["account"] = blob[key]
-                        break
-                if "scope" in blob and isinstance(blob["scope"], str):
-                    # Drive OAuth stores space-separated scopes
-                    status["scopes"] = blob["scope"].split()
-            except (json.JSONDecodeError, OSError):
-                pass
-        except OSError:
-            pass
-    # TODO: when dispatcher exposes /sources/status, fold last_sync + lag
-    # in here. For now we only know "do creds exist."
-    return status
-
-
-@app.get("/api/sources")
-def list_sources() -> Response:
-    """Catalog of data sources mindframe can ingest from + per-source connection state."""
-    creds_dir = _credentials_dir()
-    creds_dir.mkdir(parents=True, exist_ok=True)
-    sources = []
-    for src in KNOWN_SOURCES:
-        sources.append({**src, **_source_status(src["id"])})
-    connected_count = sum(1 for s in sources if s["connected"])
-    return JSONResponse({
-        "sources": sources,
-        "connected": connected_count,
-        "total": len(sources),
-    })
-
-
-@app.post("/api/sources/{source_id}/connect")
-def connect_source(source_id: str) -> Response:
-    """Stub: kick off the per-source connection flow. For now, return the slash
-    command the operator should run. Future: spawn an OAuth-driving agent the
-    way share/accept do — browser-bridge handles consent screens, then writes
-    the token blob to ~/.mindframe/credentials/<source>.json.
-    """
-    known = next((s for s in KNOWN_SOURCES if s["id"] == source_id), None)
-    if not known:
-        return JSONResponse({"error": f"unknown source: {source_id}"}, status_code=404)
-    # The connect-source agent isn't built yet. Be honest: hand the operator
-    # the credential file path + format and let them paste a token in
-    # manually. When the agent ships, this returns spawn:add-source instead.
-    cred_path = _credentials_dir() / f"{source_id}.json"
-    examples = {
-        "github": '{"token": "ghp_..."}  // or run `gh auth login` (mindframe will detect it)',
-        "google-drive": '{"access_token": "...", "refresh_token": "...", "client_id": "...", "client_secret": "..."}',
-        "google-calendar": '{"access_token": "...", "refresh_token": "...", "client_id": "...", "client_secret": "..."}',
-        "slack": '{"bot_token": "xoxb-...", "workspace": "your-workspace"}',
-        "confluence": '{"base_url": "https://your.atlassian.net", "email": "you@team.com", "api_token": "..."}',
-        "sentry": '{"auth_token": "...", "org": "your-org-slug"}',
-        "pagerduty": '{"api_key": "...", "user_email": "you@team.com"}',
-        "gmail": '{"access_token": "...", "refresh_token": "...", "client_id": "...", "client_secret": "..."}',
-    }
-    example = examples.get(source_id, '{}')
-    return JSONResponse({
-        "status": "manual",
-        "source": known,
-        "credential_path": str(cred_path),
-        "example_blob": example,
-        "instructions": (
-            f"The agent-driven OAuth/credential flow for {known['name']} hasn't shipped yet. "
-            f"For now, create the file {cred_path} with this shape:\n\n{example}\n\n"
-            "Then click refresh."
-        ),
-    })
-
-
-@app.post("/api/sources/{source_id}/disconnect")
-def disconnect_source(source_id: str) -> Response:
-    """Remove the stored credentials for a source. Doesn't revoke remote-side
-    grants — the operator is told to do that in the source system's UI if they
-    care about it (most won't)."""
-    known = next((s for s in KNOWN_SOURCES if s["id"] == source_id), None)
-    if not known:
-        return JSONResponse({"error": f"unknown source: {source_id}"}, status_code=404)
-    cred_path = _credentials_dir() / f"{source_id}.json"
-    if cred_path.exists():
-        try:
-            cred_path.unlink()
-        except OSError as e:
-            return JSONResponse({"error": f"failed to delete credentials: {e}"}, status_code=500)
-        return JSONResponse({"status": "disconnected", "source_id": source_id})
-    return JSONResponse({"status": "not-connected", "source_id": source_id})
-
-
 # --------------------------- connections (live discovery) ---------------------------
 #
-# Replaces the hardcoded KNOWN_SOURCES catalog with REAL discovery of what this
-# machine can reach: MCPs Claude is connected to (`claude mcp list`) + authed
-# CLIs (gh/gcloud/aws/az), minus mindframe's own runtime MCPs. See
-# docs/onboarding-ux.md. Cached briefly so the probes don't run every poll.
+# Live discovery of what this machine can reach: MCPs Claude is connected to
+# (`claude mcp list`) plus connector skills carrying a `connection:`
+# fingerprint, minus mindframe's own runtime MCPs. See docs/onboarding-ux.md.
+# Cached briefly so the probes don't run every poll.
+#
+# Connections never store credentials in mindframe: agents act through the
+# operator's existing CLIs/MCPs (identity inheritance). The only secrets
+# mindframe itself creates live under ~/.mindframe/secrets/ (file-handoff,
+# e.g. the dispatcher bearer above and connector-skill access files).
 
-# mindframe's own runtime — the installer brought these; never user-facing.
+# mindframe's own runtime — the bundle's composed plugins; never user-facing.
 _BUNDLE_RUNTIME = {
     "daemon-manager", "claude-browser-bridge", "softwaresoftware",
-    "tmux-session", "taskpilot", "session-bridge", "tokenboard",
-    "mindframe", "email-triage", "desktop-channel",
+    "tmux-session", "taskpilot", "session-bridge", "mindframe",
 }
+# Display-name overrides for ids whose title-cased form reads wrong.
 _CONN_DISPLAY = {
-    "gmail-organizer": "Gmail", "google-calendar": "Google Calendar",
-    "slack": "Slack", "finance": "Finance", "stripe": "Stripe",
     "claude-browser-bridge": "Browser",
 }
 # Bundle MCPs that ARE shown as connections despite being bundle runtime.
@@ -1279,6 +1096,7 @@ _CONN_DISPLAY = {
 # _BUNDLE_RUNTIME stays hidden as plumbing.
 _CONN_BUNDLE_KEEP = {"claude-browser-bridge"}
 _conn_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_conn_lock = threading.Lock()
 _CONN_TTL_S = 30.0
 
 
@@ -1420,14 +1238,17 @@ def _discover_connections() -> dict:
 
 @app.get("/api/connections")
 def list_connections() -> Response:
-    """Live-discovered connections (MCPs + authed CLIs), minus mindframe's own
-    runtime. Cached for _CONN_TTL_S so the auth probes stay cheap. This is the
-    real replacement for the hardcoded /api/sources catalog."""
+    """Live-discovered connections (MCPs + connector skills), minus mindframe's
+    own runtime. Cached for _CONN_TTL_S so the discovery probes stay cheap."""
     now = time.time()
-    if _conn_cache["data"] is None or (now - _conn_cache["at"]) > _CONN_TTL_S:
-        _conn_cache["data"] = _discover_connections()
-        _conn_cache["at"] = now
-    return JSONResponse(_conn_cache["data"])
+    with _conn_lock:
+        data, at = _conn_cache["data"], _conn_cache["at"]
+    if data is None or (now - at) > _CONN_TTL_S:
+        data = _discover_connections()
+        with _conn_lock:
+            _conn_cache["data"] = data
+            _conn_cache["at"] = now
+    return JSONResponse(data)
 
 
 # --------------------------- read-only system endpoints ---------------------------

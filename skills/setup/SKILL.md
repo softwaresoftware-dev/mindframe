@@ -17,7 +17,7 @@ This is a delegating stub. The full install + setup flow lives at one canonical 
 
 2. Follow every phase in order. That document is the operator script for end-to-end setup: rules, marketplace bootstrap, dependency install, deployment config, environment discovery, identity inheritance, schema assembly, KB bootstrap, guided event-source authoring, dashboard launch, smoke test, summary.
 
-3. If `install.txt` is unreachable (network down, the static site is being redeployed, etc.), fall back to the design doc bundled inside this plugin at `${CLAUDE_PLUGIN_ROOT}/docs/install-outline.md`. Same structure, slightly more prose, fewer literal commands. install.txt is the source of truth when reachable.
+3. If `install.txt` is unreachable (network down, the static site is being redeployed, etc.), **stop**. Tell the operator the install document at the URL above couldn't be fetched, show the literal curl error, and ask them to retry once the network or site is back. There is no offline fallback — install.txt is the single source of truth, and following anything else risks running a stale flow.
 
 ## Why this is a stub
 

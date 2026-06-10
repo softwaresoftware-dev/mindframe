@@ -22,7 +22,7 @@ Mindframe's answer is to make that knowledge a first-class, queryable thing — 
 
 **It builds a knowledge base.** A guided setup probes the systems a team uses and bootstraps a vault: plain Markdown with structured frontmatter, grep-friendly, no embeddings, stored as a local directory the customer owns. Setup seeds it; mindframe agents add to it as they work. (The Knowledge layer is under active redesign.)
 
-**It runs agents that act on that knowledge.** Agents reach the runtime two ways, through the same stack. An operator opens the dashboard and creates or messages a mindframe (a persistent agent that owns one live page it rewrites plus a message box). Or an event arrives: a webhook hits the ingress, a router decides what to do, and an ephemeral agent spawns, does one job, and exits. Either way the agent draws on the vault, reaches live systems through the perception layer, and recommends.
+**It runs agents that act on that knowledge.** Agents reach the runtime two ways, through the same stack. An operator opens the dashboard and creates or messages a mindframe (a persistent agent that owns one live page it rewrites plus a message box). Or an event arrives: the ingress acquires it, a router decides what to do, and an ephemeral agent spawns, does one job, and exits. Either way the agent draws on the vault, reaches live systems through the perception layer, and recommends.
 
 **The work is what a mindframe agent does.** You message a mindframe, or an event spawns one, and it grounds the request in the knowledge base plus live connectors and produces something a human can use: an incident triage with a prime-suspect commit, a drafted review, an answer with its sources. There is no library of pre-built workflows — the agent does the work directly. For event-driven work an operator wires a dispatcher recipe.
 
@@ -32,12 +32,12 @@ Mindframe installs six runtime layers as one product:
 
 | Layer | What it is |
 |---|---|
-| **Surface** | The dashboard. One local web app that hosts every mindframe, the knowledge base, the connected sources, and a read-only system overview. The piece mindframe owns directly. |
-| **Agent runtime** | Spawns and supervises `claude` processes, reboot-persistent and tmux-backed. Messages reach an agent over the mesh. |
-| **Event ingress** | A public webhook ingress and a router that turns events into agent spawns. |
+| **Surface** | The dashboard. One local web app that hosts every mindframe, the knowledge base, and the operator's connections. The piece mindframe owns directly. |
+| **Agent runtime** | Spawns and supervises `claude` processes, tmux-backed. Messages reach an agent over the mesh. |
+| **Event ingress** | An event router that acquires external events (poll-first) and turns them into agent spawns. |
 | **Knowledge** | The vault, persistent memory for the whole system. Seeded at setup, grown by mindframe agents as they work. *(Under redesign.)* |
 | **Mesh** | The message bus connecting agents and humans, and the agent runtime's delivery channel. |
-| **Perception** | Browser automation plus adopt-on-install connectors for Slack, GitHub, Gmail, Sentry, GCP logging, Grafana. |
+| **Perception** | Browser automation plus whatever MCPs and authed CLIs the operator already has — discovered live, never shipped. |
 
 ## Who it's for
 
@@ -54,14 +54,12 @@ claude plugin install softwaresoftware@softwaresoftware-plugins
 /mindframe:setup
 ```
 
-The first three steps install the bundle. `/mindframe:setup` does the rest: probes the machine for the data systems already in use, walks the operator through credentials, bootstraps the knowledge base from real source systems, wires the event router, and runs an end-to-end smoke test.
-
-> **Onboarding redesigned 2026-06-02.** Setup is now UI-based: a small terminal bootstrap births the operator's first mindframe, which facilitates the rest of onboarding in a web surface as the user watches their knowledge base take shape. The model lives in [`onboarding-ux.md`](onboarding-ux.md); the flow is the hosted `install.txt` plus the setup mindframe's brief at `setup/brief.md`.
+The first three steps install the bundle. `/mindframe:setup` is a small terminal bootstrap that births the operator's first mindframe and ends by handing off to it: onboarding continues inside the web surface, where the setup mindframe interviews the operator, discovers what the machine can already reach (no credentials are collected — agents inherit the operator's existing identity), and builds the knowledge base in front of them. Event wiring is a later chapter, driven from the surface. The model lives in [`onboarding-ux.md`](onboarding-ux.md); the flow is `setup/install.txt` plus the setup mindframe's brief at `setup/brief.md`.
 
 ## Principles
 
-- **Capability-based.** Every dependency is an abstract capability, not a named product. Notifications go to Slack today and email tomorrow by swapping a provider — no change to the bundle.
-- **No API keys.** Agents authenticate through the Claude Code subscription. There is no Anthropic API key to provision, rotate, or leak.
+- **Capability-based.** Every dependency is an abstract capability, not a named product. Any composed layer — the agent runtime, the event router, the mesh — is swappable per customer with no change to the bundle.
+- **No API keys, no stored credentials.** Agents authenticate through the Claude Code subscription — there is no Anthropic API key to provision, rotate, or leak. Mindframe stores no third-party credentials either: agents act through the operator's existing CLIs and MCPs.
 - **Runs where your work lives.** Mindframe runs locally under Claude Code, against your real systems. Nothing about your organization is uploaded to run it.
 - **The human owns the action.** Agents assemble knowledge and recommend. Executing a rollback, merging a fix, sending something externally — those stay with a person.
 
