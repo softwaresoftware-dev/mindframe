@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Diagnose and heal a mindframe deployment. Walks every plugin in the bundle — agent runtime, knowledge base, event router, dashboard, perception MCPs — checking for missing capabilities, dead daemons, broken config, and schema drift; fixes what is safe to fix and reports the rest with evidence. Use when asked to "run mindframe doctor", "check the mindframe bundle", "is mindframe healthy", "diagnose mindframe", "/mindframe:doctor", or when a deliverable skill or the dispatcher is misbehaving.
+description: Diagnose and heal a mindframe deployment. Walks every plugin in the bundle — agent runtime, knowledge base, event router, dashboard, perception MCPs — checking for missing capabilities, dead daemons, broken config, and schema drift; fixes what is safe to fix and reports the rest with evidence. Use when asked to "run mindframe doctor", "check the mindframe bundle", "is mindframe healthy", "diagnose mindframe", "/mindframe:doctor", or when a mindframe agent or the dispatcher is misbehaving.
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, AskUserQuestion
 ---
 
@@ -42,11 +42,14 @@ The bundle is `mindframe` plus the providers bound to its required capabilities.
 |---|---|---|
 | `agent-spawning` | taskpilot | yes |
 | `session-mesh` | session-bridge | yes |
-| `knowledge-base` | knowledge-base provider + the customer vault | yes |
 | `event-routing` | dispatcher | yes |
-| `status-dashboard` | taskboard | yes |
 | `browser-automation` | claude-browser-bridge | yes |
-| `notification` | a `notify-*` provider | optional |
+| `notification` | a `notify-*` provider | yes (skills degrade to file fallback) |
+| `daemon` | daemon-manager | yes |
+
+Two layers mindframe owns directly are **not** resolved capabilities but still
+need checking: the **Surface** (the dashboard daemon) and the **Knowledge** vault
+at `~/.mindframe/vault`.
 
 Providers are swappable per install — resolve what is *actually* bound, don't assume. Run the softwaresoftware dependency checker for `mindframe` (intent: "check the mindframe plugin's dependencies are satisfied") and read installed plugins from `~/.claude/settings.json` → `enabledPlugins` (or `claude plugin list`).
 
@@ -56,7 +59,7 @@ For each capability, record one row: provider name, installed version, and state
 /softwaresoftware:install mindframe
 ```
 
-which re-resolves and installs the whole bundle. A missing **optional** `notification` provider is a warning, not a failure — the deliverable skills fall back to writing an artifact file (`docs/interfaces.md` §8).
+which re-resolves and installs the whole bundle. A missing **optional** `notification` provider is a warning, not a failure — agents fall back to writing an artifact file (`docs/interfaces.md` §8).
 
 ### [check 3/7] runtime — daemons & agents
 
@@ -89,7 +92,7 @@ Against `VAULT` from check 1 (skip with an `unknown` finding if check 1 was bloc
 - **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML. It is the deployment's contract (`docs/interfaces.md` §5). Missing → Tier 2: the fix is `/mindframe:setup` step 4 (assemble the schema); do not write `schema.yaml` yourself.
 - **Catalog.** `$VAULT/CATALOG.md` should exist with one section per entity type declared in `schema.yaml`. Missing or stale (an entity-type directory exists with notes but has no catalog section) → Tier 1: regenerate `CATALOG.md` from the directories the schema declares, then re-probe.
 - **Schema drift.** For each entity-type directory under the vault, confirm the type is declared in `schema.yaml`. A directory of notes for an *undeclared* type is drift — Tier 2 finding (writers are expected to validate against the schema; an undeclared type means notes were written bypassing it). Report the directory and note count; don't delete anything.
-- **Provider + population.** Confirm the `knowledge-base` provider is installed (it showed up in check 2). If installed but the vault is empty of notes, that's a "setup incomplete" warning, not a break.
+- **Population.** The vault is owned directly by mindframe (plain files, no external provider). If the directory exists but is empty of notes, that's a "setup incomplete" warning, not a break.
 
 ### [check 5/7] event router — dispatcher config
 
@@ -115,10 +118,10 @@ The dashboard is the one app mindframe owns directly (`dashboard/`, served by a 
 - If it is meant to be running, probe `GET /api/health` on its port → expect `{ ok, port, agentId, daemons }`. No response → Tier 1: restart its daemon, re-probe.
 - Confirm `dashboard/public/` has the static frontend and the backend dependencies are installed (`dashboard/README.md` has the run contract). A dashboard that was never started is a warning, not a break — note it and move on.
 
-### [check 7/7] deliverable skills & perception
+### [check 7/7] skills & perception
 
-- **Deliverable skills.** For each skill under `skills/` (currently `setup`, `doctor`; deliverable skills pending redesign), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
-- **Perception MCPs.** `claude-browser-bridge` plus the adopt-first MCPs (`github`, `sentry`, `gcp-logging`, `grafana`, `slack`). For each, report registered / not-registered from the `mcpServers` keys in settings. These are mostly informational — a deliverable skill degrades gracefully when one is absent (`docs/interfaces.md` §8) — but a `sentry`-triage deployment with no Sentry MCp *and* no Sentry CLI is worth flagging Tier 2.
+- **Skills.** For each skill under `skills/` (currently `setup`, `doctor`), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
+- **Perception MCPs.** `claude-browser-bridge` plus the adopt-first MCPs (`github`, `sentry`, `gcp-logging`, `grafana`, `slack`). For each, report registered / not-registered from the `mcpServers` keys in settings. These are mostly informational — an agent degrades gracefully when one is absent (`docs/interfaces.md` §8) — but a Sentry-driven deployment with no Sentry MCP *and* no Sentry CLI is worth flagging Tier 2.
 - **Hermetic tests.** Optionally run `make test` to confirm the plugin's own manifest/contract tests still pass — a quick regression signal. Report pass/fail; don't heal test failures.
 
 ### report
@@ -131,9 +134,9 @@ mindframe doctor — <deployment_name>
   subsystem            state     finding
   ───────────────────────────────────────────────────────────────
   agent-spawning       healed    dispatcher-ingress was down — restarted, /api/health ok
-  knowledge-base       ok        vault dir, schema.yaml (12 entities), CATALOG.md current
+  knowledge (vault)    ok        vault dir, schema.yaml (12 entities), CATALOG.md current
   event-routing        BROKEN    recipe 'calendar-reader': required brief key {{window}} unfilled
-  status-dashboard     warn      taskboard installed, dashboard not running (never started)
+  surface (dashboard)  warn      daemon installed, dashboard not running (never started)
   notification         warn      no notify-* provider — skills will use file fallback
   ...
 

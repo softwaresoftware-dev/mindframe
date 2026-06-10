@@ -2,9 +2,9 @@
 
 **Mindframe gives an organization a knowledge base of how it actually works — and AI agents that act on it. Packaged as one installable product.**
 
-Mindframe builds a knowledge base from the systems a team already uses — Slack, GitHub, Gmail, its infrastructure — capturing how the organization runs: its services, projects, decisions, people, and past incidents. Then it runs agents that turn that knowledge into work: producing reports and reviews, triaging incidents, answering "how does X work here," watching for problems.
+Mindframe builds a knowledge base from the systems a team already uses (Slack, GitHub, Gmail, its infrastructure), capturing how the organization runs: its services, projects, decisions, people, and past incidents. Then it runs agents that turn that knowledge into work: producing reports and reviews, triaging incidents, answering "how does X work here."
 
-Mindframe is not a framework you build on and not a dashboard you log into. It is a *bundle* — seven components that already do the work, wired together so a customer can install and onboard them in a single flow.
+Mindframe is not a framework you build on. It is a *stack* of six runtime layers that already do the work, packaged so a customer can install and onboard them in a single flow.
 
 ---
 
@@ -14,34 +14,30 @@ An organization's working knowledge — who owns what, what was decided and why,
 
 So every time you want an AI agent to do something genuinely useful — triage an incident, draft a quarterly review, answer a new hire's question — it starts from nothing. It has the reasoning ability but not the context, and the context is exactly the slow part.
 
-Incident response is one place this bites hard: the same five manual minutes of *which service, who owns it, what broke it last time, where the runbook is* — every time. A quarterly business review is another: a week of someone assembling what happened from a dozen tools. Different deliverables, same missing ingredient.
+Incident response is one place this bites hard: the same five manual minutes of *which service, who owns it, what broke it last time, where the runbook is* — every time. A quarterly business review is another: a week of someone assembling what happened from a dozen tools. Different outputs, same missing ingredient.
 
 Mindframe's answer is to make that knowledge a first-class, queryable thing — and then let agents draw on it.
 
 ## What Mindframe does
 
-**It builds a knowledge base.** A guided setup probes the systems a team uses and bootstraps a per-customer vault — plain Markdown with structured frontmatter, grep-friendly, no embeddings, stored as a local directory the customer owns. Setup seeds it, and the deliverable skills add to it as they run.
+**It builds a knowledge base.** A guided setup probes the systems a team uses and bootstraps a vault: plain Markdown with structured frontmatter, grep-friendly, no embeddings, stored as a local directory the customer owns. Setup seeds it; mindframe agents add to it as they work. (The Knowledge layer is under active redesign.)
 
-**It runs agents that act on that knowledge**, on two paths:
+**It runs agents that act on that knowledge.** Agents reach the runtime two ways, through the same stack. An operator opens the dashboard and creates or messages a mindframe (a persistent agent that owns one live page it rewrites plus a message box). Or an event arrives: a webhook hits the ingress, a router decides what to do, and an ephemeral agent spawns, does one job, and exits. Either way the agent draws on the vault, reaches live systems through the perception layer, and recommends.
 
-- **The push path** reacts to events. A webhook (Sentry, PagerDuty, GitHub) hits an ingress; a router decides what to do; an ephemeral agent spawns, runs a deliverable skill, produces its output, and exits.
-- **The pull path** watches continuously. A dashboard probes services, daemons, agents, and telemetry and renders current status — the things no event announced.
-
-**The work itself is a library of deliverable skills.** Each takes a request, grounds it in the knowledge base plus live connectors, and produces something a human can use: an incident triage with a prime-suspect commit, a drafted review, an answer with its sources. Incident triage is the first skill in the library; it is not the whole product.
+**The work is what a mindframe agent does.** You message a mindframe, or an event spawns one, and it grounds the request in the knowledge base plus live connectors and produces something a human can use: an incident triage with a prime-suspect commit, a drafted review, an answer with its sources. There is no library of pre-built workflows — the agent does the work directly. For event-driven work an operator wires a dispatcher recipe.
 
 ## What you get
 
-Mindframe installs seven components as one product:
+Mindframe installs six runtime layers as one product:
 
-| Component | What it is |
+| Layer | What it is |
 |---|---|
-| **Agent runtime** | Spawns and supervises `claude` processes — reboot-persistent, tmux-backed — plus a mesh so agents and humans can message each other. |
-| **Knowledge base** | The customer vault — persistent memory for the whole system. Seeded at setup, grown by the deliverable skills. |
-| **Event router** | A public webhook ingress and a router that turns events into agent spawns. |
-| **Setup wizard** | `/mindframe:setup` — a Claude-driven onboarding that discovers the environment, collects credentials, bootstraps the knowledge base, and runs a smoke test. |
-| **Deliverable skills** | A library of skills that turn the knowledge base into work — incident triage, reviews and reports, answers. Incident triage (Sentry, Kubernetes) ships first; the library grows. |
-| **Dashboard** | A generative-UI status surface — describe what you want to see, the agent builds it. |
-| **Perception MCPs** | Browser automation plus adopt-on-install connectors for Slack, GitHub, Gmail, Sentry, GCP logging, Grafana. |
+| **Surface** | The dashboard. One local web app that hosts every mindframe, the knowledge base, the connected sources, and a read-only system overview. The piece mindframe owns directly. |
+| **Agent runtime** | Spawns and supervises `claude` processes, reboot-persistent and tmux-backed. Messages reach an agent over the mesh. |
+| **Event ingress** | A public webhook ingress and a router that turns events into agent spawns. |
+| **Knowledge** | The vault, persistent memory for the whole system. Seeded at setup, grown by mindframe agents as they work. *(Under redesign.)* |
+| **Mesh** | The message bus connecting agents and humans, and the agent runtime's delivery channel. |
+| **Perception** | Browser automation plus adopt-on-install connectors for Slack, GitHub, Gmail, Sentry, GCP logging, Grafana. |
 
 ## Who it's for
 
@@ -71,8 +67,8 @@ The first three steps install the bundle. `/mindframe:setup` does the rest: prob
 
 ## Further reading
 
-- [`architecture.md`](architecture.md) — how the seven components fit together,
-  the push/pull split, and the runtime flows.
-- [`interfaces.md`](interfaces.md) — the contracts between subsystems: the
-  event API, routing config, recipe format, and knowledge-base schema.
-- [`kb-schema.md`](kb-schema.md) — the knowledge-base schema library: the meta-schema, core entities, and the per-install manifest of custom entities.
+- [`architecture.md`](architecture.md) — the six layers in depth, what runs each,
+  and the runtime flow.
+- [`interfaces.md`](interfaces.md) — the contracts between layers: the event API,
+  routing config, recipe format, spawn interface, mesh tools, and the Surface app API.
+- [`kb-schema.md`](kb-schema.md) — the knowledge-base schema library *(under redesign)*.

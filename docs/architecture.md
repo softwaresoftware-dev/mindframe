@@ -1,181 +1,229 @@
 # Mindframe — Architecture
 
-This document describes how the mindframe bundle is composed, the two paths it
-runs on, and what happens end-to-end when an agent runs a deliverable. For what
-the product *is*, see [`product.md`](product.md); for the contracts between
-subsystems, see [`interfaces.md`](interfaces.md).
+How the mindframe stack is composed, layer by layer, and what happens end to end
+when an agent runs. For what the product *is*, see [`product.md`](product.md);
+for the contracts between layers, see [`interfaces.md`](interfaces.md).
 
 ---
 
 ## Mental model
 
-Mindframe is **manifest-first**. The plugin itself ships skills, customer
-templates, and a list of capabilities it requires — almost no business logic.
-The components do the work; mindframe is what makes them installable as one
-product. (The one exception is the dashboard, which mindframe owns directly —
-see below.)
+Mindframe is **manifest-first**. The plugin ships skills, the customer-domain
+knowledge-base schema, and a list of capabilities it requires. The layers do the
+work; mindframe is what makes them installable as one product. The one exception
+is the **Surface** (the dashboard), which mindframe owns directly.
 
-Read the bundle as a sentence:
+The system is **six runtime layers**:
 
-> It **runs agents** → gives them **memory** → **wakes them up** → **sets it up**
-> → has them **do the work** → **shows the human** → and **connects to the world.**
+| Layer | What runs it | State |
+|---|---|---|
+| **Surface** | the dashboard: one FastAPI server (`dashboard/server/server.py`) + SPA that serves every mindframe at `/m/<id>` | `~/.mindframe/frames/<id>/index.html` |
+| **Agent runtime** | `taskpilot` spawns a persistent tmux-backed `claude`; the starter prompt and every later message arrive over the Mesh | transcript in `~/.claude/projects/<encoded-cwd>/` |
+| **Event ingress** | `dispatcher` (`:8911`): dedupe → `channels.yaml` static route → LLM fallback → spawn an ephemeral agent | `~/.dispatcher/events.db` |
+| **Knowledge** | a single vault: markdown + frontmatter, the 4-layer schema in [`kb-schema.md`](kb-schema.md) *(under redesign)* | `~/.mindframe/vault` (hardcoded) |
+| **Mesh** | `session-bridge` (`:8910`): agent↔agent↔human messaging; also the Agent-runtime delivery channel | transient |
+| **Perception** | `claude-browser-bridge` + adopt-on-install MCPs (github / sentry / slack / …), live-probed via `/api/connections` | — |
 
-Each clause is one of the seven buckets.
+Read the stack top to bottom. A human touches the **Surface**. The Surface
+drives the **Agent runtime**. Events arrive through **Event ingress** and also
+spawn agents in that runtime. Every agent draws on **Knowledge**, talks over the
+**Mesh**, and reaches the world through **Perception**.
 
-## The seven buckets
+---
 
-| # | Bucket | Components | Role |
-|---|--------|-----------|------|
-| 1 | Agent runtime | `taskpilot` + `session-bridge` | Spawns and supervises `claude` processes (tmux-backed, reboot-persistent). A mesh carries inter-agent and agent-to-human messages. |
-| 2 | Knowledge base | customer vault (`knowledge-base` capability) | Persistent memory of how the org works: services, projects, decisions, people, past incidents. Markdown + frontmatter; schema in [`kb-schema.md`](kb-schema.md); populated at setup and by deliverable skills. |
-| 3 | Event router | `dispatcher` | The push path: public webhook ingress, a router, an audit log. Turns events into agent spawns. |
-| 4 | Setup wizard | `/mindframe:setup` | Claude-driven onboarding: discovers the environment, collects credentials, bootstraps the vault, wires triggers, runs a smoke test. **Redesigned 2026-06-02** into a UI-based, setup-as-a-mindframe flow (terminal bootstrap births the setup mindframe, which onboards in a web surface) — see [`onboarding-ux.md`](onboarding-ux.md), the hosted `install.txt`, and `setup/brief.md`. |
-| 5 | Deliverable skills | *(none ship in the current bundle — prior triage skills were deleted 2026-05-19 pending redesign)* | The work: a library of skills that ground a request in the knowledge base and produce something a human can use. Incident triage is the first slated entry; the library grows. |
-| 6 | Dashboard | `taskboard` + the mindframe dashboard app | The pull path: probes everything and renders status. |
-| 7 | Perception + connectors | `claude-browser-bridge` + Sentry / GCP-logging / GitHub / Grafana / Slack MCPs | General-purpose web perception plus adopt-on-install data connectors. |
+## The layers
 
-## The plugin / capability graph
+### Surface — the dashboard
+
+The one piece mindframe owns. A FastAPI server (`dashboard/server/server.py`,
+no build step; `public/` is plain HTML/CSS/JS) that is the bundle's human-facing
+home. It serves the SPA (`/` — the hub-graph home), the vault / sources /
+system feeds, and **every mindframe** at `/m/<id>`.
+
+A **mindframe** is the unit the Surface hosts: a persistent agent that owns one
+live HTML page it rewrites in place, plus a message box. The Surface mints a
+mindframe, lists them, serves each one's shell, and proxies operator messages to
+its agent. State is on disk at `~/.mindframe/frames/<id>/index.html`; the agent
+rewrites the file, the shell polls a revision counter and reloads.
+
+The Surface runs as a managed daemon (the `daemon` capability) for
+reboot-persistence. It holds the dispatcher bearer on disk so a mindframe's
+action buttons can POST events back through Event ingress without exposing the
+token to the browser. Default port `5174`. See [`../dashboard/README.md`](../dashboard/README.md).
+
+### Agent runtime — taskpilot
+
+`taskpilot` spawns and supervises `claude` processes. Each agent runs in a
+detached tmux session (via the `terminal-ops` provider, `tmux-session`) and is
+reboot-persistent via the `daemon` capability. The taskpilot daemon listens on
+`:8912`; callers spawn through `POST /tasks/create_and_spawn` and message through
+`POST /tasks/<id>/message`.
+
+The agent's durable state is its **transcript** at
+`~/.claude/projects/<encoded-cwd>/`. taskpilot inherits the operator's real
+`~/.claude` environment, so a spawned agent has the operator's plugins, MCPs, and
+identity.
+
+**The Mesh is the transport.** taskpilot does not type into the Claude TUI. It
+POSTs the starter prompt and every later message to the agent's Mesh channel at
+`session-bridge :8910/sessions/<id>/message`. This is why Agent runtime and Mesh
+are coupled: the Mesh is how anything reaches a running agent.
+
+### Event ingress — dispatcher
+
+`dispatcher` is the push path's front door: a FastAPI service bound to localhost
+(default `127.0.0.1:8911`), exposed publicly through a tunnel, bearer-authed on
+every endpoint except `/api/health`. Audit + dedupe state lives in
+`~/.dispatcher/events.db`.
+
+Routing on `POST /api/event`, in order:
+
+1. **Dedupe.** A `(source, event_id)` seen inside the idempotency window
+   short-circuits.
+2. **Static route.** If `channels.yaml` matches, the event is forwarded to a
+   Mesh session (`session:`) or spawns an ephemeral agent (`spawn:`) with no LLM
+   in the loop.
+3. **LLM fallback.** Otherwise it goes to the dispatcher's own Claude session,
+   which reads the payload and decides.
+
+A `spawn:` route reaches the Agent runtime through the dispatcher's
+`spawn_helper.py`, which reads `~/.dispatcher/recipes/<id>/` and calls
+taskpilot's `POST :8912/tasks/create_and_spawn`. A draft poller runtime (pulling
+events instead of receiving webhooks) is sketched in
+[`../../../providers/dispatcher/docs/event-sources.md`](../../../providers/dispatcher/docs/event-sources.md)
+but is **not built** — webhook ingest is the only live path.
+
+### Knowledge — the vault
+
+Mindframe owns this layer directly: a single local directory at
+`~/.mindframe/vault` (hardcoded as `VAULT_DIR` in the Surface; not configurable,
+not a resolved provider). Markdown notes with YAML frontmatter, one note per
+entity, organized by the 4-layer schema (Thing / Event / Knowledge / Process) in
+[`kb-schema.md`](kb-schema.md), plus a `CATALOG.md` index. Read by grep, not
+embeddings.
+
+**Under redesign in a separate effort.** There is no separate knowledge-capture
+subsystem; the vault is written by setup's bootstrap and by mindframe agents as
+they work. Treat the schema as descriptive of today's vault, not final.
+
+### Mesh — session-bridge
+
+`session-bridge` is the message bus connecting agents and humans, a localhost
+daemon on `:8910`. Every spawned agent registers a channel under its task id and
+joins the mesh automatically. It exposes three tools to a session: `sessions`
+(list members), `message` (start a conversation), `reply` (answer within one).
+Inbound messages arrive as `<channel>` notifications carrying `from_id`,
+`from_name`, and a `chat_id` to reply against.
+
+The Mesh is transient: the registry is in-memory, driven by `/register`. It is
+both the human↔agent channel and, as noted above, the Agent runtime's delivery
+transport.
+
+### Perception — browser-bridge + adopted MCPs
+
+`claude-browser-bridge` gives an agent control of a real browser (navigate, fill,
+click, screenshot, run JS, observe the a11y tree) for any web UI an API doesn't
+cover. It is default-install, general-purpose perception.
+
+Alongside it, the bundle **adopts on install** whatever data-source MCPs the
+operator already has (github / sentry / slack / gcp-logging / grafana / gmail /
+…). These are not bundled; they are discovered live. The Surface's
+`/api/connections` enumerates them (`claude mcp list` plus `gh`/`gcloud`/`aws`/`az`
+auth probes, minus the bundle's own runtime), which is how setup and the
+dashboard know what an agent can reach.
+
+---
+
+## The capability graph
 
 Mindframe declares abstract **capabilities** it `requires`. The
 `softwaresoftware` resolver binds each to a concrete **provider** that fits the
-host environment, and installs in dependency order. Nothing in the bundle names
-a provider directly — capabilities are the only contract.
+host, and installs in dependency order. Nothing in the bundle names a provider
+directly.
 
-```
-                         mindframe (this plugin)
-                         - /mindframe:setup
-                         - deliverable skills (none ship currently)
-                         - customer-domain KB schema (docs/kb-schema.md)
-                         - the dashboard app
-                                     │
-                                     │ requires
-   ┌──────────────┬────────────┬─────┼──────────┬──────────────┬──────────────┐
-   ▼              ▼            ▼     ▼          ▼              ▼              ▼
-agent-       session-     knowledge-  event-   status-       browser-      notification
-spawning     mesh         base        routing  dashboard     automation    (optional)
-   │              │            │       │          │              │              │
-taskpilot   session-bridge  knowledge- dispatcher taskboard   claude-        notify-slack
-                            base /                            browser-      / -email / …
-                            hive-mind                         bridge
-```
+| Layer | Capability | Provider |
+|---|---|---|
+| Surface | *(mindframe owns it)* | `dashboard/` |
+| Agent runtime | `agent-spawning` | `taskpilot` |
+| Event ingress | `event-routing` | `dispatcher` |
+| Knowledge | *(mindframe owns it)* | the vault — plain files at `~/.mindframe/vault` *(under redesign)* |
+| Mesh | `session-mesh` | `session-bridge` |
+| Perception | `browser-automation` | `claude-browser-bridge` + adopted MCPs |
 
 Transitively, `taskpilot` pulls in `terminal-ops` (→ `tmux-session`) and
-`daemon` (→ `daemon-manager`), so the bundle's full capability closure
-resolves from the `requires` list above.
+`daemon` (→ `daemon-manager`); the Surface uses `daemon` too. `notification` is
+a capability agents use to notify a human (resolves to `notify-slack` /
+`notify-email` / `notify-linux` / …); it is not a layer. The Knowledge vault is
+**not** a resolved capability — the manifest carries no `knowledge-base`
+requirement; mindframe owns the vault outright (see below).
 
-Because the binding is by capability, any provider is swappable per customer:
-notifications resolve to Slack on one install and email on the next, with no
-change to mindframe or to its deliverable skills.
+Because the binding is by capability, any layer is swappable per customer with no
+change to mindframe or its skills.
 
-## Two paths: push and pull
+---
 
-Mindframe observes a stack two ways, and the two paths are kept strictly
-separate — they never call each other.
-
-```
-         PUSH  (the ears — dispatcher)            PULL  (the eyes — taskboard)
-
-   Sentry / PagerDuty / GitHub webhook            probes on a timer
-              │                                          │
-              ▼                                          ▼
-       dispatcher-ingress                          taskboard
-              │                                    services, daemons, agents,
-       route → spawn ephemeral agent               sessions, telemetry
-              │                                          │
-       deliverable skill runs, produces             renders current status
-              │   its output
-       notify the human
-```
-
-- **Push** is event-driven and ephemeral. An event arrives, an agent spawns,
-  does one job, and exits. Latency matters; the agent is short-lived.
-- **Pull** is continuous and stateless-per-tick. The dashboard probes on its
-  own schedule and reflects what is true now. It notices the things no event
-  announced — a daemon that died quietly, a disk filling up.
-
-Keeping them separate means a flood of events can't blind the dashboard, and a
-slow probe can't delay an agent spawn.
-
-## Runtime flow — a deliverable run (wire shape)
-
-The canonical push-path run. **No deliverable skill currently ships** — this
-section documents the wire shape any future deliverable will reuse.
+## Runtime flow — a push-path run
 
 ```
-external event ──webhook──▶ dispatcher-ingress ──▶ route ──▶ spawn ephemeral claude
-                                                                 │
-                                                       /mindframe:<deliverable>
-                                                                 │
-                          ┌─────────────────────┬────────────────┼────────────────┐
-                          ▼                     ▼                ▼                ▼
-                    knowledge base        perception MCPs    recent commits   output channel
-                    (the vault)           (provider MCPs)    (provider MCPs)  (notification provider)
-                          │
-                  taskboard observes everything  ◀── always-on, pull path
+external event ──webhook──▶ Event ingress (dispatcher :8911)
+                              dedupe → channels.yaml → LLM fallback
+                              └─ spawn:<recipe>
+                                     │ POST :8912/tasks/create_and_spawn
+                                     ▼
+                              Agent runtime (taskpilot)
+                              tmux-backed claude; prompt + messages over the Mesh
+                                     │
+                  ┌──────────────────┼──────────────────┐
+                  ▼                  ▼                   ▼
+              Knowledge          Perception          output channel
+              (the vault)        (browser-bridge     (notification
+                                  + adopted MCPs)     capability, optional)
 ```
 
-Step by step:
+1. **Ingress.** The event hits `POST /api/event` with a bearer token, is
+   deduplicated, and written to `events.db`.
+2. **Route.** `channels.yaml` is consulted for a static `(source, event_type)`
+   match. Mechanical events route statically; anything semantic falls through to
+   the LLM dispatcher.
+3. **Spawn.** A `spawn:` route composes the recipe's brief and calls the Agent
+   runtime daemon. The new agent's prompt is delivered over the Mesh.
+4. **Work.** The agent reads the **Knowledge** vault to identify entities, pulls
+   live signals through **Perception** (browser-bridge + adopted MCPs), and does
+   its job.
+5. **Recommend.** The agent produces an artifact and, if a `notification`
+   provider is present, notifies a human. Anything irreversible waits for human
+   confirmation.
 
-1. **Ingress.** The event hits `dispatcher-ingress` at `POST /api/event` with a
-   bearer token. The request is deduplicated against a short idempotency
-   window and written to an audit log.
-2. **Route.** The dispatcher consults `channels.yaml` for a static
-   `(source, event_type)` route. Static routes are the fast path for
-   mechanical, no-decision events. Anything semantic falls through to the LLM
-   dispatcher, which reads the payload and composes a brief.
-3. **Spawn.** The router invokes the agent runtime to spawn an ephemeral
-   `claude` process from a **recipe** — a directory defining the agent's
-   starter prompt, the plugins it needs, and a brief template.
-4. **Investigate.** The deliverable skill reads the customer vault to identify
-   the affected entities (service, owners, prior incidents — depending on the
-   deliverable); pulls signals from the loaded perception MCPs; reads recent
-   commits if relevant; and falls back to browser automation for any UI the
-   APIs don't cover.
-5. **Decide.** The skill produces its output artifact — a fix PR, a draft RCA,
-   a report, an answer — depending on the deliverable shape.
-6. **Notify.** The recommendation goes to whichever channel the customer's
-   configuration declares — Slack thread, PR comment, email. The skill uses
-   intent-based language; the resolver bound the actual notification provider
-   at install time.
+The **interactive** path is the same runtime entered from the top: the operator
+opens the Surface, creates or messages a mindframe, and the Surface delivers the
+message to the Agent runtime over the same daemon. There is no separate
+interactive stack.
 
-## The dashboard
-
-`taskboard` is the generic status-dashboard capability. The mindframe bundle
-also ships its own dashboard app — a generative-UI surface where the operator
-describes what they want to see and the Mindframe agent authors a complete
-HTML view per instruction. It runs locally under Claude Code as a persistent
-agent and is opened through browser-bridge. This is the deliberate carve-out
-from "manifest-first": the dashboard is business logic mindframe owns rather
-than delegates, because it is the human-facing surface of the whole bundle.
+---
 
 ## Invariants
 
-These hold across the bundle and should not be broken without a deliberate
-decision:
-
-- **Mindframe is manifest-first.** Bundle composition lives in the `requires`
-  list. No business logic in the plugin — except the dashboard app.
-- **Every box is a plugin or an MCP.** No loose tool directories in the bundle.
-- **Capabilities are the only contract.** Skills reference what they need by
-  intent ("send a notification"), never by provider name. Any provider is
-  swappable per customer.
-- **Push and pull stay separate.** The dispatcher (ears) and taskboard (eyes)
-  do not talk to each other.
-- **Agents recommend; humans act.** Deliverable skills stop at producing and
-  notifying. Rollbacks, merges, sends, and pages are gated on human approval.
-- **Subscription auth only.** Agents run as `claude` processes authenticated by
-  the Claude Code subscription. No Anthropic API key anywhere in the bundle.
+- **Manifest-first.** Composition lives in `requires`. The Surface is the only
+  business logic mindframe owns.
+- **Every layer is a plugin or an MCP**, bound by capability. Skills reference
+  capabilities by intent, never by provider name.
+- **The Mesh is the agent transport.** No keystroke injection; messages reach
+  agents over `session-bridge`.
+- **Single vault, single Surface.** One `~/.mindframe/vault`; one dashboard for
+  every mindframe.
+- **Agents recommend; humans act.** Irreversible steps are gated on confirmation.
+- **Subscription auth only.** No `ANTHROPIC_API_KEY` in the bundle.
 
 ## Where state lives
 
 | State | Home | Lifetime |
 |---|---|---|
-| Customer domain knowledge | the vault (local directory) | persistent; written at setup and by deliverable skills |
-| Event audit + dedupe | dispatcher-ingress SQLite DB | rolling; dedupe entries expire |
-| A deliverable run's working data | the spawned agent's task directory + recipe cache | the life of the run; cache enables idempotent replay |
+| A mindframe's page | `~/.mindframe/frames/<id>/index.html` | persistent; rewritten by its agent |
+| Customer knowledge | `~/.mindframe/vault` | persistent |
+| Agent transcript | `~/.claude/projects/<encoded-cwd>/` | the life of the agent |
+| Event audit + dedupe | `~/.dispatcher/events.db` | rolling; dedupe entries expire |
 | Agent ↔ agent / human messages | the session-bridge mesh | transient |
-| Bundle + per-deployment config | `~/.claude/settings.json` (`pluginConfigs`) | persistent |
+| Bundle + deployment config | `~/.claude/settings.json` (`pluginConfigs`) | persistent |
 
 Nothing in the bundle keeps customer state in a cloud service. The vault is a
-local directory; the audit log is a local database; agents are local
-processes.
+local directory, the audit log is a local database, agents are local processes.

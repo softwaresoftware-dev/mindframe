@@ -60,9 +60,9 @@ Produces: `softwaresoftware` resolver loaded and callable as a skill. Ready for 
 
 Inside Claude Code, with `softwaresoftware` now loaded.
 
-**Step 2.1 — run the resolver.** Agent invokes the `softwaresoftware:install` skill (callable directly, since it's a plugin skill not a built-in slash command) with target `mindframe`. The resolver probes the host, picks providers for `agent-spawning`, `session-mesh`, `knowledge-base`, `event-routing`, `status-dashboard`, `browser-automation`, `notification`, installs in dependency order, starts daemons.
+**Step 2.1 — run the resolver.** Agent invokes the `softwaresoftware:install` skill (callable directly, since it's a plugin skill not a built-in slash command) with target `mindframe`. The resolver probes the host, picks providers for `agent-spawning`, `session-mesh`, `knowledge-base`, `event-routing`, `browser-automation`, and (optional) `notification`, installs in dependency order, starts daemons. (The Surface — the dashboard — ships inside mindframe; it is not a resolved capability.)
 
-**Step 2.2 — reload plugins.** Agent asks the operator to type `/reload-plugins` so mindframe's own skills (`/mindframe:setup`, `/mindframe:doctor`, plus whatever deliverable skills ship) are available. Second unavoidable manual step.
+**Step 2.2 — reload plugins.** Agent asks the operator to type `/reload-plugins` so mindframe's own skills (`/mindframe:setup`, `/mindframe:doctor`) are available. Second unavoidable manual step.
 
 Asks: `/reload-plugins` (operator-typed). Otherwise nothing — the resolver is deterministic given the host.
 
@@ -198,7 +198,7 @@ Resolves D-VAULT-SCHEMA-MISMATCH and D-NO-VALIDATOR by making the assembly expli
 
 ## PHASE 7 — Guided authoring: first event source, first agent, simulated event
 
-The most important phase for first-time use. Setup is a **teacher**, not a config script. The deliverable is not "the operator has a working mindframe deployment" — it's "the operator understands how to wire a new event source, define an agent that handles it, and see the loop close end-to-end."
+The most important phase for first-time use. Setup is a **teacher**, not a config script. The goal is not "the operator has a working mindframe deployment" — it's "the operator understands how to wire a new event source, define an agent that handles it, and see the loop close end-to-end."
 
 Nothing ships pre-baked recipes — the operator authors theirs here. The dispatcher's documented recipe contract is the reference to learn from, not a pre-baked answer.
 
@@ -267,7 +267,7 @@ Then the agent watches and narrates:
 - dispatcher audit row appears (`event-received`)
 - route matches, taskpilot spawns the agent (`static-spawn`)
 - agent runs the skill, produces its artifact, notifies
-- the run shows up on the dashboard's system overview (PHASE 9)
+- the run shows up on the dashboard — its Agents view (PHASE 9)
 - operator sees the closed loop
 
 This is the canonical "first run" experience. If it works, the operator gets it — they can repeat it for any future event source.
@@ -294,11 +294,11 @@ PHASE 7 already produced the operator's first agent. PHASE 8 is light: show what
 
 Concrete:
 
-- From the discovered systems + vault entities, the agent proposes a few candidate deliverables it can infer for this org (e.g. "you have GitHub + Sentry — a PR-merged → changelog agent, or a Sentry-alert → triage agent").
+- From the discovered systems + vault entities, the agent proposes a few candidate agents it can infer for this org (e.g. "you have GitHub + Sentry — a PR-merged → changelog agent, or a Sentry-alert → triage agent").
 - Surface them as a list with `name`, `trigger`, `why`. Frame as "*here's what your stack makes easy — anything jump out as your next one?*"
 - If the operator picks one to author now, repeat PHASE 7 against it. Otherwise this phase produces nothing on disk — it's a forward pointer.
 
-This phase is short on purpose. The "where do deliverable skills come from" answer is settled: **from the operator, via guided authoring.** Discovery suggests what's worth doing; the operator does it.
+This phase is short on purpose. The "where does the work come from" answer is settled: **the operator wires it, via guided authoring.** Discovery suggests what's worth doing; the operator does it.
 
 Asks: optional — "want to author another now?" If yes, jump to PHASE 7 with the picked example. If no, proceed.
 
@@ -310,14 +310,13 @@ Produces: nothing on disk by default. If operator authors a second utility now, 
 
 The dashboard is the bundle's human-facing home: a local web app that lists the
 operator's **mindframes**, the single knowledge base, the connected sources, and
-a read-only system overview. It runs as a **managed daemon** (via the `daemon`
-capability) so it survives reboots.
+read-only system info (agents, events). It runs as a **managed daemon** (via the
+`daemon` capability) so it survives reboots.
 
-**A mindframe is a surface.** The block-stream / static-frame / ephemeral-panes
-model was cut (2026-06-04). A mindframe is now a persistent agent that owns ONE
-live HTML page it rewrites in place, plus a message box — nothing else. The
-operator creates one from the home ("create a mindframe"), which spawns the
-agent (`POST /api/frames/create`) and opens its surface at `/m/<id>`; the agent
+**A mindframe is a surface.** A persistent agent that owns ONE live HTML page it
+rewrites in place, plus a message box, nothing else. The operator creates one
+from the home ("create a mindframe"), which spawns the agent
+(`POST /api/frames/create`) and opens its surface at `/m/<id>`; the agent
 rewrites its page as it works and the browser reloads on change. The dashboard
 is the one surface server (it serves every mindframe at `/m/<id>`). See
 `docs/onboarding-ux.md` and `setup/brief.md`.
@@ -351,14 +350,14 @@ in a message before the agent acts.
 ### Produces
 
 - Dashboard running as a managed daemon; `/api/health` green.
-- Operator's browser open to the home (their mindframes + knowledge base + sources + system overview).
+- Operator's browser open to the home hub (mindframes, knowledge base, connections, agents, events).
 - Action-button → dispatcher event protocol live.
 
 ---
 
-## PHASE 9.5 — Automated knowledge-capture loop (deferred — being redesigned)
+## PHASE 9.5 — Knowledge-capture loop (under redesign)
 
-**Removed 2026-06-05, pending a rethink.** The bundle previously shipped two long-running vault agents here — `vault-keeper` (write side: scanned session transcripts and wrote schema-valid entries) and `vault-query` (read side: answered questions against the catalog) — plus a scheduler daemon. Both were deleted to redesign the capture loop from scratch. No vault agents install during setup right now; the vault is populated by setup's own bootstrap (PHASE 6) and by any deliverable skills the operator authors. This phase is a placeholder until the redesigned loop lands.
+The Knowledge layer is being redesigned in a separate effort. Today there is no automated capture loop and no dedicated vault agents: the vault is populated by setup's own bootstrap (PHASE 6) and by mindframe agents as they work. This phase is a placeholder until the redesigned loop lands.
 
 ---
 
@@ -385,9 +384,8 @@ Final block. Printed inline; optionally written to `<vault>/INSTALL.md` for futu
 - What's running (daemons, dashboard URL, webhook URL).
 - What was installed (plugins, providers, MCPs).
 - What the operator can do next:
-  - "Trigger a deliverable manually: `/mindframe:<skill> <args>`."
-  - "Open the dashboard."
-  - "Re-run this URL to add more event sources or skills."
+  - "Open the dashboard and create a mindframe to do some work."
+  - "Re-run this URL to add more event sources or wire another agent."
 - Where to come back to:
   - **This URL is the canonical install doc.** Re-running it is idempotent.
   - To add a new event source / skill / data system later: re-paste this URL; the resumable phases skip what's done.
@@ -401,13 +399,13 @@ Produces: operator has the URLs, the agent has captured the deployment state, in
 
 These are choices implicit in the structure above. Worth naming so they don't sneak through during prose drafting.
 
-1. **Nothing ships pre-baked.** Not recipes, not skills, not deliverables, not domain schema. The operator authors their first utility during PHASE 7's guided authoring. This is the single most important design commitment in the install flow: the "aha" of mindframe is *seeing the loop close on your own event for your own system*, and pre-shipped artifacts muffle that. Operators who get the loop the first time wire the second event without help; operators handed a pre-built integration don't.
+1. **Nothing ships pre-baked.** Not recipes, not skills, not domain schema. The operator authors their first utility during PHASE 7's guided authoring. This is the single most important design commitment in the install flow: the "aha" of mindframe is *seeing the loop close on your own event for your own system*, and pre-shipped artifacts muffle that. Operators who get the loop the first time wire the second event without help; operators handed a pre-built integration don't.
 
    **Domain schema is synthesized, not shipped.** Beyond the 10 fixed core entities, every domain-specific type is minted as `custom` during PHASE 4 discovery + PHASE 6 assembly, against the meta-schema in `docs/kb-schema.md`. There are no bundled domain packs to activate. Adding a new vertical means the agent discovers and mints the right entities live — no new artifact to author or install.
 
    install.txt stays generic. Discovery shapes the domain schema. Operators author the workflows.
 
-2. **Deliverable skills: shipped vs generated.** PHASE 8's open question. The "delete the triage skills, redesign from scratch" thread loops back here — whatever you decide for the rebuild is what gets installed during PHASE 8.
+2. **Where the work comes from.** A mindframe agent does the work directly — interactively in its surface, or as an ephemeral agent the dispatcher spawns per event from an operator-wired recipe. Mindframe ships no pre-built workflow artifacts; PHASE 7's guided authoring is how an operator stands up their first event-driven agent.
 
 3. **Dashboard launch is now part of install.** The flow above requires install to leave the dashboard running as a managed daemon, not "cd in and run server.py if you want." Small implementation lift: PHASE 9 just starts `dashboard/server/server.py` under the `daemon` capability and opens the home — there is no per-customer config to generate; the dashboard reads the single vault and live state directly.
 

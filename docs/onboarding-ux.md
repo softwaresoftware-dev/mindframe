@@ -1,18 +1,46 @@
-# Mindframe — Onboarding UX & State Model
+# Mindframe — Onboarding UX & Surface Model
 
-The design for first-run setup: what the user sees, how the schema and
-connections come to life, and the principles that keep an agent-driven setup
-empowering instead of bewildering. This is the reference the interface work
-(install.txt, schema.yaml assembly, dashboard `/kb` view, connection state)
-implements against.
+How first-run setup works, what the operator sees, and the principles that keep
+an agent-driven setup empowering instead of bewildering. This is the reference
+the interface work (`install.txt`, `schema.yaml` assembly, the dashboard's
+connection and vault views) implements against.
 
-Status: design agreed, wiring in progress. Prototype lives (throwaway) at
-`dashboard/artifacts/kb-live/` driven by `setup-*` JSON files + the live
-`/api/vault/graph` endpoint.
+Setup is not special-cased UI. It is the **first mindframe**: a terminal
+bootstrap births a setup agent into a frame, and the rest of onboarding happens
+inside the Surface, in the same shape every other mindframe uses.
+
+---
+
+## The surface model
+
+A mindframe is a conversation where the agent's replies are full web pages
+instead of text:
+
+- The agent **owns one HTML document and rewrites the whole thing in place.** The
+  browser is the renderer. No typed-block renderer, no component library, no
+  layout DSL.
+- The operator has **one message box.** Input is linear (free text);
+  presentation is not (the full mutated page).
+- The substrate is the **Surface** (`dashboard/`): one server serves every
+  mindframe at `/m/<id>`, owns the shell + message rail, and serves the agent's
+  `index.html`. The agent rewrites the file; the shell polls a revision counter
+  and reloads.
+- **Human-in-the-loop is rendered, not bypassed.** The agent draws a pending act
+  onto the page (what it wants to do, why, the consequence) and waits for a
+  message to approve. Anything irreversible or outward-facing is gated this way.
+
+**The UI is not the hard part.** Given a minimal prompt (domain only, zero UI
+guidance), independent agents reproduce and beat a hand-built first-run surface,
+converging on the same vocabulary (phases, conversation, a connections rail, the
+schema, signals, an input) grounded in the real environment. So the harness is
+freeform agent-generated UI plus the surface substrate plus live state binding.
+Do not build a component library.
+
+---
 
 ## The first-run surface
 
-One screen, three zones. The dashboard comes up early and the user opens it to
+One screen, three zones. The Surface comes up early and the operator opens it to
 *continue* setup, so setup happens **inside the product**, not before it.
 
 ```
@@ -22,13 +50,13 @@ One screen, three zones. The dashboard comes up early and the user opens it to
 ```
 
 - **Center — the graph.** Seeds on a single `you` (Person) node, derived from
-  identity (gh/git config). Everything the KB learns radiates from here
-  (the `owner: person` hub-and-spoke from `kb-schema.md`). The graph only ever
-  contains **real data**; it never shows anything the user hasn't connected.
+  identity (gh/git config). Everything the KB learns radiates from here. The
+  graph only ever contains **real data**; it never shows anything the operator
+  hasn't connected.
 - **Left — the schema legend.** The entity types in this deployment's
-  `schema.yaml`, shown as chips. `pending` = in your schema, no data yet;
-  `lit` (with count) = has real entities. Teaches the structure and doubles as
-  a progress meter.
+  `schema.yaml`, shown as chips. `pending` = in your schema, no data yet; `lit`
+  (with count) = has real entities. Teaches the structure and doubles as a
+  progress meter.
 - **Right — the connections rail.** Live-discovered systems the machine can
   reach (see below).
 
@@ -36,10 +64,9 @@ One screen, three zones. The dashboard comes up early and the user opens it to
 
 1. **Identity seeds you.** One node: the operator, from inherited identity.
    "This is you. We don't know much yet."
-2. **The interview shapes the SCHEMA, not the graph.** "What do you do?" →
-   the agent derives which entity *types* belong (a software business gets
-   Repositories, Services, Products, Projects, Customers). Legend chips appear
-   `pending`. **No nodes are written.** The graph stays just `you`.
+2. **The interview shapes the SCHEMA, not the graph.** "What do you do?" → the
+   agent derives which entity *types* belong. Legend chips appear `pending`. **No
+   nodes are written.** The graph stays just `you`.
 3. **Connecting a data source fills the graph.** Only a connected source mints
    nodes. Connect GitHub → real Repository nodes bloom, the Repositories chip
    lights. Data is never fabricated to fill a shape.
@@ -49,195 +76,109 @@ graph filling (connect a source).
 
 ## Schema
 
-Per `kb-schema.md`: a fixed meta-schema + a per-install entity set recorded in
-`<vault>/schema.yaml`. The interview *assembles* that entity set. The schema is
-**seeded** (core types) and **grown** (custom types the agent
-mints from the interview, `source: custom`). The legend reads `schema.yaml`;
-no hardcoded type list.
+Per [`kb-schema.md`](kb-schema.md): a fixed meta-schema plus a per-install entity
+set recorded in `<vault>/schema.yaml`. The interview *assembles* that entity set.
+It is **seeded** (core types) and **grown** (custom types the agent mints from
+the interview, `source: custom`). The legend reads `schema.yaml`; no hardcoded
+type list. *(The Knowledge layer is under active redesign — see
+[`../CLAUDE.md`](../CLAUDE.md).)*
 
 ## Connections
 
-A **connection** is the first-class primitive — one authenticated way to reach
-a system. It is **not** "a data source"; data-source is a *role* a connection
-plays when it has read tools. An MCP *or* an authed CLI both qualify.
+A **connection** is one authenticated way to reach a system. It is not "a data
+source"; data-source is a *role* a connection plays when it has read tools. An
+MCP *or* an authed CLI both qualify.
 
 ### Tool roles (one MCP carries several)
 
 Classify each tool, not the MCP. Signal: MCP annotations
-(`readOnlyHint`/`destructiveHint`), fallback to verb heuristics or agent judgment.
+(`readOnlyHint`/`destructiveHint`), fallback to verb heuristics or agent
+judgment.
 
 | Role | Reads/writes | Destination |
 |------|-------------|-------------|
 | **ingest** | read persistent state | populates the KB as entities |
-| **query** | read live state | answered at runtime, *not stored* (kb-schema principle #7) |
+| **query** | read live state | answered at runtime, *not stored* |
 | **act** | mutates the world | gets things done; can record back to the KB |
 
 A connection's ingest tools make it a data source; its act tools make it a
 toolbelt for agents. The KB is the shared spine.
 
-### Where the rail comes from: discovery, not a catalog
+### Discovery, not a catalog
 
-Populated by **live discovery** of the real machine, never a curated list:
+The rail is populated by **live discovery** of the real machine, never a curated
+list, served by the Surface's `/api/connections`:
 
-- MCPs: `claude mcp list`, minus mindframe's own runtime (the bundle `requires`:
-  taskpilot, tmux-session, daemon-manager, session-bridge, mindframe,
-  softwaresoftware, tokenboard, claude-browser-bridge, email-triage).
+- MCPs: `claude mcp list`, minus the bundle's own runtime.
 - CLIs: `gh`/`gcloud`/`aws`/`az` auth probes (inherited identity).
 
-How full the rail is depends entirely on what the user already has authed.
-A working dev machine lights up instantly ("it already knows me"); a blank
-laptop starts empty and fills via guided auth.
-
-Implemented server-side: `GET /api/connections` (replaces the hardcoded
-`KNOWN_SOURCES`/`/api/sources`).
+How full the rail is depends entirely on what the operator already has authed. A
+working dev machine lights up instantly; a blank laptop starts empty and fills
+via guided auth.
 
 ### Two paths to a connection
 
 - **Discovery (passive):** finds what's reachable now.
-- **Add (active):** the user declares a system that isn't reachable yet
-  ("what about Sentry?"). Evidence for a `wanted` connection: the user said so,
-  OR a trace exists (an unauthed CLI, a config reference, a transcript mention).
-  Provenance is recorded.
+- **Add (active):** the operator declares a system that isn't reachable yet
+  ("what about Sentry?"). Evidence for a `wanted` connection: the operator said
+  so, or a trace exists (an unauthed CLI, a config reference, a transcript
+  mention). Provenance is recorded.
 
 ### States
 
-`connected` (discovered, working) · `needs-auth` (discovered, present,
-unauthed) · `wanted` (declared, not reachable → guided setup) · `dismissed`
-(user denied a suggestion; recorded so it isn't re-suggested; reversible).
-
-Each connection record carries: **provenance** (why it's here), **state**,
-**path** (CLI / MCP / API / database / browser / file), **fidelity** (a SQL
-read is ground truth; a browser scrape is best-effort), and the **recipe**
-(how to reach it).
+`connected` (discovered, working) · `needs-auth` (discovered, present, unauthed)
+· `wanted` (declared, not reachable → guided setup) · `dismissed` (operator
+denied a suggestion; recorded so it isn't re-suggested; reversible).
 
 ### Connector resolution = research, not a lookup
 
-When the user names a system, the agent *investigates* how to reach it, using
+When the operator names a system, the agent *investigates* how to reach it, using
 embedded model knowledge + tools + probing the environment: "a CLI exists,"
-"there's a Postgres replica," "no API, drive the web UI." It picks the best
-door and records the recipe. The curated catalog is a **cache/accelerator** for
-common systems, not the foundation — this is how "connect M365" works without
-mindframe devs predicting every system. Connecting a novel system mints a
-reusable recipe that can be shared back (community-grown library).
+"there's a Postgres replica," "no API, drive the web UI." It picks the best door
+and records the recipe. A curated catalog is a cache/accelerator for common
+systems, not the foundation — this is how "connect M365" works without mindframe
+devs predicting every system.
 
-## The agent-led principle (the middle ground)
+### Capabilities are skills / MCPs / CLIs, not KB records
 
-Enable non-technical users by having the agent do the technical work, without
+Skills and MCPs self-inject into an agent at startup; a CLI capability is wrapped
+as a skill whose body is the recipe. The knowledge base stores what the org *is*
+(entities, history), never the capability registry. There is no `Connection` KB
+entity; connections are discovered live via shell.
+
+---
+
+## The agent-led principle
+
+Enable non-technical operators by having the agent do the technical work, without
 letting them fall into a hole they don't understand.
 
-> The agent owns the mechanics. The user owns the model. Autonomy is gated by
+> The agent owns the mechanics. The operator owns the model. Autonomy is gated by
 > **consequence, not complexity**. Everything is reversible and surfaces in a
-> model the user already understands.
+> model the operator already understands.
 
-1. **Translate, don't expose.** Report at the meaning level ("GitHub's
-   connected, read-only, keeps your repos current"), not the mechanics. Detail
-   available on demand (progressive disclosure).
+1. **Translate, don't expose.** Report at the meaning level ("GitHub's connected,
+   read-only, keeps your repos current"), not the mechanics. Detail on demand.
 2. **Gate on consequence, not complexity.** Act freely on reversible,
    low-consequence steps (install a CLI, read data, add a shape). Stop for
    plain-language consent only on consequential / hard-to-reverse steps (write
-   scopes, spend, data leaving the machine, deletes, broad permissions). The
-   user only ever decides things they can actually judge — outcomes, not internals.
+   scopes, spend, data leaving the machine, deletes, broad permissions).
 3. **No orphan actions.** Every technical action must surface as a change in a
-   model the user already holds (schema / connections / graph) and be undoable
-   from there. Unsurfaced = a hole. Irreversible = a trap. Forbid both.
+   model the operator already holds (schema / connections / graph) and be
+   undoable from there. Unsurfaced = a hole. Irreversible = a trap. Forbid both.
 
-Corollary: **the agent owns maintenance, not the user** (expired tokens,
+Corollary: **the agent owns maintenance, not the operator** (expired tokens,
 fragile paths). When something breaks, the agent heals it (the doctor loop).
-The user is never left holding broken plumbing.
+
+---
 
 ## Open threads
 
 - The "stop and ask" list for rule 2 (the small, namable set of consent gates).
 - Scoped/approved investigation for enterprise (locked-down machines, admin
-  approval of MCP installs and connection paths) — where "agent finds any door"
-  meets real walls. Likely the home of the `human-approval` capability.
-- Connection state persistence (provenance/path/fidelity/recipe/dismissed).
-- Relevance curation layer (discovery finds Beats; the agent deprioritizes it).
-
-## What we built and learned next (2026-06-02)
-
-The sections above were written mid-design. These are the decisions and findings
-that followed, and they supersede anything above that conflicts.
-
-### A mindframe is a spatial surface, not a linear conversation
-
-The append-only block-stream (`docs/mindframe-block-stream-api.md`) is a **failed
-default** — appending blocks forces a chat feel. The right model: **input is
-linear, presentation is not.** A mindframe is an agent-composed **spatial**
-surface (graph centerpiece, rails, signal cards, an input) that the agent
-**mutates in place**, not a transcript you scroll. The block-stream stays as
-fallback plumbing only.
-
-### Setup is a mindframe
-
-The onboarding flow is not special-cased UI — it is the **first mindframe**. The
-schema rail, connections rail, and knowledge-graph are reusable components any
-mindframe composes. The setup mindframe's recipe is its standing brief at
-`setup/brief.md`, filled in by the hosted `install.txt`.
-
-### The v0 interaction model (supersedes the intent primitive)
-
-The earlier "intent primitive" (element-id channel, typed render states, a
-durable JSON transcript reached by id) is **superseded** by a simpler model
-proven 2026-06-02. A mindframe is a conversation where the agent's replies are
-full web pages instead of text:
-
-- The agent **owns one HTML document and rewrites the whole thing in place.** The
-  browser is the renderer. No typed-block renderer, no element-id channel, no
-  component library.
-- The operator has **one message box.** Input is linear (free text); presentation
-  is not (the full mutated page). Affordances the agent draws are decorative in
-  v0; the message box is the only input channel until v0.1.
-- The substrate is the **dashboard** (`dashboard/`): one server that serves every
-  mindframe's surface at `/m/<id>` — it owns the shell + message rail and serves
-  the agent's `index.html`; the agent rewrites the file; the shell polls a
-  revision and reloads. (The standalone single-tenant `surface/server.py` was
-  collapsed into the dashboard 2026-06-05.)
-- **Human-in-the-loop** stays first-class, just rendered: the agent draws the
-  pending act onto the page (what it wants to do, why, the consequence) and waits
-  for a message to approve. On-surface approve/deny buttons are v0.1.
-
-### Generative-UI finding — the UI is no longer the hard part
-
-Given a minimal prompt (domain only, zero UI guidance), independent agents
-**reproduced and beat** the hand-built first-run surface, converging on the same
-vocabulary (phases, conversation, connections rail, schema, signals, input) plus
-extras, grounded in the real environment. Conclusion: **do not build a component
-library or layout DSL.** The minimal harness is freeform agent-generated UI +
-the v0 substrate (full-page rewrite + message box) + live state binding.
-
-### Proven on real infrastructure, and the one real blocker
-
-A real Claude agent (taskpilot, subscription, reached by **task id**, resumed per
-message) interpreted element-id clicks from its own brief, ran real `gh` (pulled
-40 repos), surfaced an honest auth error and self-corrected, and the surface
-reflected it live with a consequence-gated approval state. The keystone works.
-
-The blocker is **delivery transport, not the concept**: taskpilot delivers
-messages by typing keystrokes into the Claude TUI in tmux, and submits drop
-intermittently (plus a missing `taskpilot/hooks/on-prompt.py` — likely install
-drift, and spawned agents have a sandboxed `$HOME` so `gh` needs
-`GH_CONFIG_DIR`). A production mindframe needs a **reliable resume channel**
-(queue/API), not keystroke injection. Prototypes (local, **not committed**):
-`slice/` (incl. `slice/live`, the real-agent run) and
-`dashboard/artifacts/{kb-live,genui-1,2,3}` (the latter under gitignored `artifacts/`).
-
-## Update (2026-06-02, later) — v0 substrate shipped + setup migrated
-
-- The **v0 substrate** shipped as a standalone server at `surface/` (`server.py`
-  + `shell.html`), promoted from the `slice/` prototype. The intent primitive is
-  cut; see "The v0 interaction model" above. **(2026-06-05: collapsed into the
-  dashboard — one surface server serving every mindframe at `/m/<id>`; `surface/`
-  deleted.)**
-- **Setup is migrated to the UI-based flow.** The hosted `install.txt` is now a
-  small terminal bootstrap (rules → marketplace → install mindframe → birth the
-  setup mindframe → hand off). The onboarding arc lives in `setup/brief.md` (the
-  setup mindframe's standing brief, a template install.txt fills in).
-- **Capabilities are skills / MCPs / CLIs, not KB records.** Skills and MCPs
-  self-inject into an agent at startup; a CLI capability is wrapped as a skill
-  whose body is the recipe. The knowledge base stores what the org IS (entities,
-  history), never the capability registry. There is no `Connection` KB entity;
-  connections are discovered live via shell. This supersedes the "Connection
-  state persistence" open thread above for the *capability* concern (operator-
-  specific scope/account binding lives in config or a generated per-deployment
-  skill, still injected, not queried).
+  approval of MCP installs and connection paths). Likely the home of the
+  `human-approval` capability.
+- Connection state persistence (provenance / path / fidelity / recipe /
+  dismissed).
+- Relevance curation (discovery finds noise; the agent deprioritizes it).
+- On-surface approve/deny buttons (today approval is a message).

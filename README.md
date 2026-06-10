@@ -1,35 +1,43 @@
 # mindframe
 
-Customer-installable bundle that gives an organization a knowledge base of how
-it works — and AI agents that act on it.
+Gives an organization a knowledge base of how it works, and AI agents that act
+on it. Mindframe builds the knowledge base from the systems a team already uses
+(Slack, GitHub, Gmail, infrastructure), then runs agents that turn that
+knowledge into work: reports and reviews, incident triage, answers to "how does
+X actually work here."
 
-Mindframe builds a knowledge base from the systems a team already uses (Slack,
-GitHub, Gmail, infrastructure), then runs agents that turn that knowledge into
-work: reports and reviews, incident triage, answers to "how does X actually
-work here."
+Mindframe is **manifest-first**: it ships skills, the customer-domain
+knowledge-base schema (`docs/kb-schema.md`), and a `requires` list. The work is
+done by the layers it composes. The one exception is the **Surface** (the
+dashboard), which mindframe owns and ships directly.
 
-Mindframe-the-plugin is **manifest-first**: it ships skills, the customer-domain
-knowledge-base schema (`docs/kb-schema.md`), and a `requires` list. The actual
-work is done by the bundled providers (taskpilot, session-bridge, taskboard,
-dispatcher, knowledge-base, browser-bridge).
+## The stack
 
-## Architecture
+Six runtime layers, each a plugin or MCP bound by capability (except the Surface):
 
-See [CLAUDE.md](CLAUDE.md) for the bundle composition (7 buckets), runtime flow,
-and decisions. See [`docs/`](docs/) for the product overview, architecture, and
-subsystem interfaces.
+| Layer | What runs it |
+|---|---|
+| **Surface** | the dashboard (`dashboard/`) — one server for every mindframe |
+| **Agent runtime** | `taskpilot` — tmux-backed `claude`, fed over the Mesh |
+| **Event ingress** | `dispatcher` (`:8911`) — dedupe, route, spawn |
+| **Knowledge** | the vault at `~/.mindframe/vault` *(under redesign)* |
+| **Mesh** | `session-bridge` (`:8910`) — agent↔agent↔human |
+| **Perception** | `claude-browser-bridge` + adopt-on-install MCPs |
+
+See [`CLAUDE.md`](CLAUDE.md) for the layer table with state and providers, and
+[`docs/architecture.md`](docs/architecture.md) for the full reference.
 
 ## Commands
 
-- `/mindframe:setup` — onboarding wizard. Probes the environment for available
-  data sources, walks the operator through credentials, bootstraps the
-  customer-domain knowledge base from real source systems, wires the event
-  router, and runs an end-to-end smoke test.
-- `/mindframe:doctor` — diagnose and heal the bundle. Walks every plugin —
-  agent runtime, knowledge base, event router, dashboard, perception MCPs —
-  checks for missing capabilities, dead daemons, broken config, and schema
-  drift, fixes what is safe to fix, and reports the rest with evidence.
-No deliverable skills ship in the current bundle. The deliverable-skills bucket
-is part of the architecture; first entries pending redesign.
+- `/mindframe:setup` — onboarding. A terminal bootstrap births the operator's
+  first mindframe, which runs the rest of setup inside the Surface: probes the
+  environment, inherits the operator's identity, assembles and bootstraps the
+  vault, and wires the first event.
+- `/mindframe:doctor` — diagnose and heal the bundle. Walks every layer, checks
+  for missing capabilities, dead daemons, and broken config, fixes what is safe,
+  and reports the rest with evidence.
 
-The dashboard component lives in the sibling [`taskboard`](../taskboard/) plugin.
+A mindframe agent does the work directly — interactively in its surface, or per
+event via a dispatcher recipe an operator wires. Mindframe ships no pre-built
+workflow artifacts. See [`docs/`](docs/) for the product overview, architecture,
+and interfaces.

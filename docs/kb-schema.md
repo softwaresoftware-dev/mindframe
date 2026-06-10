@@ -1,6 +1,6 @@
 # KB Schema — Customer Knowledge Base
 
-The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer — a plain local directory of notes, populated at setup and by the deliverable skills that read and write it.
+The persistent memory layer for a mindframe deployment: a Markdown + frontmatter Obsidian-style vault, owned by the customer — a plain local directory of notes, populated at setup and by the mindframe agents that read and write it.
 
 ## What this document is
 
@@ -20,7 +20,7 @@ Each deployment assembles its own schema from the library and records it in the 
 3. **Foreign keys are names, not paths.** Resilient to reorganization.
 4. **CATALOG.md is the index.** Agents read it first; opening notes is the second hop.
 5. **Per-customer single-tenant.** One vault, one customer, one local directory.
-6. **Every writer validates against the schema.** The vault is written by setup's bootstrap and by deliverable skills; each conforms a note to `schema.yaml` before it writes. The schema is the gate, not a dedicated agent.
+6. **Every writer validates against the schema.** The vault is written by setup's bootstrap and by mindframe agents as they work; each conforms a note to `schema.yaml` before it writes. The schema is the gate, not a dedicated agent.
 7. **Live state is not in the vault.** Active alerts, current PRs, deploy status: queried from source systems at runtime.
 8. **Secrets are referenced, never stored.** Frontmatter holds a keychain entry name; the value never appears in markdown.
 9. **The schema is per-install.** The meta-schema is fixed; the entity set is assembled at setup and recorded in `schema.yaml`.
@@ -83,7 +83,7 @@ Self-referential FKs are allowed (`manager: person`) but must not form cycles.
 
 ## The schema manifest
 
-Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; the deliverable skills read it.
+Each vault carries `schema.yaml` at its root — the assembled, self-contained schema for that deployment. Setup generates it; mindframe agents read it.
 
 ```yaml
 schema_version: 2
@@ -336,7 +336,7 @@ When a custom entity recurs across many deployments, that is the signal to consi
 
 ## CATALOG.md
 
-A reading agent (a deliverable skill) reads CATALOG.md first on every query. It has one section per *active* entity type (read from the manifest), encoding the most-queried fields so an agent can filter without opening every note.
+A reading agent reads CATALOG.md first on every query. It has one section per *active* entity type (read from the manifest), encoding the most-queried fields so an agent can filter without opening every note.
 
 ```markdown
 # Catalog
@@ -392,8 +392,8 @@ These hold for every vault, driven by its `schema.yaml` — never a hardcoded li
 
 Validation has two homes:
 
-- **Runtime — the writer.** The vault is written by setup's bootstrap and by deliverable skills; each checks its notes against `schema.yaml` before writing, so validation happens at write time. (An automated curator that once owned this gate — the `vault_keeper`/`vault_query` agents — was removed 2026-06-05 pending a redesign; until it returns, each writer is responsible for conformance.)
-- **Development — a plugin test.** The invariants are codified as a test in the knowledge-base plugin: fixture vaults, well-formed and intentionally broken, run through the checks under `make test`. That is where the rules are pinned down precisely and regression-guarded.
+- **Runtime — the writer.** The vault is written by setup's bootstrap and by mindframe agents as they work; each checks its notes against `schema.yaml` before writing, so validation happens at write time. There is no separate curator agent — every writer is responsible for conformance.
+- **Development — a regression test (planned).** The invariants are defined here and enforced by each writer at write time. A fixture-vault test inside mindframe — well-formed and intentionally broken vaults run through the checks under `make test` — is a tracked follow-up. (It previously lived in the `knowledge-base` plugin, archived 2026-06-06; the vault is now owned directly by mindframe, so the test belongs in mindframe's suite when it lands.) Until then, the invariants are pinned by this document and by the writers, not by an automated suite.
 
 ## Bootstrap
 
@@ -401,11 +401,11 @@ Setup populates the vault after it has assembled and written `schema.yaml`. Thre
 
 1. **Auto-discovery** — per-source extraction. Each connected source knows how to read its system into entity notes (GitHub org → `repository` + `service`; Slack workspace → `person` + `channel`; …). Stub notes are presented for confirmation.
 2. **Manual seeding** — what discovery can't infer: top Products, active Projects, foundational Decisions, Conventions, Glossary terms.
-3. **Organic growth** — Events and most Processes start empty; deliverable skills add to them as they run.
+3. **Organic growth** — Events and most Processes start empty; mindframe agents add to them as they work.
 
 ## Authoring discipline
 
-The vault is written by setup's bootstrap and by deliverable skills. A writer validates against `schema.yaml`, writes the note, and updates CATALOG.md and bidirectional links. (There is no dedicated curator agent today — the prior automated write/read loop was removed 2026-06-05 pending a redesign.)
+The vault is written by setup's bootstrap and by mindframe agents as they work. A writer validates against `schema.yaml`, writes the note, and updates CATALOG.md and bidirectional links. There is no separate curator agent or automated capture loop.
 
 ## What is NOT in the vault
 

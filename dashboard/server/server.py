@@ -21,7 +21,7 @@ Endpoints:
   - POST /api/dashboard-event              — proxy to dispatcher (server holds the bearer)
   - GET  /api/vault[/entries|/graph]       — the single knowledge-base vault
   - GET  /api/sources, /api/connections    — known-source catalog + live discovery
-  - GET  /api/events|/agents|/capabilities — read-only system overview
+  - GET  /api/events, /api/agents          — read-only system endpoints
   - GET  /artifacts/<id>/<path>            — serve a frame's sibling files
   - GET  /<path>                           — SPA fallback
 
@@ -61,8 +61,8 @@ FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".m
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TAIL_POLL_S = float(os.environ.get("MINDFRAME_TAIL_POLL_S", "0.25"))
 
-# The single, static knowledge-base vault. Not configurable — keeper and the
-# skills hardcode the same path.
+# The single, static knowledge-base vault. Not configurable — the dashboard and
+# the skills hardcode the same path. Mindframe owns this vault directly.
 VAULT_DIR = Path.home() / ".mindframe" / "vault"
 
 
@@ -114,12 +114,29 @@ def _configure_logging() -> None:
     )
 
 
+def _warm_connections_loop() -> None:
+    """Keep the connections cache warm in the background. `claude mcp list` alone
+    takes ~7s, so a cold /api/connections blocks the home page's count for that
+    long. Refreshing just under the TTL means the endpoint is virtually always a
+    cache hit (instant); the slow probe runs here, off the request path."""
+    import threading  # noqa: F401  (kept local so module import stays light)
+    while True:
+        try:
+            _conn_cache["data"] = _discover_connections()
+            _conn_cache["at"] = time.time()
+        except Exception as e:  # never let the warmer die
+            log(f"connections warm failed: {e}")
+        time.sleep(max(5.0, _CONN_TTL_S - 5.0))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _configure_logging()
     ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
     log(f"server on http://127.0.0.1:{PORT}")
     log(f"artifacts: {ARTIFACTS_ROOT}")
+    import threading
+    threading.Thread(target=_warm_connections_loop, daemon=True).start()
     yield
 
 
@@ -146,15 +163,14 @@ async def api_health() -> dict[str, Any]:
 
 # --------------------------- mindframe surface listing ---------------------------
 #
-# Block-stream removed (2026-06-04): a mindframe is now a *surface* — the agent
-# owns one index.html it rewrites in place (see surface/ and
-# docs/onboarding-ux.md). This endpoint lists surface mindframes: frame dirs
-# under FRAMES_ROOT that hold an index.html. Proper per-mindframe viewing and
-# prompt->surface creation are rebuilt in a later migration step; for now each
-# frame's page is reachable via /artifacts/<id>/index.html.
+# A mindframe is a *surface*: the agent owns one index.html it rewrites in place
+# (see docs/onboarding-ux.md). This endpoint lists surface mindframes: frame dirs
+# under FRAMES_ROOT that hold an index.html. Per-mindframe viewing is served at
+# /m/<id> and creation at POST /api/frames/create.
 
 
 def _read_meta(fdir: Path) -> dict[str, Any]:
+    """Parse a frame dir's meta.json, returning {} if it's missing or unreadable."""
     meta_path = fdir / "meta.json"
     if not meta_path.is_file():
         return {}
@@ -162,6 +178,29 @@ def _read_meta(fdir: Path) -> dict[str, Any]:
         return json.loads(meta_path.read_text("utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+# The composing placeholder's <title> (and other non-labels) — skip these so a
+# frame mid-compose falls back to its meta title instead of showing "composing…".
+_PLACEHOLDER_TITLES = {"composing…", "composing...", "mindframe", ""}
+
+
+def _page_title(index: Path) -> str | None:
+    """The <title> of the agent's current page, when it's a real label. The agent
+    rewrites a complete HTML document each turn, so its <title> is the freshest
+    description of what the frame is actually about — far better than the
+    creation-time meta title (which for every launchpad is just "Where to start").
+    Reads only the head, so page size doesn't matter."""
+    try:
+        with open(index, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    m = re.search(r"<title>(.*?)</title>", head, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return None
+    t = re.sub(r"\s+", " ", m.group(1)).strip()
+    return t if t.lower() not in _PLACEHOLDER_TITLES else None
 
 
 @app.get("/api/frames")
@@ -188,12 +227,47 @@ async def api_frames() -> dict[str, Any]:
             modified = 0
         out.append({
             "id": fdir.name,
-            "title": meta.get("title") or fdir.name,
+            "title": _page_title(index) or meta.get("title") or fdir.name,
             "status": meta.get("status") or "active",
             "modified": modified,
             "tags": meta.get("tags") or [],
         })
     out.sort(key=lambda f: f["modified"], reverse=True)
+    return {"frames": out}
+
+
+# Window (seconds) within which a transcript write counts as "the agent is
+# working right now" — backs the surface dock's per-frame pulse markers.
+_FRAME_ACTIVE_WINDOW_S = 8.0
+
+
+@app.get("/api/frames/activity")
+async def api_frames_activity() -> dict[str, Any]:
+    """Per-frame 'is the agent working right now' signal for the surface dock.
+    Working = the agent's transcript was written within _FRAME_ACTIVE_WINDOW_S.
+    Cheap: one transcript stat per frame, no parsing — so the dock can poll it
+    every couple seconds to pulse whichever frames are live, even unfocused ones."""
+    now = time.time()
+    out: list[dict[str, Any]] = []
+    if not FRAMES_ROOT.is_dir():
+        return {"frames": []}
+    try:
+        entries = list(FRAMES_ROOT.iterdir())
+    except OSError:
+        return {"frames": []}
+    for fdir in entries:
+        if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
+            continue
+        if not (fdir / "index.html").is_file():
+            continue
+        working = False
+        try:
+            tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+            if tp is not None and (now - tp.stat().st_mtime) < _FRAME_ACTIVE_WINDOW_S:
+                working = True
+        except OSError:
+            pass
+        out.append({"id": fdir.name, "working": working})
     return {"frames": out}
 
 
@@ -236,6 +310,7 @@ understand and your first concrete step, and end with a question."""
 
 
 def _mint_frame_id(n: int = 10) -> str:
+    """Generate a random n-char lowercase-alphanumeric frame id."""
     return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(n))
 
 
@@ -342,6 +417,8 @@ async def create_mindframe(body: CreateMindframe) -> Response:
 
 
 def _frame_dir(mid: str) -> Path | None:
+    """Resolve a frame id to its directory, or None if the id is malformed or
+    the directory doesn't exist. Also guards against path traversal via the id."""
     if not FRAME_ID_RE.match(mid):
         return None
     d = FRAMES_ROOT / mid
@@ -423,9 +500,43 @@ async def frame_message(mid: str, body: FrameMessage) -> Response:
     return JSONResponse({"ok": True})
 
 
+@app.delete("/api/frame/{mid}")
+async def delete_frame(mid: str) -> Response:
+    """Tear a mindframe down: kill its agent, then remove the frame dir. A
+    mindframe is two things — a persistent taskpilot agent (task_id == mid) and
+    its frame dir — so deleting the dir alone would orphan a live agent. We kill
+    the agent first (best-effort: it may already be dead/gone), then rmtree the
+    dir. The Claude transcript under ~/.claude/projects is left alone."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    task_id = _frame_task_id(mid, fdir)
+
+    # Kill the agent. Best-effort — a non-2xx (already killed, unknown task) is
+    # fine; only a hard transport failure is worth reporting, and even then we
+    # still remove the dir so the frame stops showing up.
+    killed = False
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/kill")
+        killed = r.status_code < 300
+    except httpx.HTTPError:
+        killed = False
+
+    try:
+        shutil.rmtree(fdir)
+    except OSError as e:
+        return JSONResponse(
+            {"ok": False, "killed": killed, "error": f"agent killed={killed}, but couldn't remove frame dir: {e}"},
+            status_code=500)
+    return JSONResponse({"ok": True, "id": mid, "killed": killed})
+
+
 # --- cognition log: tail the agent's Claude transcript (ported from surface/) ---
 
 def _pretty_model(name: str) -> str:
+    """Shorten a raw model id for display: drop the `claude-` prefix and the
+    `-YYYYMMDD` date suffix, and turn `4-8` back into `4.8`."""
     name = name.replace("claude-", "")
     name = re.sub(r"-\d{8}$", "", name)
     return re.sub(r"(\d)-(\d)", r"\1.\2", name)
@@ -571,6 +682,8 @@ class DashboardEvent(BaseModel):
 
 
 def _read_dispatcher_bearer() -> str | None:
+    """Read the dispatcher bearer token from disk, or None if absent/empty. The
+    server holds this so the browser never sees it (see /api/dashboard-event)."""
     try:
         return DISPATCHER_BEARER_FILE.read_text("utf-8").strip() or None
     except OSError:
@@ -1032,6 +1145,7 @@ KNOWN_SOURCES = [
 
 
 def _credentials_dir() -> Path:
+    """The directory where per-source credential blobs live (~/.mindframe/credentials)."""
     return Path.home() / ".mindframe" / "credentials"
 
 
@@ -1157,12 +1271,21 @@ _BUNDLE_RUNTIME = {
 _CONN_DISPLAY = {
     "gmail-organizer": "Gmail", "google-calendar": "Google Calendar",
     "slack": "Slack", "finance": "Finance", "stripe": "Stripe",
+    "claude-browser-bridge": "Browser",
 }
+# Bundle MCPs that ARE shown as connections despite being bundle runtime.
+# browser-bridge is a real access door (it can reach any web system), so we
+# surface it even though the installer brought it. Everything else in
+# _BUNDLE_RUNTIME stays hidden as plumbing.
+_CONN_BUNDLE_KEEP = {"claude-browser-bridge"}
 _conn_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _CONN_TTL_S = 30.0
 
 
 def _conn_run(cmd: list[str], timeout: float = 20.0):
+    """Run a subprocess and return its CompletedProcess, or None if it couldn't
+    run at all (binary missing, timeout, etc.). Callers treat None as "tool
+    unavailable" and a non-zero returncode as "ran but failed"."""
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception:
@@ -1172,8 +1295,8 @@ def _conn_run(cmd: list[str], timeout: float = 20.0):
 def _parse_mcp_list() -> list[dict[str, Any]]:
     """Run `claude mcp list` and normalize each line to {id, name, state, bundle}.
 
-    Shared by /api/connections (live discovery) and /api/capabilities. Lines look
-    like `name: <url-or-cmd> - <status>`, where status carries 'Connected' or an
+    Used by /api/connections (live discovery). Lines look like
+    `name: <url-or-cmd> - <status>`, where status carries 'Connected' or an
     auth hint; a `plugin:<pkg>:<name>` prefix is reduced to its base name.
     """
     r = _conn_run(["claude", "mcp", "list"], timeout=45)
@@ -1196,42 +1319,103 @@ def _parse_mcp_list() -> list[dict[str, Any]]:
     return out
 
 
-def _discover_connections() -> dict:
-    conns: list[dict] = []
+# --- connector skills: SKILL.md files carrying a `connection:` fingerprint ---
+#
+# A connection can be declared as a skill instead of hardcoded here: any SKILL.md
+# whose frontmatter has a `connection:` block is a connector. We scan the
+# operator's user-scope skills (~/.claude/skills) plus installed-plugin skills,
+# parse the fingerprint, and probe each one's `check`. This is how any connector
+# /mindframe:connect authors shows up — no code change to add one, just a new
+# SKILL.md in ~/.claude/skills/.
 
-    # MCPs Claude is connected to (excluding the bundle's own runtime).
-    for m in _parse_mcp_list():
-        if m["bundle"]:
+
+def _skill_dirs() -> list[Path]:
+    """Directories Claude Code loads skills from: user scope + installed plugins."""
+    dirs = [Path.home() / ".claude" / "skills"]
+    manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(manifest.read_text("utf-8"))
+        for installs in (data.get("plugins") or {}).values():
+            if installs and installs[0].get("installPath"):
+                dirs.append(Path(installs[0]["installPath"]) / "skills")
+    except (OSError, ValueError):
+        pass
+    return dirs
+
+
+def _read_connector_skill(skill_md: Path) -> dict | None:
+    """Parse a SKILL.md; return {id, connection} if it carries a fingerprint, else None."""
+    try:
+        text = skill_md.read_text("utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    try:
+        import yaml
+        fm = yaml.safe_load(text[3:end]) or {}
+    except Exception:
+        return None
+    conn = fm.get("connection") if isinstance(fm, dict) else None
+    if not isinstance(conn, dict):
+        return None
+    return {"id": str(fm.get("name") or skill_md.parent.name), "connection": conn}
+
+
+def _connector_skills() -> list[dict]:
+    """Every skill carrying a `connection:` fingerprint, de-duped by id."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for d in _skill_dirs():
+        if not d.is_dir():
             continue
-        conns.append({"id": m["id"], "kind": "mcp",
-                      "state": m["state"], "name": m["name"]})
+        for sk in sorted(d.glob("*/SKILL.md")):
+            rec = _read_connector_skill(sk)
+            if not rec or rec["id"].lower() in seen:
+                continue
+            seen.add(rec["id"].lower())
+            out.append(rec)
+    return out
 
-    # Authed CLIs (inherited identity).
-    def add_cli(cmd, name, idd, check, acct=None):
-        if not shutil.which(cmd):
-            return
-        rr = _conn_run(check)
-        ok = bool(rr) and rr.returncode == 0
-        c = {"id": idd, "name": name, "kind": "cli",
-             "state": "connected" if ok else "needs-auth"}
-        if ok and acct:
-            a = _conn_run(acct)
-            if a and a.returncode == 0 and a.stdout.strip():
-                c["account"] = a.stdout.strip().splitlines()[0]
-        conns.append(c)
 
-    add_cli("gh", "GitHub", "github",
-            ["gh", "auth", "status"], ["gh", "api", "user", "-q", ".login"])
-    add_cli("gcloud", "GCP", "gcp",
-            ["bash", "-c", "gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q ."],
-            ["bash", "-c", "gcloud auth list --filter=status:ACTIVE --format='value(account)'"])
-    add_cli("aws", "AWS", "aws", ["aws", "sts", "get-caller-identity"])
-    add_cli("az", "Azure", "azure", ["az", "account", "show"])
+def _discover_connections() -> dict:
+    """List connections — presence only, no live status. A connection is either an
+    MCP Claude is connected to or a skill carrying a `connection:` fingerprint. We
+    do NOT run the connectors' `check`/`account` commands yet (status feature is
+    deferred), so this is just `claude mcp list` + a fingerprint scan. The mcp list
+    is still ~7s, so the cache is warmed in the background (_warm_connections_loop)."""
+    conns: list[dict] = []
+    seen: set[str] = set()
 
-    # connected first, CLIs before MCPs within a state, then by name
-    conns.sort(key=lambda c: (c["state"] != "connected", c["kind"] != "cli", c["name"]))
-    return {"connections": conns,
-            "reachable": sum(1 for c in conns if c["state"] == "connected")}
+    # MCPs. Hide the bundle's own runtime (taskpilot, session-bridge, …) as
+    # plumbing — except _CONN_BUNDLE_KEEP (browser-bridge), a real access door.
+    for m in _parse_mcp_list():
+        if m["bundle"] and m["id"] not in _CONN_BUNDLE_KEEP:
+            continue
+        if m["id"].lower() in seen:
+            continue
+        seen.add(m["id"].lower())
+        conns.append({"id": m["id"], "kind": "mcp", "name": m["name"]})
+
+    # Connector skills — any SKILL.md with a `connection:` fingerprint. Listed
+    # whether or not their tool is installed/authed; that's the deferred status.
+    for sk in _connector_skills():
+        sid = sk["id"]
+        if sid.lower() in seen:
+            continue
+        seen.add(sid.lower())
+        fp = sk["connection"]
+        conns.append({
+            "id": sid,
+            "kind": str(fp.get("kind") or "skill"),
+            "name": fp.get("label") or _CONN_DISPLAY.get(sid, sid.replace("-", " ").title()),
+        })
+
+    conns.sort(key=lambda c: (c["kind"] != "cli", c["name"]))
+    return {"connections": conns, "total": len(conns)}
 
 
 @app.get("/api/connections")
@@ -1246,17 +1430,18 @@ def list_connections() -> Response:
     return JSONResponse(_conn_cache["data"])
 
 
-# --------------------------- system overview (read-only) ---------------------------
+# --------------------------- read-only system endpoints ---------------------------
 #
-# Three endpoints that, together with the existing /api/frames, /api/vault and
-# /api/connections, back the structured "System" view. Each maps one bucket of
-# the bundle's mental model to its real on-disk source of truth:
+# Two endpoints that back the hub's Events and Agents drawers. Each maps one
+# bucket of the bundle's mental model to its real on-disk source of truth:
 #
-#   /api/events       — dispatcher routes      (~/.dispatcher/channels.yaml)
-#   /api/agents       — recipes + taskpilot db (~/.dispatcher/recipes, ~/.taskpilot)
-#   /api/capabilities — MCPs + plugin skills   (claude mcp list, installed_plugins.json)
+#   /api/events  — dispatcher routes      (~/.dispatcher/channels.yaml)
+#   /api/agents  — recipes + taskpilot db (~/.dispatcher/recipes, ~/.taskpilot)
 #
-# All read-only, all defensive: a missing dispatcher / taskpilot / claude CLI
+# (The former /api/capabilities — MCPs + plugin skills — was removed with the
+# /system overview it backed; deprecated 2026-06-08.)
+#
+# Both read-only, both defensive: a missing dispatcher / taskpilot / claude CLI
 # degrades to an empty list with a `present: false` flag, never a 500.
 
 DISPATCHER_HOME = Path(os.environ.get("MINDFRAME_DISPATCHER_HOME", str(Path.home() / ".dispatcher")))
@@ -1316,6 +1501,8 @@ def list_event_sources() -> Response:
 
 
 def _tmux_sessions() -> set[str]:
+    """The set of live tmux session names — ground truth for which agents are
+    actually running. Empty set if tmux is absent or has no sessions."""
     r = _conn_run(["tmux", "ls", "-F", "#{session_name}"], timeout=5)
     if not r or r.returncode != 0:
         return set()
@@ -1379,6 +1566,8 @@ def _live_agents(limit: int = 40) -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=3)
 
     def _recent(ts: str | None) -> bool:
+        """True if an ISO/space-separated timestamp is within the 3-day cutoff
+        (treating a naive timestamp as UTC). Used to drop stale pending zombies."""
         if not ts:
             return False
         try:
@@ -1427,83 +1616,6 @@ def list_agents() -> Response:
             "running_count": sum(1 for a in live if a["live"]),
         }}
         _sys_cache["agents"] = c
-    return JSONResponse(c["data"])
-
-
-def _list_mcps() -> list[dict[str, Any]]:
-    """All MCPs from `claude mcp list`, flagged bundle-runtime vs external."""
-    out = _parse_mcp_list()
-    out.sort(key=lambda m: (m["state"] != "connected", m["bundle"], m["name"]))
-    return out
-
-
-def _parse_frontmatter(text: str) -> dict[str, str]:
-    if not text.startswith("---"):
-        return {}
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}
-    fm: dict[str, str] = {}
-    for line in text[3:end].splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            fm[k.strip()] = v.strip()
-    return fm
-
-
-def _list_skills() -> list[dict[str, Any]]:
-    """Skills shipped by installed plugins, grouped by plugin."""
-    manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    try:
-        data = json.loads(manifest.read_text("utf-8"))
-    except (OSError, ValueError):
-        return []
-    out: list[dict[str, Any]] = []
-    for plugin_key, installs in (data.get("plugins") or {}).items():
-        if not installs:
-            continue
-        install_path = installs[0].get("installPath")
-        if not install_path:
-            continue
-        skills_dir = Path(install_path) / "skills"
-        if not skills_dir.is_dir():
-            continue
-        skills: list[dict[str, str]] = []
-        for sk in sorted(skills_dir.glob("*/SKILL.md")):
-            try:
-                fm = _parse_frontmatter(sk.read_text("utf-8")[:600])
-            except OSError:
-                continue
-            desc = fm.get("description", "")
-            skills.append({
-                "name": fm.get("name") or sk.parent.name,
-                "description": desc[:120] + ("…" if len(desc) > 120 else ""),
-            })
-        if skills:
-            out.append({
-                "plugin": plugin_key.split("@")[0],
-                "version": installs[0].get("version", ""),
-                "skills": skills,
-            })
-    out.sort(key=lambda p: p["plugin"])
-    return out
-
-
-@app.get("/api/capabilities")
-def list_capabilities() -> Response:
-    """Skills + MCPs the bundle can act through — the capability surface."""
-    now = time.time()
-    c = _sys_cache.get("caps")
-    if not c or (now - c["at"]) > _SYS_TTL_S:
-        mcps = _list_mcps()
-        skills = _list_skills()
-        c = {"at": now, "data": {
-            "mcps": mcps,
-            "skills": skills,
-            "mcp_count": len(mcps),
-            "skill_count": sum(len(p["skills"]) for p in skills),
-        }}
-        _sys_cache["caps"] = c
     return JSONResponse(c["data"])
 
 

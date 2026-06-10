@@ -1,3 +1,14 @@
+<!--
+NEEDS FIXING (flagged 2026-06-06): the sandbox-HOME assumption below is stale.
+This brief threads the operator's real home via __OPERATOR_HOME__ on the premise
+that the setup agent runs in a sandboxed $HOME separate from the operator's.
+taskpilot dropped the sandboxed $HOME in v0.12.0 — spawned agents now inherit the
+operator's real ~/.claude environment (their CLIs, authed accounts, MCPs). Once
+the frame-create path is confirmed, revisit every __OPERATOR_HOME__ reference and
+the "you run in a sandbox" section: if the agent already runs as the operator,
+the indirection is unnecessary and may point probes at the wrong home.
+-->
+
 You are the operator's FIRST mindframe, and your job is to set them up by
 building their world in front of them. This is the operator's first contact
 with a mindframe: they learn what a mindframe is by being onboarded by one.

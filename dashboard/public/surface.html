@@ -20,7 +20,62 @@
   #topbar a:hover { color: #cfe0ff; }
   #topbar .sep { color: #3a3a42; }
   #topbar .id { color: #5a5a63; }
-  #surface { flex: 1; border: 0; width: 100%; background: #0d0d0f; min-height: 0; }
+
+  /* main = left dock + the surface */
+  #main { flex: 1; display: flex; flex-direction: row; min-height: 0; }
+
+  /* left dock: every mindframe, switch between them without new tabs */
+  #dock {
+    width: 172px; flex: 0 0 172px; background: #0c0c0e;
+    border-right: 1px solid #1d1d22; overflow-y: auto; min-height: 0;
+    display: flex; flex-direction: column; gap: .25rem; padding: .5rem .45rem;
+  }
+  #dock .dkhdr {
+    font-size: .58rem; letter-spacing: .16em; color: #5a5a63;
+    text-transform: uppercase; padding: .15rem .35rem .4rem;
+  }
+  #dock .dk {
+    display: flex; align-items: center; gap: .5rem; width: 100%;
+    text-align: left; background: transparent; border: 1px solid transparent;
+    border-radius: 8px; padding: .5rem .55rem; cursor: pointer;
+    color: #9a9aa2; font: inherit; font-size: 12.5px; line-height: 1.2;
+  }
+  #dock .dk:hover { background: #141416; border-color: #26262a; color: #cfe0ff; }
+  #dock .dk.active { background: #16161a; border-color: #2f3a6a; color: #cfe0ff; cursor: default; }
+  #dock .dk .dkmark {
+    width: 7px; height: 7px; border-radius: 50%; background: #3a3a42; flex: 0 0 auto;
+  }
+  #dock .dk.working .dkmark { background: #5b6cff; animation: pulse 1.1s ease-in-out infinite; }
+  #dock .dk .dktitle { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #dock .dk .dkdel {
+    flex: 0 0 auto; width: 18px; height: 18px; line-height: 15px; padding: 0;
+    text-align: center; border: 0; border-radius: 4px; background: transparent;
+    color: #6b6b73; cursor: pointer; font-size: 13px; opacity: 0; transition: opacity .12s;
+  }
+  #dock .dk:hover .dkdel { opacity: 1; }
+  #dock .dk .dkdel:hover { background: #3a1f24; color: #ff8a8a; }
+  #dock .dknew {
+    margin-top: auto; color: #6b6b73; border: 1px dashed #2a2a30;
+    border-radius: 8px; padding: .5rem; text-align: center; cursor: pointer;
+    background: transparent; font: inherit; font-size: 12px;
+  }
+  #dock .dknew:hover { color: #cfe0ff; border-color: #3a4a8a; }
+
+  #surface { flex: 1; border: 0; min-width: 0; background: #0d0d0f; }
+
+  /* full-bleed working edge — glows while the agent is busy, so the page
+     never reads as dead during latency. Bound to setActive(); fires the
+     instant you hit Send, before any agent output lands. */
+  #edge {
+    position: fixed; inset: 0; pointer-events: none; z-index: 60;
+    box-shadow: inset 0 0 0 0 rgba(91,108,255,0);
+    transition: box-shadow .45s ease;
+  }
+  #edge.working { animation: edgepulse 1.8s ease-in-out infinite; }
+  @keyframes edgepulse {
+    0%,100% { box-shadow: inset 0 0 14px 1px rgba(91,108,255,0.16); }
+    50%     { box-shadow: inset 0 0 40px 5px rgba(91,108,255,0.52); }
+  }
 
   /* collapsible cognition log — docked above the message bar, outside the surface */
   #logs {
@@ -70,12 +125,16 @@
 </style>
 </head>
 <body>
+  <div id="edge" aria-hidden="true"></div>
   <div id="topbar">
     <a href="/">← home</a>
     <span class="sep">/</span>
     <span class="id" id="frame-id"></span>
   </div>
-  <iframe id="surface" title="mindframe surface"></iframe>
+  <div id="main">
+    <nav id="dock" aria-label="mindframes"><div class="dkhdr">mindframes</div><div id="docklist"></div></nav>
+    <iframe id="surface" title="mindframe surface"></iframe>
+  </div>
   <section id="logs"><div id="logbody"><div class="ln empty">No activity yet. The agent's thinking and tool calls show here while it works.</div></div></section>
   <form id="rail" autocomplete="off">
     <span id="brand">MINDFRAME</span>
@@ -100,6 +159,8 @@
   const logbody = document.getElementById('logbody');
   const toggle = document.getElementById('logtoggle');
   const stat = document.getElementById('stat');
+  const edge = document.getElementById('edge');
+  const docklist = document.getElementById('docklist');
 
   let rev = null, waiting = false;
   let actFile = "", actOffset = 0, lastActAt = 0, started = false, sentAt = 0, warned = false;
@@ -159,6 +220,7 @@
   function setActive(on){
     toggle.classList.toggle('active', on);
     toggle.querySelector('.lbl').textContent = on ? 'working…' : 'logs';
+    edge.classList.toggle('working', on);   // full-bleed pulse mirrors the working state
   }
   function openLogs(open){
     logs.classList.toggle('open', open);
@@ -166,6 +228,57 @@
     if (open) logbody.scrollTop = logbody.scrollHeight;
   }
   toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
+
+  // ----- dock: list every mindframe, switch without new tabs -----
+  let dockFrames = [];
+  async function loadDock(){
+    try {
+      const j = await (await fetch('/api/frames', { cache: 'no-store' })).json();
+      dockFrames = j.frames || [];
+      renderDock();
+    } catch (e) {}
+  }
+  function renderDock(){
+    docklist.innerHTML = '';
+    for (const f of dockFrames){
+      const active = f.id === MF_ID;
+      const row = document.createElement('div');   // div, not <a>, so the ✕ button can live inside
+      row.className = 'dk' + (active ? ' active' : '');
+      row.dataset.id = f.id;
+      row.title = f.title || f.id;
+      const mark = document.createElement('span'); mark.className = 'dkmark';
+      const t = document.createElement('span'); t.className = 'dktitle'; t.textContent = f.title || f.id;
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'dkdel'; del.textContent = '✕'; del.title = 'delete this mindframe';
+      del.addEventListener('click', (e) => { e.stopPropagation(); deleteDockFrame(f); });
+      row.appendChild(mark); row.appendChild(t); row.appendChild(del);
+      if (!active) row.addEventListener('click', () => { location.href = '/m/' + encodeURIComponent(f.id); });  // one tab
+      docklist.appendChild(row);
+    }
+    const nw = document.createElement('a');
+    nw.className = 'dknew'; nw.href = '/'; nw.textContent = '+ new';
+    docklist.appendChild(nw);
+  }
+
+  async function deleteDockFrame(f){
+    const label = f.title || f.id;
+    if (!confirm('Delete this mindframe?\n\n' + label + '\n\nThis kills its agent and removes the page. Cannot be undone.')) return;
+    try {
+      const r = await fetch('/api/frame/' + encodeURIComponent(f.id), { method: 'DELETE' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { alert('Delete failed: ' + (j.error || r.statusText)); return; }
+      if (f.id === MF_ID) { location.href = '/'; return; }   // we were viewing it — bounce home
+      loadDock();                                            // otherwise just refresh the list
+    } catch (e) { alert('Delete failed: ' + e); }
+  }
+  async function pollDockActivity(){
+    try {
+      const j = await (await fetch('/api/frames/activity', { cache: 'no-store' })).json();
+      const working = new Set((j.frames || []).filter(f => f.working).map(f => f.id));
+      docklist.querySelectorAll('.dk').forEach(row =>
+        row.classList.toggle('working', working.has(row.dataset.id)));
+    } catch (e) {}
+  }
 
   async function pollRev(){
     try {
@@ -197,6 +310,10 @@
   }
 
   restoreLog();
+  loadDock();
+  setInterval(loadDock, 10000);            // pick up newly-created / renamed frames
+  setInterval(pollDockActivity, 2000);     // pulse whichever frames are live
+  pollDockActivity();
   setInterval(pollRev, 1000);
   setInterval(pollActivity, 1200);
   pollRev();

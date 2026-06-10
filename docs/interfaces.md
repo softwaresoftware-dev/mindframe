@@ -49,8 +49,10 @@ Use an available skill or tool.
 
 The resolver guarantees a provider is loaded; intent-based language keeps the
 skill swappable. mindframe's own `requires` are `agent-spawning`,
-`session-mesh`, `knowledge-base`, `event-routing`, `status-dashboard`,
-`browser-automation`; `notification` is optional.
+`session-mesh`, `event-routing`, `browser-automation`, `notification`, and
+`daemon`. The Surface and the Knowledge vault are **not** resolved capabilities —
+mindframe owns both directly (there is no `knowledge-base` requirement in the
+manifest).
 
 Full reference: the `softwaresoftware` plugin's `docs/capability-contracts.md`.
 
@@ -220,7 +222,7 @@ handing the agent a literal `{{output_path}}`.
 
 > **Note.** Mindframe ships no recipes of its own — operators author them
 > during setup. This section documents the dispatcher seam any future
-> deliverable plugs into; the recipe/`channels.yaml` contract lives in the
+> event-driven agent plugs into; the recipe/`channels.yaml` contract lives in the
 > `dispatcher` provider, not in this plugin.
 
 ---
@@ -230,7 +232,7 @@ handing the agent a literal `{{output_path}}`.
 The customer vault is a local directory of Markdown notes with YAML
 frontmatter — one note per entity, organized by the four layers (Thing,
 Event, Knowledge, Process) — plus a `CATALOG.md` index. It is populated at
-setup and by deliverable skills, and is **read by grep**, not by embeddings.
+setup and by mindframe agents as they work, and is **read by grep**, not by embeddings.
 
 The schema is **per-install**. [`kb-schema.md`](kb-schema.md) is the
 *library*: the fixed meta-schema (the rules every entity obeys), the core
@@ -247,10 +249,10 @@ The interface, then, is two-layer:
 - **Per-vault** — the deployment's `schema.yaml`. Skills read *this* to know
   what entity types exist; they never assume a hardcoded list. A software vault
   has `service`/`repository`; a paper-mill vault has `machine`/`mill` and
-  neither of those. Whatever writes the vault (setup's bootstrap, deliverable
-  skills) validates against `schema.yaml` at write time — see `kb-schema.md`.
+  neither of those. Whatever writes the vault (setup's bootstrap, mindframe
+  agents) validates against `schema.yaml` at write time — see `kb-schema.md`.
 
-Deliverable skills depend on the grep contract documented per-vault in its
+Mindframe agents depend on the grep contract documented per-vault in its
 `README.md` — the entity directories and frontmatter keys they can rely on
 finding.
 
@@ -258,34 +260,36 @@ finding.
 
 ## 6. Agent runtime — spawn interface
 
-`taskpilot` spawns and supervises agents. The event router reaches it through
-the **spawner CLI**, which the dispatcher-ingress spawn helper invokes:
+`taskpilot` spawns and supervises agents through its **daemon** on `:8912`.
+Both the Event ingress spawn helper and the Surface reach it the same way, over
+HTTP.
 
-```
-python spawner_cli.py <description> --name <task_id> \
-    [--enabled-plugins a,b] [--enabled-mcps a,b] \
-    [--channels a,b] [--model <model>] [--brief <path>]
-```
+### `POST /tasks/create_and_spawn`
 
-| Argument | Meaning |
-|---|---|
-| `<description>` | The agent's starter prompt (recipe `starter_prompt`, substituted). |
-| `--name` | The task id — slugified, used for the tmux session and task directory. |
-| `--enabled-plugins` | Comma-joined installed-plugin keys (the recipe's `plugins` base set). |
-| `--enabled-mcps` | Comma-joined MCP server names (the recipe's `mcps` base set). |
-| `--channels` | Comma-joined extra mesh channels. |
-| `--model` | Model override. |
-| `--brief` | Path to the composed brief JSON. |
+Define and spawn a task atomically. Idempotent by the task-id slug. Body
+(JSON): the agent's `description` (the recipe's substituted `starter_prompt`),
+the `name` (task id), an optional `model`, and an optional `cwd`. The daemon
+launches a detached tmux session running `claude`, registers the agent's Mesh
+channel under the task id, and returns
+`{ "ok": true, "task_id": "…", … }` on success or `{ "ok": false, "error": "…" }`
+on failure.
 
-The CLI blocks until tmux + `claude` are launched (~16 s) and prints a JSON
-result: `{ "ok": true, "task_id": "…", … }` on success, `{ "ok": false,
-"error": "…" }` on failure. Each spawned agent gets a task directory
-(default `~/.taskpilot/<task_id>/`) holding its `brief.json`, prompt, and pane
-log.
+### `POST /tasks/<id>/message`
 
-`kind: task` agents run once and exit; `kind: service` agents are long-lived
-and reboot-persistent via the `daemon` capability (systemd on Linux, launchd
-on macOS).
+Deliver a message to a running agent. The daemon forwards it to the agent's Mesh
+channel (`session-bridge :8910/sessions/<id>/message`) — **messages reach agents
+over the Mesh, never by typing into the tmux pane.** The starter prompt is
+delivered the same way at spawn time.
+
+Each spawned agent gets a task directory (default `~/.taskpilot/<task_id>/`); its
+durable state is the transcript at `~/.claude/projects/<encoded-cwd>/`. taskpilot
+inherits the operator's real `~/.claude` environment, so the agent has the
+operator's plugins, MCPs, and identity (there is no sandboxed `$HOME` and no
+per-spawn `--enabled-plugins`/`--enabled-mcps`).
+
+Every task is **one-shot**: it runs and exits, and `kill` is the only teardown.
+The long-lived `kind: service` mode and auto-respawn were removed; a service that
+must survive reboots is managed through the `daemon` capability instead.
 
 ---
 
@@ -298,21 +302,21 @@ Tools exposed to a session:
 
 | Tool | Purpose |
 |---|---|
-| `sessions` | List mesh members; filter by namespace or label selector. |
+| `sessions` | List mesh members. |
 | `message` | Start a conversation with another session. |
 | `reply` | Reply within a conversation, by `chat_id`. |
-| `broadcast` | Message every session matching a selector (e.g. `kind:service`). |
-| `label` | Tag a session with `key:value` labels. |
 
 Inbound messages arrive as `<channel>` notifications carrying `from_id`,
 `from_name`, and a `chat_id` to reply against. The dispatcher's `session:`
-routes and `POST /api/direct/{session}` both deliver through this mesh.
+routes and `POST /api/direct/{session}` both deliver through this mesh, and so
+does the Agent runtime — `POST :8910/sessions/<id>/message` is how taskpilot
+delivers a spawned agent's prompt and every later message.
 
 ---
 
 ## 8. Notification capability
 
-Deliverable skills typically end by notifying a human. They do this through the
+Mindframe agents typically end by notifying a human. They do this through the
 `notification` capability — never a named provider:
 
 ```markdown
@@ -326,9 +330,9 @@ The resolver binds `notification` to whatever fits the environment —
 (which Slack channel, which address) comes from the customer's vault — the
 Service or Team note's `slack:` / `notify:` frontmatter — not from the skill.
 
-`notification` is an **optional** capability for the bundle: the deliverable
-skills include a fallback-file path so a run still produces an artifact if no
-notification provider is installed.
+`notification` is treated as best-effort by agents: they include a fallback-file
+path so a run still produces an artifact if no notification provider is
+reachable.
 
 ---
 
@@ -343,18 +347,18 @@ lists them, and proxies messages to them.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/frames` | List surface mindframes — the frame dirs holding an `index.html`. |
-| `POST /api/frames/create` | Mint a frame dir and spawn its persistent agent (via taskpilot's `spawner_cli.py`). |
+| `POST /api/frames/create` | Mint a frame dir and spawn its persistent agent through the Agent runtime daemon (`POST :8912/tasks/create_and_spawn`). |
 | `GET /m/<id>` | The per-mindframe shell: an iframe over the agent's page + message rail + cognition log. |
 | `GET /api/frame/<id>/page`, `/rev` | The agent's current `index.html` and its revision counter (for live reload). |
 | `POST /api/frame/<id>/message` | Deliver a message to the mindframe's agent (forwarded to the taskpilot daemon). |
 | `GET /api/frame/<id>/activity` | Tail the agent's transcript for the cognition log. |
 | `GET /api/vault`, `/api/vault/entries`, `/api/vault/graph` | The single knowledge base at `~/.mindframe/vault`. |
-| `GET /api/sources`, `/api/connections` | Configured sources, and live connection discovery (`claude mcp list` + gh/gcloud/aws/az auth probes, minus bundle runtime). |
-| `GET /api/events`, `/api/agents`, `/api/capabilities` | System-overview feeds for the `/system` route. |
+| `GET /api/sources`, `/api/connections` | Configured sources, and connection discovery: MCPs Claude is connected to (minus bundle runtime, except browser-bridge) plus skills carrying a `connection:` fingerprint. Presence only — no live auth probing yet. |
+| `GET /api/events`, `/api/agents` | Read-only feeds for the hub's Events and Agents drawers. |
 | `POST /api/dashboard-event` | Dispatcher proxy (bearer-authed against `~/.mindframe/secrets/dispatcher-bearer.token`). |
 | `GET /api/health` | `{ ok, port, dispatcher_url, dispatcher_bearer_present }`. |
 | `/artifacts/<sid>/<path>` | Static artifacts written by an agent. |
-| `/` and `/system` | The SPA (home: create-a-mindframe + your mindframes + the KB + sources; `/system`: bundle overview). |
+| `/` | The SPA home — a hub graph: a central "New" ringed by Mindframes, Knowledge base, Agents, Connections, and Events nodes (each opens a drawer). |
 
 Spawned mindframe agents run as `claude` processes authenticated by the Claude
 Code subscription — no `ANTHROPIC_API_KEY`, consistent with the rest of the

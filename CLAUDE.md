@@ -1,112 +1,156 @@
-# Mindframe — Agentic Framework Bundle
+# Mindframe — Agentic Stack
 
-Customer-installable bundle that gives an organization a knowledge base of how it works — and AI agents that act on it. Mindframe is a packaging + onboarding layer, not a framework or dashboard in its own right. The components do the work; mindframe is what makes them installable as one product. Incident triage is the first deliverable skill, not the mission — the bundle is general over business, engineering, and software-ops domains.
+Mindframe gives an organization a knowledge base of how it works and AI agents
+that act on it. It is a **packaging + onboarding layer**: it ships skills, the
+customer-domain knowledge-base schema (`docs/kb-schema.md`), a `requires` list,
+and one piece of business logic it owns directly, the **dashboard**. Everything
+else is a provider the bundle composes.
 
-This plugin is **manifest-first** — ships skills, customer templates, and a `requires` list. Actual work happens in the bundled providers. The one exception is `dashboard/` (see below): a self-contained generative-UI web app that ships *inside* this plugin, distributed by mindframe, run locally under Claude Code, and opened through browser-bridge.
+The whole system is six runtime layers. Read them top to bottom: the human
+touches the **Surface**; the Surface drives the **Agent runtime**; events arrive
+through **Event ingress**; agents draw on **Knowledge**, talk over the **Mesh**,
+and reach the world through **Perception**.
 
-## Bundle composition (7 buckets)
+## The six layers
 
-Mental model: **runs agents → gives them memory → wakes them up → sets it up → is what they do → shows the human → connects to the world.**
+| Layer | What runs it | State |
+|---|---|---|
+| **Surface** | the dashboard: one FastAPI server (`dashboard/server/server.py`) + SPA that serves every mindframe at `/m/<id>` | `~/.mindframe/frames/<id>/index.html` |
+| **Agent runtime** | `taskpilot` spawns a persistent tmux-backed `claude`; the starter prompt and every later message are delivered over the Mesh (not tmux keystrokes) | transcript in `~/.claude/projects/<encoded-cwd>/` |
+| **Event ingress** | `dispatcher` (`:8911`): dedupe → `channels.yaml` static route → LLM fallback → spawn an ephemeral agent | `~/.dispatcher/events.db` |
+| **Knowledge** | a single vault: markdown + frontmatter, the 4-layer schema in `docs/kb-schema.md` *(under redesign — see note)* | `~/.mindframe/vault` (hardcoded) |
+| **Mesh** | `session-bridge` (`:8910`): agent↔agent↔human messaging. Also the Agent-runtime delivery channel | transient |
+| **Perception** | `claude-browser-bridge` + adopt-on-install MCPs (github / sentry / slack / …), live-probed via the Surface's `/api/connections` | — |
 
-1. **Agent runtime** — `taskpilot` + `session-bridge`. Spawns and manages claude processes (tmux-backed, reboot-persistent). Mesh for inter-agent + agent-to-human messaging.
-2. **Knowledge base** — customer vault (`knowledge-base` capability). Markdown + frontmatter, schema in `docs/kb-schema.md`. Persistent memory: services, repos, runbooks, owners, on-call, past incidents. Populated at setup and by deliverable skills (no automated curator ships right now — see "Vault agents removed" below).
-3. **Event router** — `dispatcher`. Push-path: public webhook ingress + LLM/direct router + audit. Spawns ephemeral agents on demand.
-4. **Setup wizard** — `/mindframe:setup`. Claude-driven onboarding. Walks user through credentials per data system, validates connections live, bootstraps the vault, configures triggers, runs end-to-end smoke test.
-5. **Deliverable skills** — a library of skills that turn the knowledge base into work: incident triage (RCA → draft fix → notify), reviews and reports, answers about how the org runs. What the customer asks the agents for. **No deliverable skills currently ship in the bundle** (the prior `sentry-triage` and `k8s-triage` were deleted 2026-05-19 pending redesign). New deliverables are added to the library; incident triage is the first slated entry.
-6. **Dashboard** — mindframe ships its own dashboard at `dashboard/`. Runs as a managed daemon via `daemon-manager` (the `daemon` capability provider). Reboot-persistent via systemd/launchd/Task Scheduler. Sibling-plugin merger with `taskboard` is future work.
-7. **Perception + adopt-first MCPs** — `claude-browser-bridge` + sentry / gcp-logging / github / grafana / slack MCPs. Browser-bridge is general-purpose perception for any web UI; default-install, not opt-in.
+Each layer is a separate plugin or MCP, bound by **capability**, except the
+Surface and the Knowledge vault, which mindframe owns directly. The
+`softwaresoftware` resolver picks a provider per capability at install time, so
+any composed layer is swappable per customer.
 
-## Architecture
+Capability → provider for each layer:
 
-### Plugin/capability graph
+| Layer | Capability | Provider |
+|---|---|---|
+| Surface | *(mindframe owns it)* | `dashboard/` |
+| Agent runtime | `agent-spawning` | `taskpilot` (pulls in `terminal-ops` → `tmux-session`, `daemon` → `daemon-manager`) |
+| Event ingress | `event-routing` | `dispatcher` |
+| Knowledge | *(mindframe owns it)* | the vault — plain files at `~/.mindframe/vault` |
+| Mesh | `session-mesh` | `session-bridge` |
+| Perception | `browser-automation` | `claude-browser-bridge` + adopted MCPs |
+
+`notification` is an optional capability agents use to notify a human; it is not a
+layer.
+
+## How a request flows
+
+The push path, end to end:
 
 ```
-                           mindframe (this plugin)
-                           - /mindframe:setup
-                           - deliverable skills (none ship currently)
-                           - customer-domain KB schema (docs/kb-schema.md)
-                                       │
-                                       │ requires
-   ┌──────────────┬────────────┬───────┼────────────┬────────────┬──────────┬───────────┐
-   ▼              ▼            ▼       ▼            ▼            ▼          ▼           ▼
-agent-       channel    knowledge-   event-     status-      browser-     daemon    notification
-spawning                base         routing    dashboard    automation
-   │              │            │       │            │            │          │
- taskpilot   session-bridge knowledge-base dispatcher taskboard  browser-bridge  daemon-manager
-                                                                              (runs the dashboard
-                                                                              as a managed service)
+external event ──▶ Event ingress (dispatcher :8911)
+                      dedupe → channels.yaml → LLM fallback
+                      └─ spawn:<recipe> → POST :8912/tasks/create_and_spawn
+                                                │
+                                          Agent runtime (taskpilot)
+                                          tmux-backed claude, fed over the Mesh
+                                                │
+                          ┌─────────────────────┼─────────────────────┐
+                          ▼                     ▼                      ▼
+                      Knowledge            Perception            output channel
+                      (the vault)          (browser-bridge       (notification
+                                            + adopted MCPs)        capability)
 ```
 
-### Runtime flow (wire shape for any deliverable skill)
-
-The bundle currently ships no deliverable skill. The wire shape below is what any future deliverable will plug into — preserved here so the dispatcher → taskpilot → mesh → vault → notify path is documented:
-
-```
-external event → dispatcher (webhook) → spawn ephemeral claude → /mindframe:<deliverable>
-                                                                  │
-                                      ┌───────────────────────────┼──────────────────────┐
-                                      ▼                           ▼                      ▼
-                                  knowledge-base          browser-bridge MCP     output channel
-                                  (the vault)             (provider MCPs)        (notification provider)
-                                      │
-                                  taskboard observes everything ← always-on
-```
+The interactive path is the same runtime, entered from the top: the operator
+opens the **Surface**, creates or messages a mindframe, and the Surface delivers
+that message to the Agent runtime through the same `:8912` daemon. A mindframe is
+a persistent agent that owns one HTML page it rewrites in place plus a message
+box; the Surface serves the page and proxies messages. There is no second
+"interactive" stack.
 
 ## Invariants
 
-- **Mindframe is manifest-first.** Bundle composition lives in `requires`. No business logic in this plugin — *except* `dashboard/`, the generative-UI app mindframe ships and distributes directly.
-- **Every box is a plugin or an MCP.** No loose `tools/` directories in the bundle. `dashboard/` is the deliberate carve-out: it is the Act-3 hero surface, owned by mindframe rather than delegated to a provider.
-- **Capabilities are the only contract.** Any provider is swappable per customer (notification → Slack today, email tomorrow).
-- **Push and pull paths stay separate.** Dispatcher (ears) and taskboard (eyes) don't talk directly.
+- **Manifest-first.** Bundle composition lives in `requires`. The only business
+  logic mindframe owns is the Surface (`dashboard/`).
+- **Every layer is a plugin or an MCP**, bound by capability. Skills reference a
+  capability by intent ("send a notification"), never by provider name, so any
+  provider is swappable per customer.
+- **The Mesh is the agent transport.** `taskpilot` does not type into the TUI;
+  it POSTs the prompt and every message to `session-bridge :8910/sessions/<id>/message`.
+  Agent runtime and Mesh are coupled by this.
+- **Single vault, single Surface.** One `~/.mindframe/vault`, one dashboard
+  server for every mindframe. No multi-vault catalog, no sharing, no per-frame
+  server.
+- **Agents recommend; humans act.** Anything irreversible or outward-facing is
+  drawn on the mindframe's page as a pending action and waits for the operator
+  to confirm in a message.
+- **Subscription auth only.** Every `claude` process runs on the Claude Code
+  subscription. No `ANTHROPIC_API_KEY` anywhere in the bundle.
 
-## Status, decisions, open threads
+## Cross-cutting concerns (not layers)
 
-Lives in the project vault at `Projects/mindframe-rollout.md`. Ask the librarian (the session-bridge project-vault agent) — don't re-record state here; it keeps the note and its cross-references current. (This is the dev-side project tracker, not a mindframe-bundle component.)
+These act *on* the stack rather than being part of it:
+
+- **Setup** — `/mindframe:setup`. A terminal bootstrap births the operator's
+  first mindframe, which runs onboarding inside the Surface: it probes the
+  environment, inherits the operator's identity, assembles the vault schema,
+  bootstraps the vault, and wires the first event. Model in
+  `docs/onboarding-ux.md`; flow in the hosted `install.txt` and `setup/brief.md`.
+- **Doctor** — `/mindframe:doctor`. Walks the `requires` list capability by
+  capability, probes each provider, heals safe issues, reports the rest with
+  evidence.
+- **Open** — `/mindframe:open`. The "open up mindframe" entry point: discovers
+  the dashboard's port, brings the `mindframe-dashboard` daemon up if it is
+  down, then opens the operator's browser to the home (the hub graph). Skill in
+  `skills/open/`.
+- **The work** — what a mindframe agent produces (a triage, a review, a report,
+  an answer). The agent does it directly: interactively in its surface, or as an
+  ephemeral agent the dispatcher spawns per event from an operator-wired recipe.
+  Mindframe ships no pre-built workflow artifacts; the work lives in what the
+  agent does, grounded in the vault, not in a library of packaged skills.
 
 ## In-directory artifacts
 
-- `docs/kb-schema.md` — the KB schema library: the fixed meta-schema, the core entities, and the per-install `schema.yaml` manifest format (domain entities are synthesized as `custom` at setup, not pre-shipped). Read before building setup or deliverable skills.
-- `docs/onboarding-ux.md` — **the onboarding UX model + decisions (2026-06-02).** The concept ladder (knowledge base → schema → connections → watches → signals → mindframes), the three-zone first-run surface, agent-led + human-in-the-loop principles, the **v0 interaction model** (agent rewrites a full HTML page + message box; the intent primitive is cut), and the generative-UI direction. **Read this before touching setup or the dashboard.**
-- **The surface** — what a mindframe IS: the agent owns ONE `index.html` it rewrites in place + a message box. **There is one surface server: the dashboard** (`dashboard/`), which serves every mindframe at `/m/<id>` (page/rev/message/activity + `public/surface.html` shell). The standalone single-tenant `surface/server.py` was **collapsed into the dashboard 2026-06-05** and deleted — one server, no duplication. Setup (`install.txt`) births the `mindframe-setup` agent into a frame dir under `~/.mindframe/frames/` and opens `/m/mindframe-setup`.
-- `setup/brief.md` — **the setup mindframe's standing brief** (a template `install.txt` fills in). The onboarding arc on the v0 substrate: this-is-you → interview/schema → discover connections via shell → connect+synthesize → first signal.
-- `skills/setup/` — `/mindframe:setup`: delegating stub → fetches the hosted `install.txt` (now the UI-based bootstrap → birth setup mindframe → hand off).
-- `skills/doctor/` — `/mindframe:doctor`: bundle self-diagnostic. Walks the `requires` list capability by capability, probes each provider, heals safe (Tier-1) issues automatically and reports the rest. Same evidence rule as setup.
-- `dashboard/` — FastAPI server (`server/server.py`) + SPA (`public/`). Exposes: the single-vault KB (`/api/vault`, `/api/vault/entries`, `/api/vault/graph`), **live connection discovery (`/api/connections` — `claude mcp list` + gh/gcloud/aws/az auth probes, minus bundle runtime)**, the System overview feeds (`/api/events`, `/api/agents`, `/api/capabilities`), surface mindframe listing (`/api/frames` — frame dirs holding an `index.html`), per-mindframe surface (`/m/<id>`, `/api/frame/<id>/page|rev|message|activity`), mindframe creation (`POST /api/frames/create`), `/artifacts/<sid>/<path>`. Managed daemon via the `daemon` capability. **Block-stream removed (2026-06-04):** a mindframe is the **v0 surface substrate** (`surface/`) — the agent owns one HTML page it rewrites + a message box. See `docs/onboarding-ux.md`.
-- **Single-vault (2026-06-05):** the vault is **static at `~/.mindframe/vault`** — not configurable, and there is no override. The dashboard hardcodes that path (`VAULT_DIR`); nothing reads it from config. No `vaults.yaml` catalog, no `vault_path` userConfig/settings key, no `lib/vault.py` resolver, no `vault_sharing/` agent (share + accept) — all removed. One deployment, one vault, no inter-org sharing. (`lib/` now holds only `__init__.py`/`tests/`; block-stream `frame.py`/`spawn.py` and the `mcp/` server were removed in the 2026-06-04 surface migration — the bundle ships no MCP, surface agents write `index.html` with the plain Write tool.)
-- **Vault agents removed (2026-06-05):** `vault_keeper/` (write side) and `vault_query/` (read side) — the automated knowledge-capture loop — were deleted pending a redesign. The bundle ships no vault agents right now; the vault is populated by setup's bootstrap and operator-authored deliverables. install.txt PHASE 9.5 is a deferred placeholder.
-- `tests/e2e_wire/` — Tier 1 hermetic integration. `tests/e2e_real/` — Tier 2 live-agent smoke. `tests/e2e_fresh/` — Tier 3 native fresh-install harness.
+- `docs/architecture.md` — the six layers in depth: what runs each, the state it
+  holds, and the runtime flow. The canonical architecture reference.
+- `docs/interfaces.md` — the contracts *between* layers: the dispatcher event
+  API, `channels.yaml`, the recipe contract, the agent-runtime spawn interface,
+  the Mesh tools, and the Surface app API.
+- `docs/product.md` — what the product is and who it is for.
+- `docs/kb-schema.md` — the Knowledge layer's schema library: the meta-schema,
+  the core entities, and the per-install `schema.yaml`. **Under redesign in a
+  separate effort** — treat as descriptive of today's vault, not final.
+- `docs/onboarding-ux.md` — the setup UX model: agent-led onboarding, the
+  connections model (live discovery, not a catalog), and the surface model (one
+  HTML page the agent rewrites + a message box).
+- `docs/install-outline.md` — the phase-by-phase structure of `install.txt`.
+- `setup/brief.md` — the setup mindframe's standing brief (a template
+  `install.txt` fills in).
+- `skills/setup/`, `skills/doctor/`, `skills/open/`, `skills/connect/` — the
+  cross-cutting skills (onboard, diagnose, open the home, connect a tool).
+- A connection is an MCP or a **connector skill** — a `SKILL.md` with a
+  `connection:` fingerprint, living in `~/.claude/skills/`. `/mindframe:connect`
+  researches a tool's door, authors the connector, and verifies it; the skill
+  carries a worked example per door kind (cli / mcp / http-api / sql / browser /
+  file). Nothing is pre-shipped — connectors are authored per operator.
+- `dashboard/` — the Surface: FastAPI server (`server/server.py`) + SPA
+  (`public/`). See `dashboard/README.md`.
+- `tests/e2e_wire/` (Tier 1, hermetic), `tests/e2e_real/` (Tier 2, live-agent),
+  `tests/e2e_fresh/` (Tier 3, native fresh-install).
 
-## Next
+## Knowledge layer — redesign in progress
 
-**Direction redesigned 2026-06-02 — full model in `docs/onboarding-ux.md`.** Status:
+The Knowledge layer is being reworked in a separate effort. Today: the vault is
+a single local directory hardcoded at `~/.mindframe/vault` (the dashboard's
+`VAULT_DIR`), markdown + frontmatter, organized by the 4-layer schema in
+`docs/kb-schema.md`. There is no separate knowledge-capture subsystem; the vault
+is written by setup's bootstrap and by mindframe agents as they work. The vault
+is owned directly by mindframe as plain files — there is
+no `knowledge-base` capability binding and no external provider (the
+`knowledge-base` plugin was archived 2026-06-06). Treat `kb-schema.md` as
+descriptive of today's vault, not final, until that redesign lands.
 
-- **The web app is the primary interface**, not the terminal. The terminal does only bootstrap; the setup conversation moves into the surface. *(shipped: `install.txt` migrated to bootstrap → birth setup mindframe → hand off)*
-- **A mindframe is the v0 model**: the agent owns one HTML page it rewrites + a message box. The block-stream AND the interim intent-primitive are both cut. *(shipped: the surface, served by the dashboard at `/m/<id>`; proven live. The standalone `surface/server.py` was collapsed into the dashboard 2026-06-05.)*
-- **Capabilities are skills / MCPs / CLIs, not KB records** — self-injecting at startup; a CLI capability is a skill whose body is the recipe. The KB holds what the org IS, never the capability registry; no `Connection` entity. *(decided)*
-- **Connections = live discovery** (MCPs + authed CLIs minus bundle runtime), not a hardcoded catalog. *(built: `/api/connections`; setup discovers via shell)*
-- **Generative-UI finding:** minimal-prompt agents reproduce/beat a hand-designed surface. Don't build a component library / layout DSL.
+## Status, decisions, open threads
 
-Open / to harden, priority order:
-
-1. **Reliable agent message-delivery transport.** taskpilot delivers via tmux keystrokes; submits drop intermittently. A production mindframe needs a real resume channel — e.g. `claude --continue` in the per-task cwd (verified to reload plugins; would also kill the `state.json` frailty by making the transcript the durable state). **Keystone blocker.**
-2. **Run the migrated `install.txt` end-to-end** in an isolated `HOME` (faithful, zero blast radius), then deploy the staticsite so the hosted URL serves the new flow (it currently still serves the old one).
-3. **URL delivery polish** — dynamic port (not the fixed `5174`), a persistent/re-findable URL, and decide whether the setup URL (`/m/mindframe-setup`) becomes the durable "home" or hands off to `/`.
-4. **Home surface** — signals → "tackle this" → spawn a mindframe (the bridge from setup to use).
-5. Deferred / lower priority: taskpilot "inherit all user-scope plugins/MCPs" (off critical path); block-stream + intent-primitive runtime are legacy.
-
-### Shipped this slice (chronological)
-
-- ~~`bin/mindframe-write`~~ → MCP server (write_block, set_title)
-- ~~SPA block renderer + SSE stream~~ → live in browser
-- ~~`mindframe.spawn()` primitive~~ → `lib/frame.py` + `lib/spawn.py` CLI, dispatcher reads `frame:` from recipe.yaml
-- ~~Demo recipe~~ → removed; mindframe ships no recipes (the `recipes/` dir + `install-recipes` target were removed 2026-06-05). Operators author their own during `/mindframe:setup`.
-- ~~3-tier testing stack~~ → Tier 1 wire (hermetic), Tier 2 real-agent smoke (manual), Tier 3 fresh-install (native, no Docker)
-- ~~CI matrix Linux/macOS/Windows~~ — caught and fixed 6 cross-platform bugs on first run
-- ~~Dashboard as managed daemon~~ — `daemon` capability declared, setup skill + install.txt updated to register via daemon-manager (intent-based, not tool-hardcoded)
-
-## Current dashboard state (as of 2026-06-05)
-
-- `dashboard/server/server.py` — FastAPI. Endpoints: `/api/health`, surface mindframes (`/api/frames` lists frame dirs holding an `index.html`; **`POST /api/frames/create`** mints a frame dir + spawns a persistent agent via taskpilot's `spawner_cli.py`, discovered from `installed_plugins.json`), **per-mindframe surface (`/m/<id>` shell; `/api/frame/<id>/page|rev`, `POST /api/frame/<id>/message` → taskpilot daemon `:8912`, `/api/frame/<id>/activity` tails the agent transcript)**, System overview feeds (`/api/events`, `/api/agents`, `/api/capabilities`), `POST /api/dashboard-event` (dispatcher proxy), the **single vault (`/api/vault`, `/api/vault/entries`, `/api/vault/graph`)**, sources (`/api/sources` + **`/api/connections`** live discovery), `/artifacts/<sid>/<path>`, SPA fallback. **Single-vault 2026-06-05:** the multi-vault list/share/accept endpoints (`/api/vaults`, `/api/vaults/<name>/share`, `/api/shares/*`, `/api/github/owners`) were removed. **Block-stream endpoints removed 2026-06-04.**
-- `dashboard/public/` — Space Grotesk / Source Serif 4 / JetBrains Mono, warm dark, gold accent. SPA routes `/` (home: create-a-mindframe box + your mindframes + the single knowledge base + sources) and `/system` (bundle overview). `surface.html` is the per-mindframe shell served at `/m/<id>` — an iframe over the agent's page + message rail + cognition log (the agent's transcript lives at `~/.claude/projects/<encoded-cwd>/` for a real-HOME spawn or `~/.taskpilot/<id>/.claude/projects/` for an isolated one). **This is the only surface server** — the standalone `surface/server.py` was collapsed in here 2026-06-05.
-- Bearer file at `~/.mindframe/secrets/dispatcher-bearer.token` (chmod 600); matches the dispatcher's `DISPATCHER_INGEST_TOKEN`.
-- **2026-06-02 redesign prototypes (local, NOT shipped — `dashboard/artifacts/` is gitignored):** `kb-live` (hand-built spatial first-run surface: you-graph + schema rail + connections rail), `genui-1/2/3` (minimal-prompt agent-generated surfaces), and `slice/` (the live intent-channel experiments incl. one real taskpilot-agent run). Reference material for the spatial-mindframe direction; Wizard-of-Oz except the `slice/live` real-agent run.
+Tracked in this repo's git history and docs. (The former project-vault +
+librarian tracker was archived 2026-06-06 with the `knowledge-base` plugin;
+mindframe owns its knowledge layer directly now.)
