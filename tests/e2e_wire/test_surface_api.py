@@ -129,6 +129,9 @@ def test_create_mints_frame_and_spawns(frames_root, stub_daemon):
     spawn_body = next(b for p, b in stub_daemon.calls if p == "/tasks/create_and_spawn")
     assert spawn_body["cwd"] == str(fdir)
     assert str(fdir / "index.html") in spawn_body["description"]
+    # The brief must teach the self-messaging button affordance, or agents
+    # render prose offers instead of clickable actions.
+    assert "location.pathname.replace('/page','/message')" in spawn_body["description"]
 
 
 def test_create_with_daemon_down_leaves_no_orphan(frames_root, down_daemon):
