@@ -220,6 +220,22 @@ async def api_frames() -> dict[str, Any]:
             modified = int(index.stat().st_mtime * 1000)
         except OSError:
             modified = 0
+        # True recency is the latest of: the agent rewrote the page, the
+        # agent's transcript moved, or the operator touched the frame's data
+        # plane (moved a card, checked a box). The page mtime alone goes
+        # stale the moment activity doesn't end in a rewrite.
+        try:
+            tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+            if tp is not None:
+                modified = max(modified, int(tp.stat().st_mtime * 1000))
+        except OSError:
+            pass
+        try:
+            ddir = fdir / "data"
+            if ddir.is_dir():
+                modified = max(modified, int(ddir.stat().st_mtime * 1000))
+        except OSError:
+            pass
         out.append({
             "id": fdir.name,
             "title": _page_title(index) or meta.get("title") or fdir.name,
@@ -235,13 +251,27 @@ async def api_frames() -> dict[str, Any]:
 # working right now" — backs the surface dock's per-frame pulse markers.
 _FRAME_ACTIVE_WINDOW_S = 8.0
 
+# tmux-session set cache: the dock polls activity every ~2s per open tab; one
+# `tmux ls` per TTL keeps that O(1) subprocesses regardless of tabs/frames.
+_tmux_cache: dict[str, Any] = {"at": 0.0, "set": set()}
+_TMUX_TTL_S = 2.0
+
+
+def _live_tmux_cached() -> set[str]:
+    now = time.time()
+    if (now - _tmux_cache["at"]) > _TMUX_TTL_S:
+        _tmux_cache["set"] = _tmux_sessions()
+        _tmux_cache["at"] = now
+    return _tmux_cache["set"]
+
 
 @app.get("/api/frames/activity")
 async def api_frames_activity() -> dict[str, Any]:
-    """Per-frame 'is the agent working right now' signal for the surface dock.
-    Working = the agent's transcript was written within _FRAME_ACTIVE_WINDOW_S.
-    Cheap: one transcript stat per frame, no parsing — so the dock can poll it
-    every couple seconds to pulse whichever frames are live, even unfocused ones."""
+    """Per-frame liveness for the surface dock, two signals per frame:
+      working — the agent's transcript was written within _FRAME_ACTIVE_WINDOW_S
+      awake   — the agent's tmux session exists (asleep frames wake on message)
+    Cheap: one transcript stat per frame + one cached `tmux ls`, so the dock
+    can poll every couple seconds."""
     now = time.time()
     out: list[dict[str, Any]] = []
     if not FRAMES_ROOT.is_dir():
@@ -250,19 +280,21 @@ async def api_frames_activity() -> dict[str, Any]:
         entries = list(FRAMES_ROOT.iterdir())
     except OSError:
         return {"frames": []}
+    live = _live_tmux_cached()
     for fdir in entries:
         if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
             continue
         if not (fdir / "index.html").is_file():
             continue
         working = False
+        task_id = _frame_task_id(fdir.name, fdir)
         try:
-            tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+            tp = _agent_transcript(fdir, task_id)
             if tp is not None and (now - tp.stat().st_mtime) < _FRAME_ACTIVE_WINDOW_S:
                 working = True
         except OSError:
             pass
-        out.append({"id": fdir.name, "working": working})
+        out.append({"id": fdir.name, "working": working, "awake": task_id in live})
     return {"frames": out}
 
 
