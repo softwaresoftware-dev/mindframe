@@ -302,6 +302,51 @@ def test_artifact_symlink_escape_is_rejected(frames_root, tmp_path):
     assert client.get("/artifacts/frame1/link.txt").status_code == 404
 
 
+# --------------------------- data plane ---------------------------
+
+
+def test_data_put_get_roundtrip(frames_root):
+    _make_frame(frames_root, "frame1")
+    r = client.put("/api/frame/frame1/data/board",
+                   json={"cards": [{"id": 1, "col": "today"}]})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    g = client.get("/api/frame/frame1/data/board")
+    assert g.status_code == 200
+    assert g.json() == {"cards": [{"id": 1, "col": "today"}]}
+    # and the agent sees the same bytes as a plain file in its cwd
+    on_disk = json.loads((frames_root / "frame1" / "data" / "board.json").read_text())
+    assert on_disk["cards"][0]["col"] == "today"
+
+
+def test_data_list_keys(frames_root):
+    _make_frame(frames_root, "frame1")
+    client.put("/api/frame/frame1/data/a", json=1)
+    client.put("/api/frame/frame1/data/b", json={"x": 2})
+    keys = [k["key"] for k in client.get("/api/frame/frame1/data").json()["keys"]]
+    assert keys == ["a", "b"]
+
+
+def test_data_rejects_bad_keys_and_non_json(frames_root):
+    _make_frame(frames_root, "frame1")
+    assert client.put("/api/frame/frame1/data/Bad..Key", json=1).status_code == 422
+    # ".." normalizes to the list route (405) — either way it never reaches a file
+    assert client.put("/api/frame/frame1/data/..", json=1).status_code in (405, 422)
+    r = client.put("/api/frame/frame1/data/k",
+                   content=b"not json", headers={"Content-Type": "application/json"})
+    assert r.status_code == 422
+    assert client.get("/api/frame/frame1/data/missing").status_code == 404
+    assert client.get("/api/frame/nope/data").status_code == 404
+
+
+def test_data_size_cap(frames_root):
+    _make_frame(frames_root, "frame1")
+    big = "x" * (srv.DATA_MAX_BYTES + 10)
+    r = client.put("/api/frame/frame1/data/big",
+                   content=json.dumps(big).encode(),
+                   headers={"Content-Type": "application/json"})
+    assert r.status_code == 413
+
+
 # --------------------------- rev + listing ---------------------------
 
 

@@ -273,38 +273,62 @@ async def api_frames_activity() -> dict[str, Any]:
 # spawner CLI (the agent-spawning provider), located via the installed-plugins
 # manifest. The agent writes its page with the plain Write tool — no MCP.
 
-MINDFRAME_BRIEF = """You are a mindframe — an autonomous agent that works for the operator by \
-composing a single live web page. You own exactly ONE file:
+MINDFRAME_BRIEF = """You are a mindframe — an autonomous agent that builds and evolves ONE small \
+living web app for the operator. You own exactly ONE file:
 
     {index}
 
-THE LOOP
-  1. The operator sends you a message (their first request is below).
-  2. You do the real work it implies — run Bash, read files, query the MCPs and \
-CLIs available to you. Never fabricate; if you can't reach something, say so on the page.
-  3. You use the Write tool to rewrite the ENTIRE file above as one complete, \
-valid, self-contained HTML document that reflects the new state.
-  4. You stop and wait for the next message. The operator's browser reloads \
-automatically when the file changes.
+It is a real app with two loops. The FAST loop is the page itself: its own \
+JavaScript handles instant interaction while you sleep. The SLOW loop is you: \
+you wake when messaged, do real work (Bash, files, the MCPs and CLIs available \
+to you — never fabricate; if you can't reach something, say so on the page), \
+and evolve the page to match the new state. Then you stop and wait.
 
-RULES
-  - ALWAYS write the COMPLETE document — never a fragment, never an append. Inline \
-all CSS. The page is the whole interface; there is no chat transcript, so render \
-what matters now, not a log.
-  - Make it calm and legible: type, weight, colour, and spacing carry meaning. No emoji.
-  - Make every concrete action or suggestion you offer a clickable BUTTON that \
-messages you, not prose asking the operator to reply. Use EXACTLY this pattern \
-(your page is served at /api/frame/<id>/page; swapping /page for /message reaches you):
+EVOLVE, DON'T REPLACE
+  - The file must ALWAYS be one complete, valid, self-contained HTML document \
+(inline CSS; no fragments). But prefer the Edit tool for targeted changes — \
+update a number, add a section, append a row. Use a full Write only when the \
+page's structure genuinely needs recomposition. Like code: edit normally, \
+refactor when it drifts.
+  - Put <meta name="mf-patch" content="safe"> in <head> and keep your script \
+idempotent (event delegation on document, init guarded so it can run once). \
+The shell then patches your edits into the live page with no reload, no \
+flicker, no lost state. If you change your <script>, the shell reloads — \
+that's expected.
+  - While a long turn is in progress, you may make one early Edit that marks \
+the affected section ("updating…") so the operator sees where you're working.
+
+THREE KINDS OF INTERACTION — choose the cheapest that works:
+  1. INSTANT (no you): plain client-side JS in the page — filtering, sorting, \
+toggling, calculating. Build real app behavior here; you are allowed and \
+encouraged to write substantial JS.
+  2. STATE (no you, remembered): persist operator input to your data plane so \
+you see it next time you wake. From page JS (your page is served at \
+/api/frame/<id>/page; swap /page for /data/<key>):
+      fetch(location.pathname.replace('/page','/data/board'),{{method:'PUT',\
+headers:{{'Content-Type':'application/json'}},body:JSON.stringify(state)}})
+     The same values are plain files in YOUR cwd at data/<key>.json — read \
+them at the start of every turn; the operator may have changed things while \
+you slept.
+  3. WAKE ME (intelligence needed): a button that messages you. Use EXACTLY \
+this pattern (swap /page for /message):
       <button onclick="fetch(location.pathname.replace('/page','/message'),\
 {{method:'POST',headers:{{'Content-Type':'application/json'}},\
 body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
 .then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
-    Style buttons to match the page. The message box remains for free-form asks.
-  - NEVER declare yourself done. End every page with a forward question or a clear \
-next step so the conversation keeps going.
-  - Anything irreversible or outward-facing: draw the pending action on the page — \
-with an explicit approval button — and wait for the operator to approve (button \
-click or message) before doing it.
+     Reserve these for work that needs thinking; never use a slow button where \
+instant JS or state would do. The message box remains for free-form asks.
+
+RULES
+  - Calm and legible: type, weight, colour, spacing carry meaning. No emoji. \
+Include <meta name="viewport" content="width=device-width, initial-scale=1"> \
+and keep the page readable on a phone.
+  - The page shows what matters NOW — it is the interface, not a log.
+  - NEVER declare yourself done. End every page with a forward question or a \
+clear next step.
+  - Anything irreversible or outward-facing: draw the pending action on the \
+page with an explicit approval button and wait for the operator to approve \
+before doing it.
 
 THE OPERATOR'S FIRST REQUEST
 {prompt}
@@ -317,48 +341,48 @@ understand and your first concrete step, and end with a question."""
 # agent resumes ownership instead of composing a "first" page over it. Sent as
 # the `prompt` override on POST /tasks/<id>/start; the operator's actual
 # message follows as a normal channel message right after.
-REVIVAL_BRIEF = """You are a mindframe — an autonomous agent that works for the operator by \
-composing a single live web page. You are RESUMING ownership of an existing \
+REVIVAL_BRIEF = """You are a mindframe — an autonomous agent that builds and evolves ONE small \
+living web app for the operator. You are RESUMING ownership of an existing \
 mindframe whose previous agent session ended (machine reboot or crash). You \
 own exactly ONE file:
 
     {index}
 
 It already holds the current state of your work — READ IT FIRST to recover \
-context. The request that originally created this mindframe was:
+context. Also read any data/<key>.json files in your cwd: that is your data \
+plane, and the operator may have changed state through the page while no \
+agent was alive. The request that originally created this mindframe was:
 
 {prompt}
 
-THE LOOP
-  1. The operator sends you a message.
-  2. You do the real work it implies — run Bash, read files, query the MCPs and \
-CLIs available to you. Never fabricate; if you can't reach something, say so on the page.
-  3. You use the Write tool to rewrite the ENTIRE file above as one complete, \
-valid, self-contained HTML document that reflects the new state.
-  4. You stop and wait for the next message. The operator's browser reloads \
-automatically when the file changes.
+THE MODEL — two loops:
+  - FAST loop: the page's own JavaScript handles instant interaction while \
+you sleep, and persists operator input to the data plane \
+(fetch PUT on location.pathname.replace('/page','/data/<key>') from page JS \
+= data/<key>.json in your cwd).
+  - SLOW loop: you. You wake when messaged, do real work (Bash, files, MCPs, \
+CLIs — never fabricate), and evolve the page to match the new state. Then \
+you stop and wait.
+
+EVOLVE, DON'T REPLACE
+  - The file must ALWAYS be one complete, valid, self-contained HTML document \
+(inline CSS). Prefer the Edit tool for targeted changes; full Write only when \
+the structure needs recomposition.
+  - Keep <meta name="mf-patch" content="safe"> in <head> with idempotent, \
+event-delegated script so the shell can patch updates in without reloading.
+  - Buttons that need your intelligence message you (swap /page for /message \
+in your page's own URL); anything instant or stateful belongs in page JS + \
+the data plane instead.
 
 RULES
-  - ALWAYS write the COMPLETE document — never a fragment, never an append. Inline \
-all CSS. The page is the whole interface; there is no chat transcript, so render \
-what matters now, not a log.
-  - Make it calm and legible: type, weight, colour, and spacing carry meaning. No emoji.
-  - Make every concrete action or suggestion you offer a clickable BUTTON that \
-messages you, not prose asking the operator to reply. Use EXACTLY this pattern \
-(your page is served at /api/frame/<id>/page; swapping /page for /message reaches you):
-      <button onclick="fetch(location.pathname.replace('/page','/message'),\
-{{method:'POST',headers:{{'Content-Type':'application/json'}},\
-body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
-.then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
-    Style buttons to match the page. The message box remains for free-form asks.
-  - NEVER declare yourself done. End every page with a forward question or a clear \
-next step so the conversation keeps going.
-  - Anything irreversible or outward-facing: draw the pending action on the page — \
-with an explicit approval button — and wait for the operator to approve (button \
-click or message) before doing it.
+  - Calm and legible, no emoji, viewport meta, readable on a phone.
+  - NEVER declare yourself done; end with a forward question or next step.
+  - Irreversible or outward-facing actions: draw a pending action with an \
+approval button and wait for operator approval.
 
-Do NOT rewrite the page yet — the operator's message arrives immediately after \
-this brief. Read the current page, act on that message, then rewrite."""
+Do NOT rewrite the page yet — the operator's message arrives immediately \
+after this brief. Read the current page and data plane, act on that message, \
+then evolve the page."""
 
 
 def _mint_frame_id(n: int = 10) -> str:
@@ -626,6 +650,92 @@ async def delete_frame(mid: str) -> Response:
             {"ok": False, "killed": killed, "error": f"agent killed={killed}, but couldn't remove frame dir: {e}"},
             status_code=500)
     return JSONResponse({"ok": True, "id": mid, "killed": killed})
+
+
+# --------------------------- frame data plane ---------------------------
+#
+# Shared state between a frame's PAGE (fast loop: client JS, instant) and its
+# AGENT (slow loop: thinking, wakes on messages). Keys are JSON files at
+# <framedir>/data/<key>.json — the page reads/writes them over HTTP
+# (relative to its own URL: /page → /data/<key>); the agent reads/writes the
+# same files directly in its cwd and sees operator input on its next turn.
+# Deliberately tiny — a per-frame KV store, not a backend.
+
+DATA_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+DATA_MAX_BYTES = 256 * 1024
+DATA_MAX_KEYS = 200
+
+
+def _data_dir(fdir: Path) -> Path:
+    return fdir / "data"
+
+
+@app.get("/api/frame/{mid}/data")
+def frame_data_list(mid: str) -> Response:
+    """List this frame's data keys with sizes + mtimes."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    out = []
+    ddir = _data_dir(fdir)
+    if ddir.is_dir():
+        for f in sorted(ddir.glob("*.json")):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            out.append({"key": f.stem, "size": st.st_size,
+                        "modified": int(st.st_mtime * 1000)})
+    return JSONResponse({"keys": out}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/frame/{mid}/data/{key}")
+def frame_data_get(mid: str, key: str) -> Response:
+    """Read one data key (the JSON value, verbatim)."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not DATA_KEY_RE.match(key):
+        return JSONResponse({"error": "bad key"}, status_code=422)
+    f = _data_dir(fdir) / f"{key}.json"
+    if not f.is_file():
+        return JSONResponse({"error": "no such key"}, status_code=404)
+    try:
+        body = f.read_bytes()
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return Response(body, media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/frame/{mid}/data/{key}")
+async def frame_data_put(mid: str, key: str, request: Request) -> Response:
+    """Write one data key. Body must be JSON; capped at DATA_MAX_BYTES.
+    Atomic (tmp + rename) so the agent never reads a torn write."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not DATA_KEY_RE.match(key):
+        return JSONResponse({"error": "bad key"}, status_code=422)
+    body = await request.body()
+    if len(body) > DATA_MAX_BYTES:
+        return JSONResponse({"error": f"value too large (max {DATA_MAX_BYTES} bytes)"},
+                            status_code=413)
+    try:
+        json.loads(body)
+    except ValueError:
+        return JSONResponse({"error": "body must be JSON"}, status_code=422)
+    ddir = _data_dir(fdir)
+    ddir.mkdir(exist_ok=True)
+    if not (ddir / f"{key}.json").exists() and len(list(ddir.glob("*.json"))) >= DATA_MAX_KEYS:
+        return JSONResponse({"error": f"too many keys (max {DATA_MAX_KEYS})"}, status_code=409)
+    tmp = ddir / f".{key}.json.tmp"
+    try:
+        tmp.write_bytes(body)
+        tmp.replace(ddir / f"{key}.json")
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "key": key, "size": len(body)})
 
 
 # --- cognition log: tail the agent's Claude transcript (ported from surface/) ---
