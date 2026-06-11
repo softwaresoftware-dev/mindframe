@@ -403,12 +403,26 @@
       }
     }
   }
+  // Boot narration: a freshly created frame has no transcript while its agent
+  // boots (~20s). Say so in the ribbon instead of sitting silent; real chips
+  // take over the moment the transcript appears. Time-boxed so an old frame
+  // with no transcript doesn't pulse forever.
+  const shellLoadedAt = Date.now();
+  let bootShown = false;
+  function inBootWindow(){
+    return !actFile && !lastMtime && (Date.now() - shellLoadedAt) < 120000;
+  }
+
   async function pollActivity(){
     try {
       const r = await fetch(API('activity') + '?offset=' + actOffset + '&file=' + encodeURIComponent(actFile),
                             { cache: 'no-store' }).then(x => x.json());
       if (r.file !== actFile) { actFile = r.file; actOffset = 0; }
       actOffset = r.offset;
+      if (!bootShown && inBootWindow()){
+        bootShown = true;
+        appendLog({ kind: 'info', label: 'starting the agent (~20s), then it composes the page…' });
+      }
       // Liveness comes from the transcript's mtime — a server-side fact — not
       // from when replayed events happen to arrive in this tab. A first-load
       // replay of an old transcript must not light up "working…".
@@ -432,7 +446,7 @@
     if (waiting && sawActSinceSent && Date.now() - lastActAt > 8000) {
       waiting = false; send.disabled = false;
     }
-    setActive(waiting || (Date.now() - lastActAt < 6000));
+    setActive(waiting || (Date.now() - lastActAt < 6000) || inBootWindow());
   }
 
   restoreLog();

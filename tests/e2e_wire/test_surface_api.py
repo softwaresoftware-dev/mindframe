@@ -37,8 +37,9 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
     /tasks/{id}. Set `agent_dead = True` to make /message 409
     agent_not_running until a /start arrives (the revive scenario)."""
 
-    calls: list = []          # (method, path, body)
-    agent_dead: bool = False  # 409 messages until a /start is seen
+    calls: list = []           # (method, path, body)
+    agent_dead: bool = False   # 409 messages until a /start is seen
+    task_missing: bool = False # 404 messages until a PUT defines the task
 
     def _send(self, code: int, body: dict) -> None:
         data = json.dumps(body).encode()
@@ -61,6 +62,7 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
     def do_PUT(self):
         body = self._body()
         type(self).calls.append(("PUT", self.path, body))
+        type(self).task_missing = False
         self._send(200, {"task_id": self.path.rsplit("/", 1)[-1], "created": True})
 
     def do_DELETE(self):
@@ -74,7 +76,9 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
             type(self).agent_dead = False
             self._send(200, {"ok": True, "started": True, "status": "running"})
         elif self.path.endswith("/message"):
-            if type(self).agent_dead:
+            if type(self).task_missing:
+                self._send(404, {"detail": "task not found"})
+            elif type(self).agent_dead:
                 self._send(409, {"detail": {"code": "agent_not_running",
                                             "task_status": "crashed"}})
             else:
@@ -93,6 +97,7 @@ def stub_daemon(monkeypatch):
     thread.start()
     _StubTaskpilot.calls = []
     _StubTaskpilot.agent_dead = False
+    _StubTaskpilot.task_missing = False
     monkeypatch.setattr(srv, "TASKPILOT_DAEMON", f"http://127.0.0.1:{server.server_port}")
     yield _StubTaskpilot
     server.shutdown()
@@ -139,16 +144,18 @@ def test_health_shape():
 # --------------------------- create ---------------------------
 
 
-def test_create_mints_frame_and_spawns(frames_root, stub_daemon):
+def test_create_returns_instantly_and_spawns_in_background(frames_root, stub_daemon):
     r = client.post("/api/frames/create", json={"prompt": "watch the build", "title": "Build"})
     assert r.status_code == 200
     j = r.json()
-    assert j["spawn"] == "ok" and j["url"] == f"/m/{j['id']}"
+    # Instant contract: the response says "starting"; the spawn happens in a
+    # background task (TestClient runs those before returning).
+    assert j["spawn"] == "starting" and j["url"] == f"/m/{j['id']}"
     fdir = frames_root / j["id"]
-    assert (fdir / "index.html").is_file() and "omposing" in (fdir / "index.html").read_text()
+    assert (fdir / "index.html").is_file() and "Starting this mindframe" in (fdir / "index.html").read_text()
     meta = json.loads((fdir / "meta.json").read_text())
     assert meta["task_id"] == j["id"] and meta["title"] == "Build"
-    # Create = idempotent define (PUT) then ensure-running (start).
+    # Background half = idempotent define (PUT) then ensure-running (start).
     put_body = next(b for m, p, b in stub_daemon.calls
                     if m == "PUT" and p == f"/tasks/{j['id']}")
     assert ("POST", f"/tasks/{j['id']}/start", {}) in stub_daemon.calls
@@ -157,6 +164,27 @@ def test_create_mints_frame_and_spawns(frames_root, stub_daemon):
     # The brief must teach the self-messaging button affordance, or agents
     # render prose offers instead of clickable actions.
     assert "location.pathname.replace('/page','/message')" in put_body["description"]
+
+
+def test_message_defines_and_starts_a_never_spawned_frame(frames_root, stub_daemon):
+    """If the background spawn after create failed, the frame's task doesn't
+    exist at all — the next message must define + start it, then deliver."""
+    fdir = _make_frame(frames_root, "frame1", task_id="task-77")
+    # keep the boot placeholder so recovery uses the first-compose flow
+    (fdir / "index.html").write_text(
+        "<!doctype html><meta charset=utf-8><title>composing…</title>ok", "utf-8")
+    stub_daemon.task_missing = True
+    r = client.post("/api/frame/frame1/message", json={"text": "hello?"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "revived": True}
+    methods = [(m, p) for m, p, _ in stub_daemon.calls]
+    assert methods == [
+        ("POST", "/tasks/task-77/message"),   # 404 — task never existed
+        ("PUT", "/tasks/task-77"),            # define from meta.json
+        ("POST", "/tasks/task-77/start"),     # first start (no prompt override)
+        ("POST", "/tasks/task-77/message"),   # delivered
+    ]
+    start_body = stub_daemon.calls[2][2]
+    assert start_body == {}                   # placeholder page → first-compose flow
 
 
 def test_create_with_daemon_down_leaves_no_orphan(frames_root, down_daemon):

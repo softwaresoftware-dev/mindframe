@@ -202,7 +202,7 @@ async function openDomain(key) {
     });
     const j = await r.json();
     if (!r.ok) { showToast(`couldn't spawn ${d.title}: ${j.error || r.statusText}`, "err"); route(); return; }
-    if (j.spawn && j.spawn !== "ok") {
+    if (j.spawn && j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`spawned, but the agent didn't start: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
     location.href = j.url;   // /m/<id> — watch it compose on the surface
@@ -609,8 +609,11 @@ When the operator clicks one, you will receive its text as a message. Then actua
 Never declare yourself done. The suggestions stand and the message box is always open for "or just tell me what you want to do." Compose your launchpad index.html now.`;
 
 async function startLaunchpad() {
+  if (_spawnPending) return;          // double-click = one launchpad, not two
+  _spawnPending = true;
   // Open the tab synchronously (inside the click) so the popup isn't blocked,
-  // then redirect it once the frame id comes back from the spawn.
+  // then redirect it once the frame id comes back (instant — spawn runs
+  // server-side in the background).
   const tab = window.open("", "_blank");
   if (tab) {
     tab.document.write(
@@ -636,7 +639,7 @@ async function startLaunchpad() {
       if (tab) tab.close();
       return;
     }
-    if (j.spawn !== "ok") {
+    if (j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`launchpad created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
     if (tab) tab.location = j.url;     // redirect the opened tab to /m/<id>
@@ -645,6 +648,8 @@ async function startLaunchpad() {
   } catch (e) {
     showToast(`network error: ${e.message}`, "err");
     if (tab) tab.close();
+  } finally {
+    _spawnPending = false;
   }
 }
 
@@ -665,7 +670,7 @@ async function createMindframe(text) {
       if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
       return;
     }
-    if (j.spawn !== "ok") {
+    if (j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`frame created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
     location.href = j.url;   // open the surface shell at /m/<id>

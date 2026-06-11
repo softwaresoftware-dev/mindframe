@@ -45,7 +45,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Header, Request
+from fastapi import BackgroundTasks, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
@@ -390,13 +390,11 @@ def _mint_frame_id(n: int = 10) -> str:
     return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(n))
 
 
-async def _spawn_surface_frame(mid: str, title: str, prompt: str,
-                              spawned_by: dict[str, Any]) -> dict[str, Any]:
-    """Mint frames/<mid>, drop the 'composing…' placeholder + meta.json, and
-    spawn the owning agent via the taskpilot daemon. Shared by the random-id
-    create path and the singleton manager. Caller has already chosen `mid`,
-    confirmed it is free, and verified the daemon is reachable. mkdir raises
-    FileExistsError if the dir appeared since (caller decides what that means)."""
+def _mint_frame(mid: str, title: str, prompt: str,
+                spawned_by: dict[str, Any]) -> Path:
+    """Mint frames/<mid> on disk: placeholder page + meta.json. Instant — no
+    daemon calls. mkdir raises FileExistsError if the dir appeared since the
+    caller checked (caller decides what a lost race means)."""
     fdir = FRAMES_ROOT / mid
     fdir.mkdir(parents=True, mode=0o755)   # no exist_ok: surface a lost race to the caller
     index = fdir / "index.html"
@@ -405,19 +403,27 @@ async def _spawn_surface_frame(mid: str, title: str, prompt: str,
         "<!doctype html><meta charset=utf-8><title>composing…</title>"
         "<body style='margin:0;height:100vh;display:grid;place-items:center;"
         "font:16px system-ui;color:#888;background:#0d0d0f'>"
-        f"<div style='text-align:center'>Composing this mindframe…<br>"
-        f"<small style='color:#555'>{safe_title}</small></div>",
+        "<style>@keyframes b{0%,100%{opacity:.25}50%{opacity:1}}</style>"
+        "<div style='text-align:center'>"
+        "<div style='width:10px;height:10px;border-radius:50%;background:#5b6cff;"
+        "margin:0 auto 14px;animation:b 1.1s ease-in-out infinite'></div>"
+        f"Starting this mindframe&hellip;<br><small style='color:#555'>{safe_title}</small><br>"
+        "<small style='color:#555'>the agent boots (~20s), then composes this page — "
+        "watch it think in the strip below</small></div>",
         "utf-8",
     )
     (fdir / "meta.json").write_text(json.dumps({
         "id": mid, "title": title, "task_id": mid, "status": "active",
         "prompt": prompt, "spawned_by": spawned_by,
     }, indent=2), "utf-8")
+    return fdir
 
-    brief = MINDFRAME_BRIEF.format(index=str(index), prompt=prompt.strip())
-    # Define the task, then ensure it's running. Both idempotent on the
-    # taskpilot side; start blocks ~16s while tmux launches, so allow
-    # generous headroom.
+
+async def _define_and_start(mid: str, fdir: Path, prompt: str,
+                            start_prompt: str | None = None) -> tuple[bool, str]:
+    """PUT the task definition + ensure it's running. Returns (ok, error).
+    Blocks ~16s on a real spawn — callers run it in the background."""
+    brief = MINDFRAME_BRIEF.format(index=str(fdir / "index.html"), prompt=prompt.strip())
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.put(
@@ -425,19 +431,29 @@ async def _spawn_surface_frame(mid: str, title: str, prompt: str,
                 json={"name": mid, "description": brief, "cwd": str(fdir)},
             )
             if r.status_code < 300:
-                r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{mid}/start", json={})
+                body = {"prompt": start_prompt} if start_prompt is not None else {}
+                r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{mid}/start", json=body)
     except httpx.HTTPError as e:
-        return {"id": mid, "url": f"/m/{mid}", "spawn": "error", "error": f"spawn failed: {e}"}
+        return False, f"spawn failed: {e}"
     if r.status_code >= 300:
-        return {"id": mid, "url": f"/m/{mid}", "spawn": "error",
-                "spawn_result": {"ok": False, "error": f"daemon {r.status_code}: {r.text[:400]}"}}
-    try:
-        spawn_result = r.json()
-    except ValueError:
-        spawn_result = {"ok": False, "error": (r.text or "no spawner output")[:400]}
-    return {"id": mid, "url": f"/m/{mid}",
-            "spawn": "ok" if spawn_result.get("ok") else "error",
-            "spawn_result": spawn_result}
+        return False, f"daemon {r.status_code}: {r.text[:400]}"
+    return True, ""
+
+
+async def _spawn_frame_bg(mid: str, fdir: Path, prompt: str) -> None:
+    """Background half of create: define + start the agent. A failure is
+    recorded in meta.json (the surface shows it; the next operator message
+    self-heals by re-running define+start through the message path)."""
+    ok, err = await _define_and_start(mid, fdir, prompt)
+    if not ok:
+        log(f"background spawn failed for {mid}: {err}")
+        try:
+            meta = _read_meta(fdir)
+            meta["status"] = "spawn_failed"
+            meta["spawn_error"] = err
+            (fdir / "meta.json").write_text(json.dumps(meta, indent=2), "utf-8")
+        except OSError:
+            pass
 
 
 async def _daemon_reachable() -> bool:
@@ -456,15 +472,15 @@ class CreateMindframe(BaseModel):
 
 
 @app.post("/api/frames/create")
-async def create_mindframe(body: CreateMindframe) -> Response:
-    """Create a surface mindframe: mint a frame dir, drop a placeholder page,
-    then spawn a persistent agent (cwd = frame dir) that owns index.html via the
-    taskpilot daemon's create_and_spawn endpoint. The daemon slugifies the name
-    into the task_id; mindframe ids are already [0-9a-z]+, so task_id == mid and
-    later /api/frame/<id>/message routes to the same agent.
-    Returns the new id + url so the SPA can open /m/<id> immediately."""
-    # Probe the daemon before minting a frame dir, so a down spawner doesn't
-    # leave an orphan frame behind (mirrors the old pre-mint availability check).
+async def create_mindframe(body: CreateMindframe, background_tasks: BackgroundTasks) -> Response:
+    """Create a surface mindframe INSTANTLY: mint the frame dir + placeholder
+    and return the id at once; the agent spawn (define + start, ~16s) runs in
+    the background. The SPA navigates to /m/<id> immediately and the surface
+    narrates the boot. Task_id == mid, so /api/frame/<id>/message routes to
+    the same agent — and if the background spawn failed, that message path
+    re-runs define+start, so a frame can never get permanently stuck."""
+    # Probe the daemon before minting, so a down spawner doesn't mint frames
+    # whose agents can never start. Fast (~ms) when the daemon is up.
     if not await _daemon_reachable():
         return JSONResponse(
             {"error": "taskpilot daemon (agent-spawning) not reachable — can't spawn a mindframe agent."},
@@ -479,10 +495,11 @@ async def create_mindframe(body: CreateMindframe) -> Response:
 
     title = (body.title or body.prompt.strip().split("\n", 1)[0])[:120]
     try:
-        result = await _spawn_surface_frame(mid, title, body.prompt, {"kind": "dashboard"})
+        fdir = _mint_frame(mid, title, body.prompt, {"kind": "dashboard"})
     except OSError as e:
         return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
-    return JSONResponse(result)
+    background_tasks.add_task(_spawn_frame_bg, mid, fdir, body.prompt)
+    return JSONResponse({"id": mid, "url": f"/m/{mid}", "spawn": "starting"})
 
 
 # --------------------------- mindframe surface (viewing) ---------------------------
@@ -605,6 +622,25 @@ async def frame_message(mid: str, body: FrameMessage) -> Response:
                     return JSONResponse(
                         {"ok": False,
                          "error": f"agent was dead and revival failed: daemon {rs.status_code}: {rs.text[:200]}"},
+                        status_code=502)
+                revived = True
+                r = await client.post(msg_url, json=payload, timeout=20)
+            elif r.status_code == 404:
+                # The task row doesn't exist at all — the background spawn
+                # after create failed (or the taskpilot DB was reset). Define
+                # + start from meta.json, then deliver. A frame that still
+                # shows the boot placeholder gets the normal first-compose
+                # flow; one with a real page gets the revival brief.
+                meta = _read_meta(fdir)
+                prompt = (meta.get("prompt") or "(unrecorded)").strip()
+                start_prompt = None
+                if _page_title(fdir / "index.html") is not None:
+                    start_prompt = REVIVAL_BRIEF.format(
+                        index=str(fdir / "index.html"), prompt=prompt)
+                ok, err = await _define_and_start(task_id, fdir, prompt, start_prompt)
+                if not ok:
+                    return JSONResponse(
+                        {"ok": False, "error": f"agent was never spawned and recovery failed: {err}"},
                         status_code=502)
                 revived = True
                 r = await client.post(msg_url, json=payload, timeout=20)
