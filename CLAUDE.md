@@ -79,7 +79,7 @@ box; the Surface serves the page and proxies messages. There is no second
   it POSTs the prompt and every message to `session-bridge :8910/sessions/<id>/message`.
   Agent runtime and Mesh are coupled by this.
 - **Single vault, single Surface.** One `~/.mindframe/vault`, one dashboard
-  server for every mindframe. No multi-vault catalog, no sharing, no per-frame
+  server for every mindframe. No vault catalog, no sharing, no per-frame
   server.
 - **Agents recommend; humans act.** Anything irreversible or outward-facing is
   drawn on the mindframe's page as a pending action and waits for the operator

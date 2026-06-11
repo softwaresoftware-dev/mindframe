@@ -768,7 +768,7 @@ def serve_artifact(sid: str, path: str) -> Response:
 #
 # Surfaces the single knowledge-base vault to the UI: its metadata, recent
 # entries, and node-link graph. The path is fixed at VAULT_DIR
-# (~/.mindframe/vault). There is no multi-vault catalog and no sharing —
+# (~/.mindframe/vault). There is no vault catalog and no sharing —
 # one deployment, one vault.
 
 import subprocess
