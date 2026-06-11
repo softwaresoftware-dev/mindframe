@@ -16,7 +16,7 @@ Endpoints:
   - POST /api/frames/create                — mint a frame + spawn its agent
   - GET  /m/<id>                           — the per-mindframe surface shell
   - GET  /api/frame/<id>/page|rev          — the agent's page + its revision
-  - POST /api/frame/<id>/message           — deliver a message to the agent
+  - POST /api/frame/<id>/message           — deliver a message to the agent (revives a dead one first)
   - GET  /api/frame/<id>/activity          — tail the agent's cognition log
   - POST /api/dashboard-event              — proxy to dispatcher (server holds the bearer)
   - GET  /api/vault[/entries|/graph]       — the single knowledge-base vault
@@ -312,6 +312,54 @@ THE OPERATOR'S FIRST REQUEST
 Compose your first index.html now: acknowledge the request, show what you \
 understand and your first concrete step, and end with a question."""
 
+# Starter prompt for a *revived* agent — a frame whose original agent died
+# (reboot, crash, context exhaustion). The page on disk is the state; the new
+# agent resumes ownership instead of composing a "first" page over it. Sent as
+# the `prompt` override on POST /tasks/<id>/start; the operator's actual
+# message follows as a normal channel message right after.
+REVIVAL_BRIEF = """You are a mindframe — an autonomous agent that works for the operator by \
+composing a single live web page. You are RESUMING ownership of an existing \
+mindframe whose previous agent session ended (machine reboot or crash). You \
+own exactly ONE file:
+
+    {index}
+
+It already holds the current state of your work — READ IT FIRST to recover \
+context. The request that originally created this mindframe was:
+
+{prompt}
+
+THE LOOP
+  1. The operator sends you a message.
+  2. You do the real work it implies — run Bash, read files, query the MCPs and \
+CLIs available to you. Never fabricate; if you can't reach something, say so on the page.
+  3. You use the Write tool to rewrite the ENTIRE file above as one complete, \
+valid, self-contained HTML document that reflects the new state.
+  4. You stop and wait for the next message. The operator's browser reloads \
+automatically when the file changes.
+
+RULES
+  - ALWAYS write the COMPLETE document — never a fragment, never an append. Inline \
+all CSS. The page is the whole interface; there is no chat transcript, so render \
+what matters now, not a log.
+  - Make it calm and legible: type, weight, colour, and spacing carry meaning. No emoji.
+  - Make every concrete action or suggestion you offer a clickable BUTTON that \
+messages you, not prose asking the operator to reply. Use EXACTLY this pattern \
+(your page is served at /api/frame/<id>/page; swapping /page for /message reaches you):
+      <button onclick="fetch(location.pathname.replace('/page','/message'),\
+{{method:'POST',headers:{{'Content-Type':'application/json'}},\
+body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
+.then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
+    Style buttons to match the page. The message box remains for free-form asks.
+  - NEVER declare yourself done. End every page with a forward question or a clear \
+next step so the conversation keeps going.
+  - Anything irreversible or outward-facing: draw the pending action on the page — \
+with an explicit approval button — and wait for the operator to approve (button \
+click or message) before doing it.
+
+Do NOT rewrite the page yet — the operator's message arrives immediately after \
+this brief. Read the current page, act on that message, then rewrite."""
+
 
 def _mint_frame_id(n: int = 10) -> str:
     """Generate a random n-char lowercase-alphanumeric frame id."""
@@ -343,13 +391,17 @@ async def _spawn_surface_frame(mid: str, title: str, prompt: str,
     }, indent=2), "utf-8")
 
     brief = MINDFRAME_BRIEF.format(index=str(index), prompt=prompt.strip())
-    # create_and_spawn blocks ~16s while tmux launches; allow generous headroom.
+    # Define the task, then ensure it's running. Both idempotent on the
+    # taskpilot side; start blocks ~16s while tmux launches, so allow
+    # generous headroom.
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                f"{TASKPILOT_DAEMON}/tasks/create_and_spawn",
+            r = await client.put(
+                f"{TASKPILOT_DAEMON}/tasks/{mid}",
                 json={"name": mid, "description": brief, "cwd": str(fdir)},
             )
+            if r.status_code < 300:
+                r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{mid}/start", json={})
     except httpx.HTTPError as e:
         return {"id": mid, "url": f"/m/{mid}", "spawn": "error", "error": f"spawn failed: {e}"}
     if r.status_code >= 300:
@@ -486,48 +538,83 @@ class FrameMessage(BaseModel):
     text: str = Field(..., min_length=1, max_length=8000)
 
 
+def _daemon_error_code(r: httpx.Response) -> str:
+    """The machine-readable `detail.code` of a taskpilot error response, or ''."""
+    try:
+        detail = r.json().get("detail")
+        return detail.get("code", "") if isinstance(detail, dict) else ""
+    except ValueError:
+        return ""
+
+
 @app.post("/api/frame/{mid}/message")
 async def frame_message(mid: str, body: FrameMessage) -> Response:
-    """Deliver a user message to the mindframe's agent via the taskpilot daemon."""
+    """Deliver a user message to the mindframe's agent via the taskpilot
+    daemon — reviving the agent first if it died.
+
+    A frame outlives its agent process (reboots, crashes, context
+    exhaustion); the page on disk is the durable state. When taskpilot says
+    `agent_not_running` (409), we respawn the task with a revival brief —
+    "resume ownership of the existing page" — and deliver the message to the
+    fresh agent. The response carries `revived: true` so the surface can say
+    what happened."""
     fdir = _frame_dir(mid)
     if fdir is None:
         return JSONResponse({"error": "mindframe not found"}, status_code=404)
     task_id = _frame_task_id(mid, fdir)
+    payload = {"text": body.text, "from_session": "mindframe-surface"}
+    msg_url = f"{TASKPILOT_DAEMON}/tasks/{task_id}/message"
+
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.post(
-                f"{TASKPILOT_DAEMON}/tasks/{task_id}/message",
-                json={"text": body.text, "from_session": "mindframe-surface"},
-            )
-        if r.status_code >= 300:
-            return JSONResponse(
-                {"ok": False, "error": f"daemon {r.status_code}: {r.text[:200]}"},
-                status_code=502)
+        # start blocks ~16s on a revival; size the client timeout for that.
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(msg_url, json=payload, timeout=20)
+            revived = False
+            if r.status_code == 409 and _daemon_error_code(r) == "agent_not_running":
+                brief = REVIVAL_BRIEF.format(
+                    index=str(fdir / "index.html"),
+                    prompt=(_read_meta(fdir).get("prompt") or "(unrecorded)").strip(),
+                )
+                rs = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/start",
+                                       json={"prompt": brief})
+                if rs.status_code >= 300:
+                    return JSONResponse(
+                        {"ok": False,
+                         "error": f"agent was dead and revival failed: daemon {rs.status_code}: {rs.text[:200]}"},
+                        status_code=502)
+                revived = True
+                r = await client.post(msg_url, json=payload, timeout=20)
+            if r.status_code >= 300:
+                code = _daemon_error_code(r)
+                retryable = code == "channel_not_ready"
+                return JSONResponse(
+                    {"ok": False, "revived": revived, "retryable": retryable,
+                     "error": f"daemon {r.status_code}: {r.text[:200]}"},
+                    status_code=502)
     except httpx.HTTPError as e:
         return JSONResponse({"ok": False, "error": f"taskpilot daemon unreachable: {e}"},
                             status_code=502)
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "revived": revived})
 
 
 @app.delete("/api/frame/{mid}")
 async def delete_frame(mid: str) -> Response:
-    """Tear a mindframe down: kill its agent, then remove the frame dir. A
-    mindframe is two things — a persistent taskpilot agent (task_id == mid) and
-    its frame dir — so deleting the dir alone would orphan a live agent. We kill
-    the agent first (best-effort: it may already be dead/gone), then rmtree the
-    dir. The Claude transcript under ~/.claude/projects is left alone."""
+    """Tear a mindframe down: delete its task (stops the agent AND frees the
+    task id for reuse), then remove the frame dir. A mindframe is two things —
+    a persistent taskpilot agent (task_id == mid) and its frame dir — so
+    deleting the dir alone would orphan a live agent. The taskpilot DELETE is
+    best-effort: a non-2xx/transport failure still removes the dir so the
+    frame stops showing up. The Claude transcript under ~/.claude/projects is
+    left alone."""
     fdir = _frame_dir(mid)
     if fdir is None:
         return JSONResponse({"error": "mindframe not found"}, status_code=404)
     task_id = _frame_task_id(mid, fdir)
 
-    # Kill the agent. Best-effort — a non-2xx (already killed, unknown task) is
-    # fine; only a hard transport failure is worth reporting, and even then we
-    # still remove the dir so the frame stops showing up.
     killed = False
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/kill")
+            r = await client.delete(f"{TASKPILOT_DAEMON}/tasks/{task_id}")
         killed = r.status_code < 300
     except httpx.HTTPError:
         killed = False

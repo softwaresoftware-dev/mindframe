@@ -11,8 +11,8 @@ feeds. In a deployment it runs as the managed daemon `mindframe-dashboard`
 
 A mindframe is a **surface**: a persistent agent that owns one live HTML page
 it rewrites in place, plus a message box, nothing else. The dashboard mints
-them (`POST /api/frames/create` spawns the agent through taskpilot's
-`create_and_spawn`; task id == frame id), lists them, serves each one's shell
+them (`POST /api/frames/create` defines + starts the agent through taskpilot;
+task id == frame id), lists them, serves each one's shell
 at `/m/<id>`, and proxies operator messages to its agent
 (`POST /api/frame/<id>/message` → `:8912/tasks/<id>/message` → the agent's
 mesh channel).

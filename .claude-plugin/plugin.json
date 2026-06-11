@@ -1,7 +1,7 @@
 {
   "name": "mindframe",
   "description": "AI agents that learn your org and act on it.",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "author": {
     "name": "NOV LLC",
     "url": "https://github.com/softwaresoftware-dev"
@@ -18,7 +18,7 @@
     "deployment_name": {
       "type": "string",
       "title": "Deployment name",
-      "description": "Names this mindframe deployment — the client's name for a vendor install, or your own infra name for a self-hosted one. Threads into grounding prompts. The knowledge-base vault is fixed at ~/.mindframe/vault and is not configurable.",
+      "description": "Names this mindframe deployment \u2014 the client's name for a vendor install, or your own infra name for a self-hosted one. Threads into grounding prompts. The knowledge-base vault is fixed at ~/.mindframe/vault and is not configurable.",
       "required": true
     }
   }

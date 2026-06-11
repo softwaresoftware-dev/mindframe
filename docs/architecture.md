@@ -41,8 +41,8 @@ Connections, Events) — and every mindframe at `/m/<id>`.
 
 A **mindframe** is the unit it hosts: a persistent agent that owns one HTML
 page it rewrites in place, plus a message box. The Surface mints one
-(`POST /api/frames/create` → taskpilot `create_and_spawn`, task id == frame
-id), serves its shell, and proxies operator messages to its agent. The agent
+(`POST /api/frames/create` → taskpilot `PUT /tasks/<id>` + `start`, task id
+== frame id), serves its shell, and proxies operator messages to its agent. The agent
 rewrites `index.html` with the Write tool; the shell polls
 `/api/frame/<id>/rev` (the file's mtime) and reloads on change. The shell's
 "working" indicator derives from the agent's transcript mtime.
@@ -59,10 +59,14 @@ browser. See [`../dashboard/README.md`](../dashboard/README.md).
 
 `taskpilot` spawns and supervises `claude` processes. Each agent runs in a
 detached tmux session (the `terminal-ops` provider); the daemon on `:8912`
-exposes `POST /tasks/create_and_spawn`, `/tasks/<id>/message`, and
-`/tasks/<id>/kill`. The daemon itself is reboot-persistent through the
-`daemon` capability; the tasks it spawns are not — every task is one-shot,
-runs until it exits or is killed, with no auto-respawn.
+exposes an idempotent lifecycle API: `PUT /tasks/<id>` (define),
+`/tasks/<id>/start` (ensure running — also the revive path, with an optional
+prompt override), `/tasks/<id>/stop`, `/tasks/<id>/message` (verified
+delivery), and `DELETE /tasks/<id>` (free the id). Status is reconciled
+against tmux ground truth on every read. The daemon itself is
+reboot-persistent through the `daemon` capability; the tasks it spawns are
+not — a dead task stays down until a caller starts it again (the Surface does
+this automatically on the next operator message).
 
 A spawned agent inherits the operator's real `~/.claude` — plugins, MCPs, and
 identity. Its durable state is its transcript at
@@ -86,7 +90,7 @@ Routing, in order: dedupe → static route from `channels.yaml`
 (`session:<name>` forward or `spawn:<recipe>`) → LLM fallback to the
 dispatcher's own Claude session. A `spawn:` route reads
 `~/.dispatcher/recipes/<id>/`, composes the brief, and calls taskpilot's
-`create_and_spawn`.
+`create_and_spawn` composite (define + start in one call).
 
 ### Knowledge — the vault
 
@@ -143,7 +147,7 @@ The push path:
 external event ──▶ Event ingress (dispatcher :8911, poll-first)
                       dedupe → channels.yaml → LLM fallback
                       └─ spawn:<recipe>
-                             │ POST :8912/tasks/create_and_spawn
+                             │ POST :8912/tasks/create_and_spawn (define+start)
                              ▼
                       Agent runtime (taskpilot)
                       tmux-backed claude; prompt + messages over the Mesh

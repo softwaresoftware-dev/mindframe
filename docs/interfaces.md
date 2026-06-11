@@ -226,10 +226,13 @@ the same way, over HTTP.
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | `{ok, version, running, total}`. |
-| `GET /tasks`, `GET /tasks/{id}` | List/detail with live tmux + channel health. |
-| `POST /tasks/create_and_spawn` | Define and spawn a task in one call. Body: `{description, name?, cwd?, model?, brief?}`. The task id is slugified from `name` (or the description); a duplicate id is a 409. Returns `{ok, status, task_id, tmux_session, channel_healthy}`. Blocks ~16s while tmux + claude launch. |
-| `POST /tasks/{id}/message` | Deliver `{text, from_session?}` to a running agent — forwarded to its mesh channel. |
-| `POST /tasks/{id}/kill` | Kill the tmux session; the only teardown. |
+| `GET /tasks[?status=]`, `GET /tasks/{id}` | List/detail. Status is reconciled against tmux ground truth on every read (`running` + dead tmux → `crashed`), plus live `tmux_alive`/`channel_healthy`. |
+| `PUT /tasks/{id}` | Upsert the task definition `{description, name?, cwd?, model?, brief?}`. Idempotent; the id is a caller-chosen slug. |
+| `POST /tasks/{id}/start` | Ensure running (idempotent): no-op if alive, (re)spawn if crashed/stopped. Optional `{prompt}` overrides the starter prompt — the Surface passes a revival brief here when respawning a frame's dead agent. Blocks ~16s on an actual spawn. |
+| `POST /tasks/{id}/stop` | Ensure stopped (idempotent). The row survives for a later start. |
+| `POST /tasks/{id}/message` | Deliver `{text, from_session?}` to a running agent with **verified delivery**. Errors carry `detail.code`: 409 `agent_not_running` (start + retry), 503 `channel_not_ready` (retry shortly), 502 `delivery_failed`. |
+| `DELETE /tasks/{id}` | Stop + delete the task entirely, freeing the id for reuse. |
+| `POST /tasks/create_and_spawn` | Deprecated composite (PUT + start in one call), kept for event-driven callers; idempotent. |
 
 Each spawned agent runs `claude` in a detached tmux session with the
 operator's real `$HOME` — it inherits the operator's plugins, MCPs, and
@@ -238,10 +241,11 @@ identity. Its durable state is the transcript at
 (`session-bridge :8910/sessions/<id>/message`), never by typing into the tmux
 pane; the starter prompt is delivered the same way at spawn time.
 
-Every task is one-shot: it runs (possibly long-running, idling between
-messages) until it exits or is killed. There is no auto-respawn and no reboot
-persistence for tasks — anything that must survive reboots runs through the
-`daemon` capability instead.
+Tasks do not auto-respawn and have no reboot persistence — anything that must
+survive reboots unattended runs through the `daemon` capability instead. But
+revival is one idempotent call (`POST /tasks/{id}/start`), and the Surface
+uses it to respawn a frame's agent on the next operator message after a
+reboot or crash.
 
 ---
 
@@ -277,14 +281,14 @@ mindframe. Full env-var table in [`../dashboard/README.md`](../dashboard/README.
 |---|---|
 | `GET /api/health` | `{ok, port, dispatcher_url, dispatcher_bearer_present}`. |
 | `GET /api/frames` | List surface mindframes (frame dirs under `~/.mindframe/frames` holding an `index.html`), newest-activity first. |
-| `POST /api/frames/create` | `{prompt, title?}` — mint a frame dir, drop a placeholder page, spawn its persistent agent via taskpilot's `create_and_spawn` (task_id == frame id). Returns `{id, url, spawn, …}`. |
+| `POST /api/frames/create` | `{prompt, title?}` — mint a frame dir, drop a placeholder page, then define + start its persistent agent via taskpilot (`PUT /tasks/{id}` + `POST /tasks/{id}/start`, task_id == frame id). Returns `{id, url, spawn, …}`. |
 | `GET /api/frames/activity` | Per-frame `working` flag for the dock — true if the agent's transcript was written in the last 8s. |
 | `GET /m/<id>` | The per-mindframe surface shell (iframe over the agent's page + message rail + cognition log). |
 | `GET /api/frame/<id>/page` | The agent's current `index.html` (or a composing placeholder). |
 | `GET /api/frame/<id>/rev` | Revision = the page file's `mtime_ns`; the shell polls it and reloads on change. |
-| `POST /api/frame/<id>/message` | `{text}` — deliver a message to the frame's agent via taskpilot. |
+| `POST /api/frame/<id>/message` | `{text}` — deliver a message to the frame's agent via taskpilot. If the agent died (reboot/crash), it is revived first: the server starts the task with a revival brief ("resume ownership of the existing page"), then delivers. Response carries `revived: true` when that happened. |
 | `GET /api/frame/<id>/activity` | Tail the agent's transcript for cognition events (`?offset=`, `?file=`); also reports `mtime`, `model`, `context`. |
-| `DELETE /api/frame/<id>` | Tear a mindframe down: kill its agent (best-effort), then remove the frame dir. |
+| `DELETE /api/frame/<id>` | Tear a mindframe down: delete its task (stops the agent, frees the task id; best-effort), then remove the frame dir. |
 | `POST /api/dashboard-event` | `{event_type, data?}` — proxy to the dispatcher's `/api/event` with `source: dashboard-button`. The server reads the bearer from `~/.mindframe/secrets/dispatcher-bearer.token`; the browser never sees it. |
 | `GET /api/vault` | The single vault at `~/.mindframe/vault`: path, per-type entry counts, last modified. |
 | `GET /api/vault/entries` | Recent entries (`?limit=`, default 50), newest first. |

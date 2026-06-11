@@ -309,7 +309,7 @@
       saveLog();
     } catch (e) {}
     if (waiting && !warned && sentAt && Date.now() - sentAt > 40000 && !sawActSinceSent) {
-      appendLog({ kind: 'warn', label: 'No response yet — the mindframe agent may not be running. Try resending.' });
+      appendLog({ kind: 'warn', label: 'No response yet — resend and a dead agent will be respawned automatically.' });
       warned = true;
       waiting = false; send.disabled = false;   // "try resending" needs a usable Send
     }
@@ -346,10 +346,15 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
+      const j = await r.json().catch(() => ({}));
       if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
         appendLog({ kind: 'warn', label: 'delivery failed: ' + (j.error || r.statusText) });
         waiting = false; send.disabled = false;
+      } else if (j.revived) {
+        // The agent had died; the server respawned it before delivering.
+        // Restart the no-response clock — the fresh agent starts from zero.
+        appendLog({ kind: 'info', label: 'agent was down — respawned, resuming this mindframe' });
+        sentAt = Date.now(); warned = false;
       }
     } catch (e) { appendLog({ kind: 'warn', label: 'network error sending message' }); waiting = false; send.disabled = false; }
   });

@@ -32,9 +32,13 @@ client = TestClient(srv.app)
 
 
 class _StubTaskpilot(BaseHTTPRequestHandler):
-    """Answers the three taskpilot endpoints the dashboard calls."""
+    """Answers the taskpilot 0.15 endpoints the dashboard calls: PUT
+    /tasks/{id}, POST /tasks/{id}/start, POST /tasks/{id}/message, DELETE
+    /tasks/{id}. Set `agent_dead = True` to make /message 409
+    agent_not_running until a /start arrives (the revive scenario)."""
 
-    calls: list = []
+    calls: list = []          # (method, path, body)
+    agent_dead: bool = False  # 409 messages until a /start is seen
 
     def _send(self, code: int, body: dict) -> None:
         data = json.dumps(body).encode()
@@ -44,20 +48,37 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(length) or b"{}")
+
     def do_GET(self):
         if self.path == "/health":
             self._send(200, {"ok": True})
         else:
             self._send(404, {})
 
+    def do_PUT(self):
+        body = self._body()
+        type(self).calls.append(("PUT", self.path, body))
+        self._send(200, {"task_id": self.path.rsplit("/", 1)[-1], "created": True})
+
+    def do_DELETE(self):
+        type(self).calls.append(("DELETE", self.path, {}))
+        self._send(200, {"ok": True, "deleted": True, "existed": True})
+
     def do_POST(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length) or b"{}")
-        type(self).calls.append((self.path, body))
-        if self.path == "/tasks/create_and_spawn":
-            self._send(200, {"ok": True, "task_id": body.get("name")})
-        elif self.path.endswith("/message") or self.path.endswith("/kill"):
-            self._send(200, {"ok": True})
+        body = self._body()
+        type(self).calls.append(("POST", self.path, body))
+        if self.path.endswith("/start"):
+            type(self).agent_dead = False
+            self._send(200, {"ok": True, "started": True, "status": "running"})
+        elif self.path.endswith("/message"):
+            if type(self).agent_dead:
+                self._send(409, {"detail": {"code": "agent_not_running",
+                                            "task_status": "crashed"}})
+            else:
+                self._send(200, {"ok": True, "delivered": True})
         else:
             self._send(404, {})
 
@@ -71,6 +92,7 @@ def stub_daemon(monkeypatch):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     _StubTaskpilot.calls = []
+    _StubTaskpilot.agent_dead = False
     monkeypatch.setattr(srv, "TASKPILOT_DAEMON", f"http://127.0.0.1:{server.server_port}")
     yield _StubTaskpilot
     server.shutdown()
@@ -126,12 +148,15 @@ def test_create_mints_frame_and_spawns(frames_root, stub_daemon):
     assert (fdir / "index.html").is_file() and "omposing" in (fdir / "index.html").read_text()
     meta = json.loads((fdir / "meta.json").read_text())
     assert meta["task_id"] == j["id"] and meta["title"] == "Build"
-    spawn_body = next(b for p, b in stub_daemon.calls if p == "/tasks/create_and_spawn")
-    assert spawn_body["cwd"] == str(fdir)
-    assert str(fdir / "index.html") in spawn_body["description"]
+    # Create = idempotent define (PUT) then ensure-running (start).
+    put_body = next(b for m, p, b in stub_daemon.calls
+                    if m == "PUT" and p == f"/tasks/{j['id']}")
+    assert ("POST", f"/tasks/{j['id']}/start", {}) in stub_daemon.calls
+    assert put_body["cwd"] == str(fdir)
+    assert str(fdir / "index.html") in put_body["description"]
     # The brief must teach the self-messaging button affordance, or agents
     # render prose offers instead of clickable actions.
-    assert "location.pathname.replace('/page','/message')" in spawn_body["description"]
+    assert "location.pathname.replace('/page','/message')" in put_body["description"]
 
 
 def test_create_with_daemon_down_leaves_no_orphan(frames_root, down_daemon):
@@ -150,9 +175,49 @@ def test_create_rejects_empty_prompt(frames_root, stub_daemon):
 def test_message_routes_to_meta_task_id(frames_root, stub_daemon):
     _make_frame(frames_root, "frame1", task_id="task-77")
     r = client.post("/api/frame/frame1/message", json={"text": "hi"})
-    assert r.status_code == 200 and r.json()["ok"] is True
-    assert stub_daemon.calls == [("/tasks/task-77/message",
+    assert r.status_code == 200 and r.json() == {"ok": True, "revived": False}
+    assert stub_daemon.calls == [("POST", "/tasks/task-77/message",
                                   {"text": "hi", "from_session": "mindframe-surface"})]
+
+
+def test_message_revives_dead_agent_then_delivers(frames_root, stub_daemon):
+    """The headline lifecycle fix: a frame whose agent died is revived on the
+    next message — start with a resume-flavored brief, then deliver — instead
+    of failing forever."""
+    fdir = _make_frame(frames_root, "frame1", task_id="task-77")
+    stub_daemon.agent_dead = True
+    r = client.post("/api/frame/frame1/message", json={"text": "hi again"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "revived": True}
+    assert [(m, p) for m, p, _ in stub_daemon.calls] == [
+        ("POST", "/tasks/task-77/message"),   # 409 agent_not_running
+        ("POST", "/tasks/task-77/start"),     # revive
+        ("POST", "/tasks/task-77/message"),   # delivered
+    ]
+    start_body = stub_daemon.calls[1][2]
+    # The revival brief resumes the existing page — it must point at the real
+    # index.html and must NOT be the compose-your-first-page brief.
+    assert str(fdir / "index.html") in start_body["prompt"]
+    assert "RESUMING" in start_body["prompt"]
+    assert "first request is below" not in start_body["prompt"]
+
+
+def test_message_revival_failure_is_502(frames_root, stub_daemon, monkeypatch):
+    _make_frame(frames_root, "frame1", task_id="task-77")
+    stub_daemon.agent_dead = True
+
+    # Make /start fail: 404 the task (e.g. row deleted out from under the frame).
+    orig = stub_daemon.do_POST
+    def failing_post(self):
+        if self.path.endswith("/start"):
+            self.calls.append(("POST", self.path, self._body()))
+            self._send(404, {"detail": "task 'task-77' not found"})
+        else:
+            orig(self)
+    monkeypatch.setattr(stub_daemon, "do_POST", failing_post)
+
+    r = client.post("/api/frame/frame1/message", json={"text": "hi"})
+    assert r.status_code == 502 and r.json()["ok"] is False
+    assert "revival failed" in r.json()["error"]
 
 
 def test_message_daemon_down_is_502(frames_root, down_daemon):
@@ -174,7 +239,8 @@ def test_delete_kills_agent_and_removes_dir(frames_root, stub_daemon):
     r = client.delete("/api/frame/frame1")
     assert r.status_code == 200 and r.json() == {"ok": True, "id": "frame1", "killed": True}
     assert not fdir.exists()
-    assert stub_daemon.calls == [("/tasks/task-77/kill", {})]
+    # DELETE (not kill): frees the task id on the taskpilot side too.
+    assert stub_daemon.calls == [("DELETE", "/tasks/task-77", {})]
 
 
 def test_delete_unknown_frame_is_404(frames_root, stub_daemon):
