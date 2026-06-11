@@ -294,12 +294,19 @@
   toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
 
   // ----- dock: list every mindframe, switch without new tabs -----
-  let dockFrames = [];
+  let dockFrames = [], spawnFailWarned = false;
   async function loadDock(){
     try {
       const j = await (await fetch('/api/frames', { cache: 'no-store' })).json();
       dockFrames = j.frames || [];
       renderDock();
+      // A failed background spawn is recorded in this frame's meta status —
+      // surface it instead of pulsing "working" forever (review finding #1).
+      const me = dockFrames.find(f => f.id === MF_ID);
+      if (me && me.status === 'spawn_failed' && !spawnFailWarned){
+        spawnFailWarned = true;
+        appendLog({ kind: 'warn', label: 'the agent failed to start — send a message to retry (it respawns automatically)' });
+      }
     } catch (e) {}
   }
   function renderDock(){
@@ -422,7 +429,7 @@
   const shellLoadedAt = Date.now();
   let bootShown = false;
   function inBootWindow(){
-    return !actFile && !lastMtime && (Date.now() - shellLoadedAt) < 120000;
+    return !spawnFailWarned && !actFile && !lastMtime && (Date.now() - shellLoadedAt) < 120000;
   }
 
   async function pollActivity(){
@@ -485,20 +492,31 @@
     const wakeHint = setTimeout(
       () => appendLog({ kind: 'info', label: 'agent was asleep — waking it (~20s)…' }), 3500);
     try {
-      const r = await fetch(API('message'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
+      // A 502 with retryable:true means the agent's channel isn't registered
+      // yet (the ~20s boot window instant-create opened) — retry with backoff
+      // instead of dropping the message (review finding #2).
+      let r, j, attempt = 0;
+      for (;;) {
+        r = await fetch(API('message'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        j = await r.json().catch(() => ({}));
+        if (r.ok || !j.retryable || attempt >= 6) break;
+        if (attempt === 0) appendLog({ kind: 'info', label: 'agent is still booting — holding your message…' });
+        attempt++;
+        await new Promise(res => setTimeout(res, 4000));
+      }
       clearTimeout(wakeHint);
-      const j = await r.json().catch(() => ({}));
       if (!r.ok) {
         appendLog({ kind: 'warn', label: 'delivery failed: ' + (j.error || r.statusText) });
+        if (!msg.value) msg.value = text;      // give the operator their words back
         waiting = false; send.disabled = false;
       } else if (j.revived) {
         appendLog({ kind: 'info', label: 'agent is awake — resuming this mindframe' });
         sentAt = Date.now(); warned = false;   // fresh agent starts the clock from zero
       }
-    } catch (e) { clearTimeout(wakeHint); appendLog({ kind: 'warn', label: 'network error sending message' }); waiting = false; send.disabled = false; }
+    } catch (e) { clearTimeout(wakeHint); appendLog({ kind: 'warn', label: 'network error sending message' }); if (!msg.value) msg.value = text; waiting = false; send.disabled = false; }
   });
 </script>
 </body>

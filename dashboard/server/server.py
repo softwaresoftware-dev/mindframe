@@ -817,16 +817,19 @@ def _pretty_model(name: str) -> str:
 
 
 def _agent_transcript(fdir: Path, task_id: str) -> Path | None:
-    """Newest Claude session JSONL for this mindframe's agent. Handles both spawn
-    styles: a normal taskpilot spawn runs with the real $HOME and cwd = the frame
-    dir, so Claude stores the transcript at ~/.claude/projects/<encoded-cwd>/
-    (each '/' and '.' becomes '-'); an isolated spawn (e.g. setup) keeps it under
-    ~/.taskpilot/<task_id>/.claude/projects/<proj>/."""
+    """Newest Claude session JSONL for this mindframe's agent. Handles three
+    spawn styles: a normal taskpilot spawn runs with the real $HOME and cwd =
+    the frame dir, so Claude stores the transcript at
+    ~/.claude/projects/<encoded-cwd>/ (each '/' and '.' becomes '-'); an
+    ephemeral *deliverer* (an event agent that drops this frame as its
+    deliverable) runs with cwd = its taskpilot task dir; an isolated spawn
+    (e.g. setup) keeps it under ~/.taskpilot/<task_id>/.claude/projects/."""
     files: list[Path] = []
-    enc = re.sub(r"[/.]", "-", str(fdir.resolve()))
-    real_proj = Path.home() / ".claude" / "projects" / enc
-    if real_proj.is_dir():
-        files.extend(real_proj.glob("*.jsonl"))
+    for cwd in (fdir.resolve(), TASKPILOT_HOME / task_id):
+        enc = re.sub(r"[/.]", "-", str(cwd))
+        proj = Path.home() / ".claude" / "projects" / enc
+        if proj.is_dir():
+            files.extend(proj.glob("*.jsonl"))
     iso_proj = TASKPILOT_HOME / task_id / ".claude" / "projects"
     if iso_proj.is_dir():
         files.extend(iso_proj.glob("*/*.jsonl"))
