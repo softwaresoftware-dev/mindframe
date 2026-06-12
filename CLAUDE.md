@@ -162,3 +162,23 @@ descriptive of today's vault, not final, until that redesign lands.
 Tracked in this repo's git history and docs. (The former project-vault +
 librarian tracker was archived 2026-06-06 with the `knowledge-base` plugin;
 mindframe owns its knowledge layer directly now.)
+
+## Next
+
+(updated 2026-06-12, post-1.3.0 "living frames" ship)
+
+- **Vault reader/search in the UI** — knowledge is still write-only from the
+  dashboard (drawer shows counts; graph shows dots). Entry list + note viewer
+  + title search; `/api/vault/entries` already exists.
+- **Archived-frames browse** — archive works but `?archived=1` is the only
+  door; the dock/home need a "done pile" view.
+- **Mobile pass on the shell** — agent pages carry viewport meta now; the
+  shell itself (dock, drawers, calm home) has no responsive treatment.
+- **daemon-manager follow-ups** (cross-repo): post-restart health verification
+  in sync.py (found 2026-06-12: a failed restart reports success), in-tree
+  venv rebuild on version bump, agents-survive-restart despite KillMode.
+- **Watch noise at volume** — supersede-within-watch works for one watch;
+  many chatty watches will still flood the inbox. Consider per-watch digest
+  or quiet hours when real volume arrives.
+- **shares.softwaresoftware.dev** is untracked in the parent staticsites repo
+  (submodule add pending; parent had unrelated dirty state at session end).
