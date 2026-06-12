@@ -739,7 +739,7 @@ async function loadFeed() {
   if (!box) return;
   try {
     const j = await (await fetch("/api/activity")).json();
-    const items = (j.items || []).slice(0, 8);
+    const items = (j.items || []).slice(0, 6);
     if (!items.length) { box.innerHTML = ""; return; }
     box.innerHTML = `<div class="feed-hdr">recent activity</div>` + items.map(i => `
       <a class="feed-item feed-${escapeHtml(i.kind)}" ${i.frame_id ? `href="/m/${encodeURIComponent(i.frame_id)}"` : 'href="#" onclick="return false"'}>
