@@ -382,6 +382,8 @@
       // A failed background spawn is recorded in this frame's meta status —
       // surface it instead of pulsing "working" forever (review finding #1).
       const me = dockFrames.find(f => f.id === MF_ID);
+      // Tab title = the frame in focus (frame / app / watch), not "mindframe".
+      document.title = (me && me.title) || MF_ID || 'mindframe';
       if (me && me.status === 'spawn_failed' && !spawnFailWarned){
         spawnFailWarned = true;
         appendLog({ kind: 'warn', label: 'the agent failed to start — send a message to retry (it respawns automatically)' });
