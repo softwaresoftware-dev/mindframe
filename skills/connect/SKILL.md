@@ -58,6 +58,11 @@ connection:
   check: [...]                   # argv that exits 0 only when usable; non-zero = needs-auth
   account: [...]                 # optional: prints the identity label
   docs: <help-cmd or URL>        # where a future agent learns to use it (CLI: `<tool> --help`; API: docs URL)
+sync:                            # optional — omit if this source has no vault-relevant data
+  entities: [<type>, ...]        # entity types in schema.yaml this source is authoritative for
+  pull: "<shell command>"        # command whose stdout contains fresh source data; exits 0 on success
+  schedule: daily                # hourly | daily | weekly | manual
+  triggers: [<event-type>, ...]  # dispatcher event types that should re-trigger this sync
 ---
 <body: the how-to an agent follows to use this connection. Keep irreversible
 or outward-facing actions behind operator confirmation.>
@@ -67,7 +72,21 @@ Rules:
 - **`auth` is a POINTER, never the secret.** The credential lives in the provider's own store, an env var, or a file — never inline in the skill.
 - **`check` must exit non-zero when the connection is not usable** (logged out, no key) and be cheap and read-only.
 - **`docs` points a future agent at the reference** — almost always `<tool> --help` for a CLI door, or the API docs URL. Prefer the live `--help` (version-accurate) over a stale URL.
+- **`sync` is optional.** Include it when this source has data worth keeping fresh in the vault. Omit it for sources that are action-only (e.g. a Slack connector that only sends messages has no vault data to pull). If included, `pull` must be a real shell command you tested — never invent an endpoint.
 - A worked example for **every door kind** is in **Examples by door kind** at the end of this skill — adapt the one matching your door.
+
+## Step 3b — Author the `sync:` block (if the source has vault-relevant data)
+
+Ask the operator one question: "Does this source have data worth keeping fresh in the vault — like repos, people, docs, or decisions?"
+
+If yes, add a `sync:` block to the connector. To author it:
+
+1. **Identify entity types** — which types in `~/.mindframe/vault/schema.yaml` does this source own? GitHub owns `repository`; Confluence might own `decision`, `convention`, `project`; a CRM owns `customer`.
+2. **Find the pull command** — a cheap, read-only shell command whose stdout lists the relevant objects. Test it yourself before including it. Use `bash -lc "..."` if it needs env vars.
+3. **Set schedule** — default to `daily`. Ask if they want `hourly` or `manual`.
+4. **Set triggers** — if you know the dispatcher event types this source emits (e.g. GitHub emits `push`, `pull_request`), list them. Otherwise omit.
+
+If no: omit the `sync:` block entirely. Don't add it as a placeholder.
 
 ## Step 4 — Get the credential in place
 
@@ -87,9 +106,128 @@ Once the operator approves the draft and the credential is in place:
 
 Never report a connection working you didn't actually run the `check` against.
 
+## Step 5b — Wire the sync (only if connector has a `sync:` block)
+
+Do this immediately after Step 5, without asking. The dispatcher is the routing backbone; everything below writes to it or schedules against it.
+
+### 1. Deploy the vault-sync recipe (once per install)
+
+Check if `~/.dispatcher/recipes/vault-sync/` exists. If not:
+- Copy from `$(dirname $CLAUDE_PLUGIN_ROOT)/setup/recipes/vault-sync/` if present
+- Otherwise write it inline:
+
+`~/.dispatcher/recipes/vault-sync/recipe.yaml`:
+```yaml
+task_id_pattern: "vault-sync-{event_id}"
+task_name: vault-sync
+model: sonnet
+when_to_use:
+  - a connected source has new data to pull into the mindframe vault
+  - a scheduled sync fires for a connected source
+brief_schema:
+  required: []
+  optional: [source]
+starter_prompt: |
+  You are a vault-sync agent. Pull fresh data from a connected source into
+  ~/.mindframe/vault, conforming to the vault's schema.yaml.
+
+  {brief}
+
+  Follow the instructions above. Background task only — no surface frame.
+  Report a one-line summary and exit.
+```
+
+`~/.dispatcher/recipes/vault-sync/brief.json`:
+```json
+{
+  "source": "{{source}}",
+  "objectives": [
+    "Pull fresh data from the '{{source}}' connection into ~/.mindframe/vault.",
+    "Create new vault entities; update frontmatter on existing ones — never overwrite body prose.",
+    "Update CATALOG.md and commit the vault."
+  ],
+  "instructions": "Run /mindframe:sync {{source}} and report what was created or updated.",
+  "boundaries": [
+    "Do not delete vault notes even if the source no longer lists the entity.",
+    "Do not overwrite body prose written by humans or agents."
+  ]
+}
+```
+
+### 2. Wire event-driven triggers (`sync.triggers` is set)
+
+For each trigger in `sync.triggers`, add a route to `~/.dispatcher/channels.yaml`. Use `/dispatcher:route` — it edits channels.yaml safely and restarts the daemon:
+
+```yaml
+- source: <connection-name>      # e.g. github
+  event_type: <trigger>          # e.g. push
+  target: spawn:vault-sync
+  brief:
+    source: <connection-name>
+```
+
+Add one route per trigger. If a matching route already exists, skip it.
+
+**GitHub only** — also write an event-source YAML so the dispatcher polls the right events:
+
+```bash
+GH_LOGIN=$(gh api user -q .login)
+GH_ORG=$(gh api user/orgs -q '.[0].login' 2>/dev/null || echo "$GH_LOGIN")
+```
+
+Write `~/.dispatcher/event-sources/vault-sync-github.yaml`:
+```yaml
+name: vault-sync-github
+system: github
+scope:
+  orgs: [<GH_ORG>]
+watching:
+  - push
+  - repository
+credentials_ref: github
+transport: auto
+```
+
+If this file already exists, do not overwrite — the operator may have customized it. Check and skip.
+
+For non-GitHub sources (Confluence, REST APIs), there is no dispatcher adapter. Route via the schedule path below instead.
+
+### 3. Wire schedule-based sync (`sync.schedule` is set)
+
+The schedule path works by posting a synthetic event to the dispatcher on a cron timer. The dispatcher spawns the vault-sync agent via the normal route mechanism — no new adapters needed.
+
+**Add the channels.yaml route for the synthetic event:**
+```yaml
+- source: vault-sync-schedule
+  event_type: <connection-name>    # e.g. confluence
+  target: spawn:vault-sync
+  brief:
+    source: <connection-name>
+```
+
+**Map the schedule to a cron expression:**
+- `hourly` → `0 * * * *`
+- `daily` → `0 7 * * *`
+- `weekly` → `0 7 * * 1`
+- `manual` → skip (no cron, only `/mindframe:sync <source>` by hand)
+
+**Install the cron entry:**
+```bash
+DISPATCHER_TOKEN_FILE=~/.mindframe/secrets/dispatcher-bearer.token
+CRON_CMD="bash -lc \"curl -sf -m 30 -H 'Authorization: Bearer \$(cat $DISPATCHER_TOKEN_FILE)' -d '{\\\"source\\\":\\\"vault-sync-schedule\\\",\\\"event_type\\\":\\\"<source>\\\",\\\"data\\\":{}}' http://127.0.0.1:8911/api/event\""
+CRON_ENTRY="<cron-expression> $CRON_CMD # vault-sync-<source>"
+(crontab -l 2>/dev/null | grep -v "# vault-sync-<source>"; echo "$CRON_ENTRY") | crontab -
+```
+
+The `bash -l` loads the user's profile (env vars available). The token is read at runtime from the secrets file. If the dispatcher is down when the cron fires, the curl fails silently — the next tick retries. If sources have BOTH triggers AND a schedule, wire both; they are complementary.
+
+### 4. Run the initial sync
+
+Run `/mindframe:sync <source>` now to seed the vault with the connection's first pull. This is the initial population pass — subsequent runs will be triggered automatically.
+
 ## Step 6 — Confirm
 
-Tell the operator plainly: `<service>` is connected, it shows on the dashboard's Connections node, and any agent can now use it (the connector's body is the how-to). End by asking whether they want to connect anything else, or to put this connection to work now.
+Tell the operator plainly: `<service>` is connected, it shows on the dashboard's Connections node, and any agent can now use it (the connector's body is the how-to). If the connector has a `sync:` block, note that vault entities will stay fresh on the configured schedule — they can also run `/mindframe:sync <source>` at any time to force a refresh. End by asking whether they want to connect anything else, or to put this connection to work now.
 
 ## Examples by door kind
 

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mindframe — V3 The Calm Launcher</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: grid; place-items: center;
+    background: radial-gradient(ellipse at 50% 38%, #131318 0%, #0b0b0c 62%);
+    color: #ececf0; font-family: system-ui, -apple-system, sans-serif;
+  }
+  #stage { width: min(620px, 92vw); }
+  #brand { text-align: center; font-size: .66rem; letter-spacing: .26em; color: #5a5a63; font-weight: 700; margin-bottom: 2.6rem; }
+
+  #start {
+    width: 100%; padding: 1.15rem 1.3rem; font-size: 17px; color: #ececf0;
+    background: #131316; border: 1px solid #2c2c34; border-radius: 14px; outline: none;
+    box-shadow: 0 0 80px rgba(91,108,255,.07);
+  }
+  #start:focus { border-color: #5b6cff; box-shadow: 0 0 90px rgba(91,108,255,.14); }
+  #hint { text-align: center; color: #50505a; font-size: 11.5px; margin: .7rem 0 3rem; }
+
+  .line {
+    display: flex; gap: .9rem; align-items: baseline; padding: .5rem .6rem;
+    border-radius: 10px; text-decoration: none; font-size: 14px;
+  }
+  .line:hover { background: rgba(20,20,23,.9); }
+  .k { color: #c9a86a; font-size: 10.5px; letter-spacing: .14em; flex: 0 0 4.6em; text-transform: uppercase; font-weight: 600; }
+  .x { color: #b9b9c2; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .t { color: #50505a; font-size: 11px; font-family: ui-monospace, monospace; }
+  .line.act .x { color: #8a8a93; font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .line.act .k { color: #50505a; }
+
+  #more { text-align: center; margin-top: 2.6rem; }
+  #more a { color: #50505a; font-size: 11.5px; text-decoration: none; letter-spacing: .06em; }
+  #more a:hover { color: #9aa6ff; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="brand">MINDFRAME</div>
+  <input id="start" placeholder="What should we work on?" autofocus>
+  <div id="hint">enter to begin · empty for suggestions</div>
+  <div id="lines"></div>
+  <div id="more"><a href="#">everything — frames · watches · knowledge · connections</a></div>
+</div>
+<script>
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const ago = ms => { const m = Math.round((Date.now()-ms)/60000);
+    return m<1?'now':m<60?m+'m':m<1440?Math.round(m/60)+'h':Math.round(m/1440)+'d'; };
+
+  (async () => {
+    const lines = [];
+    const frames = (await (await fetch('/api/frames')).json()).frames || [];
+    const inbox = frames.filter(f => f.kind === 'delivered');
+    const desk = frames.filter(f => f.kind === 'created');
+
+    // At most five lines, in attention order: inbox first, then the one
+    // freshest desk frame, then the last two activity beats. Calm.
+    for (const f of inbox.slice(0, 2))
+      lines.push(`<a class="line" href="/m/${encodeURIComponent(f.id)}">
+        <span class="k">inbox</span><span class="x">${esc(f.title)}</span>
+        <span class="t">${esc(f.origin?.watch || '')} · ${ago(f.modified)}</span></a>`);
+    if (desk[0])
+      lines.push(`<a class="line" href="/m/${encodeURIComponent(desk[0].id)}">
+        <span class="k">resume</span><span class="x">${esc(desk[0].title)}</span>
+        <span class="t">${ago(desk[0].modified)}</span></a>`);
+    const items = ((await (await fetch('/api/activity')).json()).items || [])
+      .filter(i => i.kind !== 'delivery').slice(0, 2);
+    for (const i of items)
+      lines.push(`<a class="line act" href="${i.frame_id ? '/m/'+encodeURIComponent(i.frame_id) : '#'}">
+        <span class="k">${ago(i.at)}</span><span class="x">${esc(i.text)}</span></a>`);
+    document.getElementById('lines').innerHTML = lines.join('');
+  })();
+</script>
+</body>
+</html>

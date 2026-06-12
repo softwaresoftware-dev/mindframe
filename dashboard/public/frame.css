@@ -1,0 +1,99 @@
+/* Mindframe page base — the design system offered to agent-authored pages.
+   Agents link this first (<link rel="stylesheet" href="/frame.css">) and add
+   only page-specific CSS on top. Conversations should build on it; apps may
+   keep their own theme instead (Plugboard-style). Doc: docs/design-system.md.
+
+   Deliberately minimal: colors, the three type voices, and the handful of
+   components the briefs ask for (cards, pills, labels, action buttons,
+   pending-action approvals). No layout opinions beyond breathing room. */
+
+@import url("/tokens.css");
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 2.2rem clamp(1rem, 6vw, 3.5rem) 4rem;
+  background: var(--color-bg); color: var(--color-text-soft);
+  font-family: var(--font-ui); font-size: 15px; line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { font-family: var(--font-heading); color: var(--color-text); line-height: 1.25; }
+h1 { font-size: 1.6rem; margin: 0 0 .4rem; }
+h2 { font-size: 1.15rem; margin: 2rem 0 .6rem; }
+h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+p { margin: .4rem 0 .8rem; }
+a { color: var(--color-accent-hover); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre {
+  font-family: var(--font-mono); font-size: .86em;
+  background: var(--color-surface); border-radius: var(--radius-sm);
+}
+code { padding: .1em .35em; color: var(--color-code); }
+pre { padding: .8rem 1rem; overflow-x: auto; border: 1px solid var(--color-border-faint); }
+hr { border: 0; border-top: 1px solid var(--color-border-faint); margin: 1.6rem 0; }
+
+/* the system's voice: small tracked mono labels (section markers, provenance) */
+.label {
+  font-family: var(--font-mono); font-size: .62rem; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--color-text-faint);
+}
+.gold { color: var(--color-gold); }
+.dim { color: var(--color-text-dim); }
+.faint { color: var(--color-text-faint); }
+.mono { font-family: var(--font-mono); font-size: .86em; }
+
+/* cards: one bordered surface per grouped thing */
+.card {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl); padding: 1rem 1.2rem; margin: .7rem 0;
+}
+
+/* status pills */
+.pill {
+  display: inline-block; font-family: var(--font-mono); font-size: .62rem;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: .14rem .55rem; border-radius: var(--radius-round);
+  border: 1px solid var(--color-border-strong); color: var(--color-text-dim);
+}
+.pill.ok   { color: var(--color-success-bright); border-color: var(--color-success); }
+.pill.warn { color: var(--color-warn); border-color: var(--color-warn); }
+.pill.err  { color: var(--color-err-bright); border-color: var(--color-err); }
+
+/* action buttons — indigo means "this does something" */
+button, .btn {
+  font: inherit; font-size: 13.5px; cursor: pointer;
+  padding: .5rem 1rem; border-radius: var(--radius-md);
+  background: var(--color-accent); color: #fff; border: 0;
+}
+button:hover, .btn:hover { background: var(--color-accent-hover); }
+button:disabled { opacity: .45; cursor: default; }
+button.secondary, .btn.secondary {
+  background: var(--color-surface-2); color: var(--color-text-dim);
+  border: 1px solid var(--color-border-strong);
+}
+button.secondary:hover { color: var(--color-accent-wash); border-color: var(--color-accent-soft); }
+
+/* inputs */
+input, textarea, select {
+  font: inherit; color: var(--color-text);
+  background: var(--color-surface); border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md); padding: .5rem .7rem; outline: none;
+}
+input:focus, textarea:focus { border-color: var(--color-accent); }
+
+/* tables: quiet data */
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { font-family: var(--font-mono); font-size: .62rem; letter-spacing: .12em;
+     text-transform: uppercase; color: var(--color-text-faint); text-align: left;
+     padding: .4rem .6rem; border-bottom: 1px solid var(--color-border); }
+td { padding: .45rem .6rem; border-bottom: 1px solid var(--color-border-faint); }
+
+/* THE approval pattern: an irreversible action drawn as a pending card.
+   Amber edge = waiting on the operator; the approve button is the only
+   indigo thing inside. */
+.pending-action {
+  border: 1px solid var(--color-warn); border-radius: var(--radius-xl);
+  background: var(--color-surface); padding: 1rem 1.2rem; margin: 1rem 0;
+}
+.pending-action .label { color: var(--color-warn); }
+.actions { display: flex; gap: .6rem; margin-top: .8rem; flex-wrap: wrap; }

@@ -35,9 +35,12 @@ reach the world through **Perception**.
 ### Surface — the dashboard
 
 The piece mindframe owns. A FastAPI server with no build step (`public/` is
-plain HTML/CSS/JS). It serves the SPA home — a hub graph with a central "New"
-node ringed by five satellites (Mindframes, Knowledge base, Agents,
-Connections, Events) — and every mindframe at `/m/<id>`.
+plain HTML/CSS/JS). It serves the SPA home — the calm launcher: one "What
+should we work on?" input (typed text creates a purposeful frame; empty opens
+a launchpad), the operator's attention in a few lines (inbox with provenance,
+resume, recent activity), app chips, and drawers for everything else
+(frames, watches, agents, knowledge, connections) — and every mindframe at
+`/m/<id>`.
 
 A **mindframe** is the unit it hosts: a persistent agent that owns one HTML
 page it rewrites in place, plus a message box. The Surface mints one

@@ -102,6 +102,126 @@ async function drawerMindframes(body) {
   }
 }
 
+// ----- management panels -----
+//
+// Mechanical operations get buttons (pause, resume, kill, open); behavioral
+// changes get conversation (each panel routes you to the right frame).
+
+const agoM = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d"; };
+
+async function drawerWatches(body) {
+  try {
+    const j = await (await fetch("/api/watches")).json();
+    const ws = j.watches || [];
+    const cards = ws.map(w => {
+      const state = w.wired ? ["live", "the dispatcher fires it on " + w.triggered_by.join(", ")]
+        : w.paused ? ["paused", "parked — was " + w.paused_triggers.join(", ")]
+        : ["unwired", "no route feeds it yet"];
+      const runs = (w.runs || []).slice(0, 3).map(r =>
+        `<div class="mgmt-line"><span class="mgmt-dot st-${escapeHtml(r.status)}"></span>
+         <span class="mono">${escapeHtml(r.task_id)}</span><span class="mgmt-dim">${escapeHtml(r.status)}</span></div>`).join("");
+      const dels = (w.deliveries || []).map(d =>
+        `<a class="mgmt-line mgmt-link" href="/m/${encodeURIComponent(d.id)}">
+         <span class="mgmt-dot st-delivered"></span><span>${escapeHtml(d.title)}</span>
+         <span class="mgmt-dim">${d.archived ? "archived" : "in inbox"} · ${agoM(d.modified)}</span></a>`).join("");
+      return `
+      <div class="mgmt-card" data-w="${escapeHtml(w.id)}">
+        <div class="mgmt-head">
+          <span class="mgmt-name">${escapeHtml(w.name)}</span>
+          <span class="pill pill-${state[0]}">${state[0]}</span>
+        </div>
+        <div class="mgmt-sub">${escapeHtml(state[1])}</div>
+        ${runs ? `<div class="mgmt-sec">runs</div>${runs}` : ""}
+        ${dels ? `<div class="mgmt-sec">deliveries</div>${dels}` : ""}
+        <div class="mgmt-actions">
+          ${w.wired ? `<button class="btn-mini" data-act="pause">pause</button>` : ""}
+          ${w.paused ? `<button class="btn-mini" data-act="resume">resume</button>` : ""}
+          <button class="btn-mini btn-go" data-act="manage">manage →</button>
+        </div>
+      </div>`;
+    }).join("");
+    body.innerHTML = (cards || `<div class="empty"><p>No watches yet.</p></div>`) + `
+      <form class="mgmt-new" id="watch-new">
+        <input placeholder="set up a new watch — describe what should run, and when…">
+      </form>`;
+    body.querySelectorAll(".mgmt-card [data-act]").forEach(b => b.addEventListener("click", async (e) => {
+      const id = e.target.closest(".mgmt-card").dataset.w, act = e.target.dataset.act;
+      if (act === "manage") {
+        const r = await fetch(`/api/watches/${encodeURIComponent(id)}/open`, { method: "POST" });
+        const d = await r.json();
+        if (r.ok) location.href = d.url; else showToast(d.error || "couldn't open", "err");
+        return;
+      }
+      const r = await fetch(`/api/watches/${encodeURIComponent(id)}/${act}`, { method: "POST" });
+      if (!r.ok) showToast((await r.json().catch(() => ({}))).error || `${act} failed`, "err");
+      drawerWatches(body);   // re-render with fresh state
+    }));
+    $("watch-new").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const txt = e.target.querySelector("input").value.trim();
+      if (!txt) return;
+      createMindframe(`Set up a new watch: ${txt}. Survey my event sources, existing routes (~/.dispatcher/channels.yaml) and recipes; draft the recipe + route; show the full config as a pending action and wait for my approval before writing anything.`);
+    });
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load watches: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function drawerAgents(body) {
+  try {
+    const j = await (await fetch("/api/runs")).json();
+    const runs = j.runs || [];
+    const live = runs.filter(r => r.alive), past = runs.filter(r => !r.alive);
+    const row = (r) => `
+      <div class="mgmt-line mgmt-run" data-t="${escapeHtml(r.task_id)}">
+        <span class="mgmt-dot ${r.alive ? "st-live" : "st-" + escapeHtml(r.status)}"></span>
+        <span class="mgmt-runname">${escapeHtml(r.name)}</span>
+        <span class="pill pill-kind">${escapeHtml(r.kind)}</span>
+        <span class="mgmt-dim">${agoM(r.updated)}</span>
+        ${r.frame_id ? `<a class="btn-mini btn-go" href="/m/${encodeURIComponent(r.frame_id)}">open</a>` : ""}
+        ${r.alive ? `<button class="btn-mini btn-danger" data-kill>kill</button>` : ""}
+      </div>`;
+    body.innerHTML =
+      (live.length ? `<div class="mgmt-sec">running now (${live.length})</div>` + live.map(row).join("") : `<div class="empty"><p>nothing running right now</p></div>`) +
+      (past.length ? `<div class="mgmt-sec">recent (48h)</div>` + past.slice(0, 12).map(row).join("") : "");
+    body.querySelectorAll("[data-kill]").forEach(b => b.addEventListener("click", async (e) => {
+      const id = e.target.closest(".mgmt-run").dataset.t;
+      if (!confirm(`Kill ${id}? Its tmux session ends now; a frame agent revives on the next message.`)) return;
+      const r = await fetch(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST" });
+      if (!r.ok) showToast((await r.json().catch(() => ({}))).error || "kill failed", "err");
+      drawerAgents(body);
+    }));
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load runs: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function drawerConnections(body) {
+  try {
+    const j = await (await fetch("/api/connections")).json();
+    const cs = j.connections || [];
+    body.innerHTML = (cs.map(c => `
+      <div class="mgmt-line">
+        <span class="mgmt-dot st-${escapeHtml(c.state || "unprobed")}"></span>
+        <span class="mgmt-runname">${escapeHtml(c.name)}</span>
+        <span class="pill pill-kind">${escapeHtml(c.kind)}</span>
+        <span class="mgmt-dim">${escapeHtml(c.state || "")}</span>
+      </div>`).join("") || `<div class="empty"><p>No connections discovered yet.</p></div>`) + `
+      <form class="mgmt-new" id="conn-new">
+        <input placeholder="connect a tool — name it and I'll find the best way in…">
+      </form>`;
+    $("conn-new").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const txt = e.target.querySelector("input").value.trim();
+      if (!txt) return;
+      createMindframe(`Connect ${txt} — follow /mindframe:connect in full. Research the best door, draft the connector, show me anything requiring credentials as a pending action before writing it. Once credentials are confirmed and the connector is written, wire the sync automatically (Step 5b): deploy the vault-sync recipe, add the channels.yaml routes, write the event-source YAML if applicable, install the cron for schedule-based sources, then run the initial sync.`);
+    });
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load connections: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
 async function drawerKnowledge(body) {
   try {
     const r = await fetch("/api/vault");
@@ -168,7 +288,7 @@ SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never 
 
 SURVEY: GET {origin}/api/connections for the list. Probe real status yourself: run "claude mcp list" (look for Connected vs needs-auth vs failed), "gh auth status", "gcloud auth list", "aws sts get-caller-identity" where those CLIs exist.
 SHOW + JUDGE: group by kind (CLIs, MCP servers, connectors). Flag problems plainly: an MCP that's down or failed to start, a connection that needs auth. Healthy ones can be quiet; broken ones should stand out.
-SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the finance MCP is down — diagnose it", or, if everything's healthy, an obvious useful tool they haven't connected. Connecting means walking them through the tool's auth (an MCP, a CLI login, or authoring a connector SKILL.md) and verifying it.`,
+SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the finance MCP is down — diagnose it", or, if everything's healthy, an obvious useful tool they haven't connected. Connecting means following /mindframe:connect in full — researching the door, authoring the connector, placing the credential, wiring the sync (dispatcher routes + cron), and running the initial vault pull.`,
   },
   events: {
     title: "Event sources",
@@ -202,7 +322,7 @@ async function openDomain(key) {
     });
     const j = await r.json();
     if (!r.ok) { showToast(`couldn't spawn ${d.title}: ${j.error || r.statusText}`, "err"); route(); return; }
-    if (j.spawn && j.spawn !== "ok") {
+    if (j.spawn && j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`spawned, but the agent didn't start: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
     location.href = j.url;   // /m/<id> — watch it compose on the surface
@@ -412,22 +532,27 @@ async function openBrowseDialog() {
 // the nodes; layout is recomputed on resize.
 
 const HUB_NODES = [
-  { key: "mindframes",  label: "Mindframes",     hint: "live agent surfaces", render: drawerMindframes },
+  { key: "mindframes",  label: "Mindframes",     hint: "desk & inbox",        render: drawerMindframes },
   { key: "knowledge",   label: "Knowledge base", hint: "what you know",       render: drawerKnowledge },
-  // Agents / Connections / Events each spawn a fresh mindframe with a
-  // domain-focused prompt (DOMAIN_PROMPTS) — you watch it compose, then talk
-  // to it. Same primitive as "New", just a narrower brief.
-  { key: "agents",      label: "Agents",         hint: "what can run",        domain: "agents" },
-  { key: "connections", label: "Connections",    hint: "mcps & connectors",   domain: "connections" },
-  { key: "events",      label: "Events",         hint: "wired routes",        domain: "events" },
+  // Watches replaces the old Agents/Events spawn-per-click nodes: one drawer
+  // listing every automation (recipe + route + runs), each opening its own
+  // SINGLETON manager frame — never a fresh disposable agent per click.
+  { key: "watches",     label: "Watches",        hint: "what runs for you",   render: drawerWatches },
+  { key: "connections", label: "Connections",    hint: "what you can reach",  render: drawerConnections },
 ];
 
 function renderHome() {
   root().innerHTML = `
-    <div class="hub" id="hub">
-      <svg class="hub-edges" id="hub-edges" aria-hidden="true"></svg>
-      <div class="hub-nodes" id="hub-nodes"></div>
-      <p class="hub-tagline">Open a node, or start something new.</p>
+    <div class="calm">
+      <div class="calm-stage">
+        <form id="calm-form" autocomplete="off">
+          <input id="calm-start" placeholder="What should we work on?" autofocus>
+        </form>
+        <div class="calm-hint">enter to begin &middot; empty for suggestions</div>
+        <div id="calm-apps" aria-label="your apps"></div>
+        <div id="calm-lines" aria-label="attention"></div>
+        <div class="calm-more" id="calm-more"></div>
+      </div>
     </div>
     <aside class="drawer" id="drawer" aria-hidden="true">
       <div class="drawer-head">
@@ -439,17 +564,83 @@ function renderHome() {
     <div class="drawer-scrim" id="drawer-scrim" hidden></div>
   `;
 
-  buildHubNodes();
-  layoutHub();
-  window.addEventListener("resize", layoutHub);
-  setConn("ok", "ready");
-  loadHubCounts();
+  $("calm-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = $("calm-start").value.trim();
+    if (text) createMindframe(text);   // decided: straight to a purposeful frame
+    else startLaunchpad();             // undecided: the launchpad surveys + suggests
+  });
 
+  // everything — frames · watches · knowledge · connections
+  const FOOT = [
+    { key: "mindframes",  word: "frames",      label: "Mindframes",     render: drawerMindframes },
+    { key: "watches",     word: "watches",     label: "Watches",        render: drawerWatches },
+    { key: "agents",      word: "agents",      label: "Agents",         render: drawerAgents },
+    { key: "knowledge",   word: "knowledge",   label: "Knowledge base", render: drawerKnowledge },
+    { key: "connections", word: "connections", label: "Connections",    render: drawerConnections },
+  ];
+  const more = $("calm-more");
+  more.appendChild(document.createTextNode("everything — "));
+  FOOT.forEach((d, i) => {
+    if (i) more.appendChild(document.createTextNode(" · "));
+    const a = el("a", { href: "#" }, d.word);
+    a.addEventListener("click", (e) => { e.preventDefault(); openDrawer(d); });
+    more.appendChild(a);
+  });
+
+  loadCalmLines();
+  setConn("ok", "ready");
   $("drawer-close").addEventListener("click", closeDrawer);
   $("drawer-scrim").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeDrawer(); closeCreateOverlay(); }
   });
+}
+
+// At most five lines, in attention order: inbox first (with a hover ✓ to
+// archive), then resume-where-you-left-off, then the last activity beats.
+async function loadCalmLines() {
+  const box = $("calm-lines");
+  if (!box) return;
+  const lines = [];
+  try {
+    const frames = ((await (await fetch("/api/frames")).json()).frames) || [];
+    const inbox = frames.filter(f => f.kind === "delivered");
+    const desk  = frames.filter(f => f.kind === "created");
+    // Apps are destinations, not attention items — a quiet chip row.
+    const apps = frames.filter(f => f.kind === "app");
+    const appsBox = $("calm-apps");
+    if (appsBox) appsBox.innerHTML = apps.map(f =>
+      `<a class="calm-app" href="/m/${encodeURIComponent(f.id)}">${escapeHtml(f.title)}</a>`).join("");
+    for (const f of inbox.slice(0, 2)) lines.push({ k: "inbox", f,
+      sub: `${f.origin?.watch || "delivered"} · ${relativeTime(f.modified)}`, done: true });
+    if (desk[0]) lines.push({ k: "resume", f: desk[0], sub: relativeTime(desk[0].modified) });
+    const items = (((await (await fetch("/api/activity")).json()).items) || [])
+      .filter(i => i.kind !== "delivery").slice(0, 2);
+    const agoShort = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
+      return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d"; };
+    for (const i of items) lines.push({ k: agoShort(i.at), text: i.text, frame_id: i.frame_id, quiet: true });
+  } catch (e) { /* a bare launcher is still a working launcher */ }
+  box.innerHTML = "";
+  for (const l of lines) {
+    const a = el("a", { class: "calm-line" + (l.quiet ? " quiet" : ""),
+                        href: l.f ? `/m/${encodeURIComponent(l.f.id)}`
+                            : l.frame_id ? `/m/${encodeURIComponent(l.frame_id)}` : "#" }, [
+      el("span", { class: "calm-k" }, l.k),
+      el("span", { class: "calm-x" }, l.f ? l.f.title : l.text),
+      l.sub ? el("span", { class: "calm-t" }, l.sub) : null,
+    ].filter(Boolean));
+    if (l.done) {
+      const d = el("button", { class: "calm-done", type: "button", title: "done — archive" }, "✓");
+      d.addEventListener("click", async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        try { await fetch(`/api/frame/${encodeURIComponent(l.f.id)}/archive`, { method: "POST" }); } catch (err) {}
+        loadCalmLines();
+      });
+      a.appendChild(d);
+    }
+    box.appendChild(a);
+  }
 }
 
 function buildHubNodes() {
@@ -509,9 +700,8 @@ async function loadHubCounts() {
   const j = (r) => r.ok ? r.json() : Promise.reject(r.status);
   fetch("/api/frames").then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
   fetch("/api/vault").then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
-  fetch("/api/agents").then(j).then(d => set("agents", `${d.running_count || 0}/${d.definition_count || 0}`)).catch(() => {});
+  fetch("/api/watches").then(j).then(d => set("watches", (d.watches || []).length)).catch(() => {});
   fetch("/api/connections").then(j).then(d => set("connections", `${(d.connections || []).length}`)).catch(() => {});
-  fetch("/api/events").then(j).then(d => set("events", d.route_count || 0)).catch(() => {});
 }
 
 // ----- Drawer open / close -----
@@ -609,8 +799,11 @@ When the operator clicks one, you will receive its text as a message. Then actua
 Never declare yourself done. The suggestions stand and the message box is always open for "or just tell me what you want to do." Compose your launchpad index.html now.`;
 
 async function startLaunchpad() {
+  if (_spawnPending) return;          // double-click = one launchpad, not two
+  _spawnPending = true;
   // Open the tab synchronously (inside the click) so the popup isn't blocked,
-  // then redirect it once the frame id comes back from the spawn.
+  // then redirect it once the frame id comes back (instant — spawn runs
+  // server-side in the background).
   const tab = window.open("", "_blank");
   if (tab) {
     tab.document.write(
@@ -636,7 +829,7 @@ async function startLaunchpad() {
       if (tab) tab.close();
       return;
     }
-    if (j.spawn !== "ok") {
+    if (j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`launchpad created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
     if (tab) tab.location = j.url;     // redirect the opened tab to /m/<id>
@@ -645,6 +838,8 @@ async function startLaunchpad() {
   } catch (e) {
     showToast(`network error: ${e.message}`, "err");
     if (tab) tab.close();
+  } finally {
+    _spawnPending = false;
   }
 }
 
@@ -665,7 +860,7 @@ async function createMindframe(text) {
       if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
       return;
     }
-    if (j.spawn !== "ok") {
+    if (j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`frame created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
     location.href = j.url;   // open the surface shell at /m/<id>
@@ -673,6 +868,23 @@ async function createMindframe(text) {
     showToast(`network error: ${e.message}`, "err");
     if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
   }
+}
+
+
+// ----- Activity feed: what happened while you were away -----
+async function loadFeed() {
+  const box = $("feed");
+  if (!box) return;
+  try {
+    const j = await (await fetch("/api/activity")).json();
+    const items = (j.items || []).slice(0, 6);
+    if (!items.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<div class="feed-hdr">recent activity</div>` + items.map(i => `
+      <a class="feed-item feed-${escapeHtml(i.kind)}" ${i.frame_id ? `href="/m/${encodeURIComponent(i.frame_id)}"` : 'href="#" onclick="return false"'}>
+        <span class="feed-time">${relativeTime(i.at)}</span>
+        <span class="feed-text">${escapeHtml(i.text)}</span>
+      </a>`).join("");
+  } catch (e) { box.innerHTML = ""; }
 }
 
 // ----- Health probe -----

@@ -4,22 +4,29 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mindframe</title>
+<link rel="stylesheet" href="/tokens.css">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
     display: flex; flex-direction: column; height: 100vh;
-    font-family: system-ui, -apple-system, sans-serif; background: #0b0b0c;
+    font-family: system-ui, -apple-system, sans-serif; background: var(--color-bg);
   }
   #topbar {
     display: flex; align-items: center; gap: .8rem;
-    padding: .5rem .9rem; background: #0d0d0f; border-bottom: 1px solid #1d1d22;
+    padding: .5rem .9rem; background: var(--color-bg-raised); border-bottom: 1px solid #1d1d22;
     font-family: ui-monospace, monospace; font-size: 12px;
   }
-  #topbar a { color: #8a8a93; text-decoration: none; }
-  #topbar a:hover { color: #cfe0ff; }
+  #topbar a { color: var(--color-text-muted); text-decoration: none; }
+  #topbar a:hover { color: var(--color-accent-wash); }
   #topbar .sep { color: #3a3a42; }
   #topbar .id { color: #5a5a63; }
+  #share {
+    margin-left: auto; font: inherit; font-size: 11.5px; cursor: pointer;
+    color: var(--color-text-muted); background: transparent;
+    border: 1px solid var(--color-border); border-radius: 999px; padding: .25rem .7rem;
+  }
+  #share:hover { color: var(--color-accent-wash); border-color: var(--color-accent-soft); }
 
   /* main = left dock + the surface */
   #main { flex: 1; display: flex; flex-direction: row; min-height: 0; }
@@ -38,14 +45,20 @@
     display: flex; align-items: center; gap: .5rem; width: 100%;
     text-align: left; background: transparent; border: 1px solid transparent;
     border-radius: 8px; padding: .5rem .55rem; cursor: pointer;
-    color: #9a9aa2; font: inherit; font-size: 12.5px; line-height: 1.2;
+    color: var(--color-text-dim); font: inherit; font-size: 12.5px; line-height: 1.2;
   }
-  #dock .dk:hover { background: #141416; border-color: #26262a; color: #cfe0ff; }
-  #dock .dk.active { background: #16161a; border-color: #2f3a6a; color: #cfe0ff; cursor: default; }
+  #dock .dk:hover { background: #141416; border-color: #26262a; color: var(--color-accent-wash); }
+  #dock .dk.active { background: #16161a; border-color: var(--color-accent-soft); color: var(--color-accent-wash); cursor: default; }
+  /* dock marks, three states:
+       asleep  — hollow ring (agent not running; wakes on message)
+       awake   — steady soft green (agent process alive, idle)
+       working — pulsing accent (transcript moving right now)            */
   #dock .dk .dkmark {
-    width: 7px; height: 7px; border-radius: 50%; background: #3a3a42; flex: 0 0 auto;
+    width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+    background: transparent; border: 1px solid #3f3f48;
   }
-  #dock .dk.working .dkmark { background: #5b6cff; animation: pulse 1.1s ease-in-out infinite; }
+  #dock .dk.awake .dkmark { background: var(--color-success); border-color: transparent; }
+  #dock .dk.working .dkmark { background: var(--color-accent); border-color: transparent; animation: pulse 1.1s ease-in-out infinite; }
   #dock .dk .dktitle { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #dock .dk .dkdel {
     flex: 0 0 auto; width: 18px; height: 18px; line-height: 15px; padding: 0;
@@ -53,15 +66,29 @@
     color: #6b6b73; cursor: pointer; font-size: 13px; opacity: 0; transition: opacity .12s;
   }
   #dock .dk:hover .dkdel { opacity: 1; }
-  #dock .dk .dkdel:hover { background: #3a1f24; color: #ff8a8a; }
+  #dock .dk .dkdel:hover { background: #3a1f24; color: var(--color-err-bright); }
+  /* inbox rows: provenance sub-line + a "done" (archive) affordance */
+  #dock .dk .dkbody { flex: 1; min-width: 0; }
+  #dock .dk .dkbody .dktitle { display: block; }
+  #dock .dk .dksub {
+    display: block; font-size: 10px; color: #5a5a63;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #dock .dk .dkdone {
+    flex: 0 0 auto; width: 18px; height: 18px; line-height: 15px; padding: 0;
+    text-align: center; border: 0; border-radius: 4px; background: transparent;
+    color: #6b6b73; cursor: pointer; font-size: 12px; opacity: 0; transition: opacity .12s;
+  }
+  #dock .dk:hover .dkdone { opacity: 1; }
+  #dock .dk .dkdone:hover { background: #1f3a28; color: #8aff9a; }
   #dock .dknew {
     margin-top: auto; color: #6b6b73; border: 1px dashed #2a2a30;
     border-radius: 8px; padding: .5rem; text-align: center; cursor: pointer;
     background: transparent; font: inherit; font-size: 12px;
   }
-  #dock .dknew:hover { color: #cfe0ff; border-color: #3a4a8a; }
+  #dock .dknew:hover { color: var(--color-accent-wash); border-color: #3a4a8a; }
 
-  #surface { flex: 1; border: 0; min-width: 0; background: #0d0d0f; }
+  #surface { flex: 1; border: 0; min-width: 0; background: var(--color-bg-raised); }
 
   /* full-bleed working edge — glows while the agent is busy, so the page
      never reads as dead during latency. Bound to setActive(); fires the
@@ -77,6 +104,38 @@
     50%     { box-shadow: inset 0 0 40px 5px rgba(91,108,255,0.52); }
   }
 
+  /* thinking ribbon — ephemeral process narration between page and rail.
+     Shows WHILE the agent works (echoed message + live tool/thinking chips),
+     collapses to nothing on idle. Not a transcript: the page is the answer;
+     this is just the work being visible. Click-through opens the full log. */
+  #ribbon {
+    max-height: 0; overflow: hidden; opacity: 0;
+    transition: max-height .25s ease, opacity .25s ease;
+    background: #0e0e12; border-top: 1px solid #1d1d26;
+    cursor: pointer;
+  }
+  #ribbon.show { max-height: 44px; opacity: 1; }
+  #ribbonrow {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .45rem .9rem; overflow: hidden; white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  #ribbonrow .rspin {
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+    background: var(--color-accent); animation: pulse 1.1s ease-in-out infinite;
+  }
+  #ribbonrow .rchip {
+    flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;
+    padding: .18rem .55rem; border-radius: 999px; border: 1px solid #26262e;
+    background: #15151a; color: var(--color-text-dim); max-width: 34ch;
+  }
+  #ribbonrow .rchip.you   { color: #a8b0ff; border-color: var(--color-accent-soft); max-width: 44ch; }
+  #ribbonrow .rchip.tool  { color: var(--color-code); }
+  #ribbonrow .rchip.think { color: var(--color-text-muted); font-style: italic; }
+  #ribbonrow .rchip.text  { color: #d7dae0; }
+  #ribbonrow .rchip.warn  { color: var(--color-warn); border-color: #5a4520; }
+  #ribbonrow .rchip:nth-last-child(n+4) { opacity: .45; }
+
   /* collapsible cognition log — docked above the message bar, outside the surface */
   #logs {
     max-height: 0; overflow: hidden; transition: max-height .2s ease;
@@ -90,11 +149,11 @@
   }
   #logbody .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #logbody .ln .ic { display: inline-block; width: 1.6em; opacity: .9; }
-  #logbody .think { color: #8a8a93; font-style: italic; }
-  #logbody .tool  { color: #7fb0ff; }
+  #logbody .think { color: var(--color-text-muted); font-style: italic; }
+  #logbody .tool  { color: var(--color-code); }
   #logbody .text  { color: #d7dae0; }
   #logbody .you   { color: #a8b0ff; }
-  #logbody .warn  { color: #d9a441; }
+  #logbody .warn  { color: var(--color-warn); }
   #logbody .empty { color: #5a5a63; }
 
   #rail {
@@ -103,38 +162,74 @@
   }
   #brand { font-size: .62rem; letter-spacing: .18em; color: #6b6b73; font-weight: 700; padding-right: .2rem; user-select: none; }
   #stat { font-size: .62rem; letter-spacing: .04em; color: #6b6b73; font-family: ui-monospace, monospace; white-space: nowrap; user-select: none; }
-  #stat .ctx { color: #8a8a93; }
+  #stat .ctx { color: var(--color-text-muted); }
   #logtoggle {
     display: flex; align-items: center; gap: 6px; cursor: pointer;
-    background: #1c1c20; border: 1px solid #303036; color: #9a9aa2;
+    background: #1c1c20; border: 1px solid #303036; color: var(--color-text-dim);
     border-radius: 8px; padding: .5rem .7rem; font-size: 12px; font-family: ui-monospace, monospace;
   }
   #logtoggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #4a4a52; }
   #logtoggle .chev { font-size: 10px; opacity: .6; transition: transform .15s; }
-  #logtoggle.active { color: #cfe0ff; border-color: #3a4a8a; }
-  #logtoggle.active .dot { background: #5b6cff; animation: pulse 1.1s ease-in-out infinite; }
+  #logtoggle.active { color: var(--color-accent-wash); border-color: #3a4a8a; }
+  #logtoggle.active .dot { background: var(--color-accent); animation: pulse 1.1s ease-in-out infinite; }
   #logtoggle.open .chev { transform: rotate(180deg); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
   #msg {
     flex: 1; padding: .65rem .85rem; border-radius: 8px;
-    border: 1px solid #303036; background: #1c1c20; color: #ececf0; font-size: 15px; outline: none;
+    border: 1px solid #303036; background: #1c1c20; color: var(--color-text); font-size: 15px; outline: none;
   }
-  #msg:focus { border-color: #5b6cff; }
-  #send { padding: .65rem 1.15rem; border: 0; border-radius: 8px; background: #5b6cff; color: #fff; font-size: 15px; cursor: pointer; }
+  #msg:focus { border-color: var(--color-accent); }
+  #send { padding: .65rem 1.15rem; border: 0; border-radius: 8px; background: var(--color-accent); color: #fff; font-size: 15px; cursor: pointer; }
   #send:disabled { opacity: .45; cursor: default; }
+
+  /* ----- app mode: the frame is an ARTIFACT the operator uses, not a
+     conversation. Full-bleed app, conversation chrome hidden behind a
+     floating maintenance toggle. body.app-mode flips it; body.maintain
+     brings the rail/dock/ribbon back for change requests. ----- */
+  #appbar {
+    display: none; position: fixed; top: 10px; right: 14px; z-index: 80;
+    align-items: center; gap: .5rem;
+    background: rgba(13,13,15,.88); border: 1px solid #26262c; border-radius: 999px;
+    padding: .3rem .45rem .3rem .85rem; font-family: ui-monospace, monospace; font-size: 11.5px;
+  }
+  #appbar a, #appbar button {
+    color: var(--color-text-muted); text-decoration: none; background: transparent; border: 0;
+    font: inherit; cursor: pointer; padding: .2rem .5rem; border-radius: 999px;
+  }
+  #appbar a:hover, #appbar button:hover { color: var(--color-accent-wash); background: #1c1c21; }
+  #appbar .apptitle { color: var(--color-gold); letter-spacing: .06em; }
+  body.app-mode #appbar { display: flex; }
+  body.app-mode #topbar, body.app-mode #dock, body.app-mode #rail,
+  body.app-mode #ribbon, body.app-mode #logs { display: none; }
+  body.app-mode.maintain #topbar, body.app-mode.maintain #dock,
+  body.app-mode.maintain #rail, body.app-mode.maintain #ribbon { display: flex; }
+  body.app-mode.maintain #logs { display: block; }
+  /* in maintain mode the pill collapses to one obvious exit */
+  body.app-mode.maintain #appbar .apptitle,
+  body.app-mode.maintain #appbar .apphome { display: none; }
+  body.app-mode.maintain #appbar { top: auto; bottom: 74px; }
+  body.app-mode.maintain #appbar .gear { color: var(--color-accent-hover); }
 </style>
 </head>
 <body>
   <div id="edge" aria-hidden="true"></div>
+  <div id="appbar" aria-label="app controls">
+    <span class="apptitle" id="apptitle"></span>
+    <a href="/" class="apphome" title="home">home</a>
+    <button id="share-app" type="button" title="download this app as one self-contained html file">export</button>
+    <button class="gear" id="maintain-toggle" type="button" title="maintain this app — talk to its agent">⚙ maintain</button>
+  </div>
   <div id="topbar">
     <a href="/">← home</a>
     <span class="sep">/</span>
     <span class="id" id="frame-id"></span>
+    <button id="share" type="button" title="download this page as one self-contained html file">export</button>
   </div>
   <div id="main">
-    <nav id="dock" aria-label="mindframes"><div class="dkhdr">mindframes</div><div id="docklist"></div></nav>
+    <nav id="dock" aria-label="mindframes"><div id="docklist"></div></nav>
     <iframe id="surface" title="mindframe surface"></iframe>
   </div>
+  <div id="ribbon" title="open full log"><div id="ribbonrow"><span class="rspin"></span></div></div>
   <section id="logs"><div id="logbody"><div class="ln empty">No activity yet. The agent's thinking and tool calls show here while it works.</div></div></section>
   <form id="rail" autocomplete="off">
     <span id="brand">MINDFRAME</span>
@@ -198,7 +293,27 @@
     const lns = logbody.querySelectorAll('.ln');
     if (lns.length > 300) lns[0].remove();
     if (atBottom || logs.classList.contains('open')) logbody.scrollTop = logbody.scrollHeight;
+    ribbonPush(ev, cls);
     saveLog();
+  }
+
+  // ----- thinking ribbon: the last few live events as chips -----
+  const ribbon = document.getElementById('ribbon');
+  const ribbonrow = document.getElementById('ribbonrow');
+  ribbon.addEventListener('click', () => openLogs(true));
+  function ribbonPush(ev, cls){
+    // Consecutive "thinking…" chips collapse into one.
+    const last = ribbonrow.lastElementChild;
+    if (cls === 'think' && last && last.classList.contains('think')) return;
+    const chip = document.createElement('span');
+    chip.className = 'rchip ' + cls;
+    chip.textContent = ev.label;
+    ribbonrow.appendChild(chip);
+    // keep the spinner + the 5 newest chips
+    while (ribbonrow.children.length > 6) ribbonrow.children[1].remove();
+  }
+  function ribbonReset(){
+    while (ribbonrow.children.length > 1) ribbonrow.children[1].remove();
   }
 
   function fmtCtx(n){
@@ -221,6 +336,11 @@
     toggle.classList.toggle('active', on);
     toggle.querySelector('.lbl').textContent = on ? 'working…' : 'logs';
     edge.classList.toggle('working', on);   // full-bleed pulse mirrors the working state
+    // The ribbon is the visible face of "working": show while active (unless
+    // the full log is open — no point doubling it), clear when the turn ends.
+    const showRibbon = on && !logs.classList.contains('open');
+    if (!on && ribbon.classList.contains('show')) setTimeout(ribbonReset, 400);
+    ribbon.classList.toggle('show', showRibbon);
   }
   function openLogs(open){
     logs.classList.toggle('open', open);
@@ -228,36 +348,133 @@
     if (open) logbody.scrollTop = logbody.scrollHeight;
   }
   toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
+  // ----- export: download the page as ONE self-contained .html file
+  // (styles inlined, data baked in, agent buttons defanged). Host it
+  // anywhere, mail it, slack it.
+  function doExport(btn){
+    const was = btn.textContent;
+    btn.textContent = 'exported ↓';
+    location.href = API('export');           // attachment header = download, no navigation
+    setTimeout(() => { btn.textContent = was; }, 2000);
+  }
+  document.getElementById('share').addEventListener('click', (e) => doExport(e.target));
+  document.getElementById('share-app').addEventListener('click', (e) => doExport(e.target));
+
+  const maintainBtn = document.getElementById('maintain-toggle');
+  function setMaintain(on){
+    document.body.classList.toggle('maintain', on);
+    maintainBtn.textContent = on ? '← back to app' : '⚙ maintain';
+    if (on) msg.focus();
+  }
+  maintainBtn.addEventListener('click', () =>
+    setMaintain(!document.body.classList.contains('maintain')));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.body.classList.contains('maintain')) setMaintain(false);
+  });
 
   // ----- dock: list every mindframe, switch without new tabs -----
-  let dockFrames = [];
+  let dockFrames = [], spawnFailWarned = false;
   async function loadDock(){
     try {
       const j = await (await fetch('/api/frames', { cache: 'no-store' })).json();
       dockFrames = j.frames || [];
       renderDock();
+      // A failed background spawn is recorded in this frame's meta status —
+      // surface it instead of pulsing "working" forever (review finding #1).
+      const me = dockFrames.find(f => f.id === MF_ID);
+      if (me && me.status === 'spawn_failed' && !spawnFailWarned){
+        spawnFailWarned = true;
+        appendLog({ kind: 'warn', label: 'the agent failed to start — send a message to retry (it respawns automatically)' });
+      }
+      // App mode: this frame is an artifact in use, not a conversation —
+      // full-bleed, conversation chrome behind the ⚙ maintain toggle.
+      const isApp = !!(me && me.kind === 'app');
+      document.body.classList.toggle('app-mode', isApp);
+      if (isApp) document.getElementById('apptitle').textContent = me.title || MF_ID;
     } catch (e) {}
   }
+  function timeAgo(ms){
+    const m = Math.round((Date.now() - ms) / 60000);
+    if (m < 1) return 'now';
+    if (m < 60) return m + 'm';
+    if (m < 1440) return Math.round(m / 60) + 'h';
+    return Math.round(m / 1440) + 'd';
+  }
+
+  function dockRow(f){
+    const active = f.id === MF_ID;
+    const row = document.createElement('div');   // div, not <a>, so buttons can live inside
+    row.className = 'dk' + (active ? ' active' : '');
+    row.dataset.id = f.id;
+    row.dataset.title = f.title || f.id;
+    row.title = f.title || f.id;
+    const mark = document.createElement('span'); mark.className = 'dkmark';
+    const body = document.createElement('span'); body.className = 'dkbody';
+    const t = document.createElement('span'); t.className = 'dktitle'; t.textContent = f.title || f.id;
+    body.appendChild(t);
+    if (f.kind === 'delivered'){
+      const sub = document.createElement('span'); sub.className = 'dksub';
+      sub.textContent = (f.origin?.watch || 'delivered') + ' · ' + timeAgo(f.modified);
+      body.appendChild(sub);
+      const done = document.createElement('button');
+      done.type = 'button'; done.className = 'dkdone'; done.textContent = '✓';
+      done.title = 'done — archive this deliverable';
+      done.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try { await fetch('/api/frame/' + encodeURIComponent(f.id) + '/archive', { method: 'POST' }); } catch (err) {}
+        // Archiving is not deleting — the page stays right here; it just
+        // leaves the inbox. No navigation.
+        if (f.id === MF_ID) appendLog({ kind: 'info', label: 'archived — out of the inbox; this page stays open' });
+        loadDock();
+      });
+      row.appendChild(mark); row.appendChild(body); row.appendChild(done);
+    } else {
+      row.appendChild(mark); row.appendChild(body);
+    }
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'dkdel'; del.textContent = '✕'; del.title = 'delete this mindframe';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteDockFrame(f); });
+    row.appendChild(del);
+    if (!active) row.addEventListener('click', () => { location.href = '/m/' + encodeURIComponent(f.id); });  // one tab
+    return row;
+  }
+
   function renderDock(){
     docklist.innerHTML = '';
-    for (const f of dockFrames){
-      const active = f.id === MF_ID;
-      const row = document.createElement('div');   // div, not <a>, so the ✕ button can live inside
-      row.className = 'dk' + (active ? ' active' : '');
-      row.dataset.id = f.id;
-      row.title = f.title || f.id;
-      const mark = document.createElement('span'); mark.className = 'dkmark';
-      const t = document.createElement('span'); t.className = 'dktitle'; t.textContent = f.title || f.id;
-      const del = document.createElement('button');
-      del.type = 'button'; del.className = 'dkdel'; del.textContent = '✕'; del.title = 'delete this mindframe';
-      del.addEventListener('click', (e) => { e.stopPropagation(); deleteDockFrame(f); });
-      row.appendChild(mark); row.appendChild(t); row.appendChild(del);
-      if (!active) row.addEventListener('click', () => { location.href = '/m/' + encodeURIComponent(f.id); });  // one tab
-      docklist.appendChild(row);
+    // Three kinds, three sections: watches (pinned automations), inbox
+    // (deliveries awaiting handling), desk (frames you created).
+    const groups = [
+      ['inbox',   dockFrames.filter(f => f.kind === 'delivered')],
+      ['desk',    dockFrames.filter(f => f.kind === 'created')],
+      ['apps',    dockFrames.filter(f => f.kind === 'app')],
+      ['watches', dockFrames.filter(f => f.kind === 'watch')],
+    ];
+    for (const [label, frames] of groups){
+      if (!frames.length) continue;
+      const hdr = document.createElement('div');
+      hdr.className = 'dkhdr';
+      hdr.textContent = label + (label === 'inbox' ? ' (' + frames.length + ')' : '');
+      docklist.appendChild(hdr);
+      frames.forEach(f => docklist.appendChild(dockRow(f)));
     }
     const nw = document.createElement('a');
     nw.className = 'dknew'; nw.href = '/'; nw.textContent = '+ new';
     docklist.appendChild(nw);
+    renderProvenance();
+  }
+
+  // Viewing a delivered frame: say where it came from, in the topbar.
+  function renderProvenance(){
+    const me = dockFrames.find(f => f.id === MF_ID);
+    let el = document.getElementById('provenance');
+    if (!me || me.kind !== 'delivered'){ if (el) el.remove(); return; }
+    if (!el){
+      el = document.createElement('span');
+      el.id = 'provenance';
+      el.style.cssText = 'color:#5a5a63;font-size:11px;margin-left:.4rem';
+      document.getElementById('topbar').appendChild(el);
+    }
+    el.textContent = '· delivered by ' + (me.origin?.watch || 'a watch') + ' · ' + timeAgo(me.modified);
   }
 
   async function deleteDockFrame(f){
@@ -274,28 +491,107 @@
   async function pollDockActivity(){
     try {
       const j = await (await fetch('/api/frames/activity', { cache: 'no-store' })).json();
-      const working = new Set((j.frames || []).filter(f => f.working).map(f => f.id));
-      docklist.querySelectorAll('.dk').forEach(row =>
-        row.classList.toggle('working', working.has(row.dataset.id)));
+      const st = new Map((j.frames || []).map(f => [f.id, f]));
+      docklist.querySelectorAll('.dk').forEach(row => {
+        const f = st.get(row.dataset.id) || {};
+        row.classList.toggle('working', !!f.working);
+        row.classList.toggle('awake', !!f.awake && !f.working);
+        row.title = (row.dataset.title || row.dataset.id) + ' — ' +
+          (f.working ? 'working…' : f.awake ? 'awake' : 'asleep · wakes on message');
+      });
     } catch (e) {}
   }
 
   async function pollRev(){
     try {
-      const r = (await fetch(API('rev'), { cache: 'no-store' }).then(x => x.json())).rev;
+      const x = await fetch(API('rev'), { cache: 'no-store' });
+      if (x.status === 404) { location.reload(); return; }   // deleted under us → server's not-found page
+      const r = (await x.json()).rev;
       if (rev !== null && r !== rev) {
-        surface.contentWindow.location.reload();      // agent rewrote the page
+        await applyPageUpdate();                      // agent evolved the page
         if (waiting) { waiting = false; send.disabled = false; }
       }
       rev = r;
     } catch (e) {}
   }
+
+  // ----- in-place page updates: morph when the page opts in, else reload -----
+  //
+  // A page that declares <meta name="mf-patch" content="safe"> promises its
+  // script is idempotent-init / event-delegated, so DOM updates can land
+  // without a reload — no flicker, no scroll reset, no JS state loss. Any
+  // script-text change still forces a reload (adopted DOMParser scripts never
+  // execute, so new behavior can only arrive via a real navigation).
+  function patchSafe(doc){
+    const m = doc && doc.querySelector('meta[name="mf-patch"]');
+    return !!(m && m.content === 'safe');
+  }
+  function pageScripts(doc){
+    return [...doc.querySelectorAll('script')].map(s => s.textContent).join(' ');
+  }
+  async function applyPageUpdate(){
+    let next;
+    try {
+      const html = await fetch(API('page'), { cache: 'no-store' }).then(x => x.text());
+      next = new DOMParser().parseFromString(html, 'text/html');
+    } catch (e) { surface.contentWindow.location.reload(); return; }
+    const cur = surface.contentDocument;
+    if (!cur || !cur.documentElement || !patchSafe(cur) || !patchSafe(next)
+        || pageScripts(cur) !== pageScripts(next)) {
+      surface.contentWindow.location.reload();
+      return;
+    }
+    const w = surface.contentWindow, sx = w.scrollX, sy = w.scrollY;
+    try { morphEl(cur.documentElement, next.documentElement); }
+    catch (e) { surface.contentWindow.location.reload(); return; }
+    w.scrollTo(sx, sy);
+    // Pages that render from the data plane re-render on this signal — a
+    // morph syncs the file's skeleton, not their dynamic DOM.
+    try { w.dispatchEvent(new w.CustomEvent('mf:patched')); } catch (e) {}
+  }
+  // Minimal recursive morph — index-aligned children, attribute sync, focused
+  // inputs left untouched. Agent pages are simple documents; anything this
+  // can't handle falls back to a reload above.
+  function morphEl(a, b){
+    for (const at of [...a.attributes]) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
+    for (const at of [...b.attributes]) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+    const ac = [...a.childNodes], bc = [...b.childNodes];
+    for (let i = 0; i < Math.max(ac.length, bc.length); i++){
+      const x = ac[i], y = bc[i];
+      if (!y) { x.remove(); continue; }
+      if (!x) { a.appendChild(a.ownerDocument.importNode(y, true)); continue; }
+      if (x.nodeType !== y.nodeType || (x.nodeType === 1 && x.tagName !== y.tagName)) {
+        x.replaceWith(a.ownerDocument.importNode(y, true)); continue;
+      }
+      if (x.nodeType === 1) {
+        const focused = x.ownerDocument.activeElement;
+        if (x === focused && (x.tagName === 'INPUT' || x.tagName === 'TEXTAREA')) continue;
+        morphEl(x, y);
+      } else if (x.nodeValue !== y.nodeValue) {
+        x.nodeValue = y.nodeValue;
+      }
+    }
+  }
+  // Boot narration: a freshly created frame has no transcript while its agent
+  // boots (~20s). Say so in the ribbon instead of sitting silent; real chips
+  // take over the moment the transcript appears. Time-boxed so an old frame
+  // with no transcript doesn't pulse forever.
+  const shellLoadedAt = Date.now();
+  let bootShown = false;
+  function inBootWindow(){
+    return !spawnFailWarned && !actFile && !lastMtime && (Date.now() - shellLoadedAt) < 120000;
+  }
+
   async function pollActivity(){
     try {
       const r = await fetch(API('activity') + '?offset=' + actOffset + '&file=' + encodeURIComponent(actFile),
                             { cache: 'no-store' }).then(x => x.json());
       if (r.file !== actFile) { actFile = r.file; actOffset = 0; }
       actOffset = r.offset;
+      if (!bootShown && inBootWindow()){
+        bootShown = true;
+        appendLog({ kind: 'info', label: 'starting the agent (~20s), then it composes the page…' });
+      }
       // Liveness comes from the transcript's mtime — a server-side fact — not
       // from when replayed events happen to arrive in this tab. A first-load
       // replay of an old transcript must not light up "working…".
@@ -319,7 +615,7 @@
     if (waiting && sawActSinceSent && Date.now() - lastActAt > 8000) {
       waiting = false; send.disabled = false;
     }
-    setActive(waiting || (Date.now() - lastActAt < 6000));
+    setActive(waiting || (Date.now() - lastActAt < 6000) || inBootWindow());
   }
 
   restoreLog();
@@ -341,22 +637,36 @@
     sentAt = Date.now(); warned = false;
     mtimeAtSend = lastMtime; sawActSinceSent = false;
     appendLog({ kind: 'you', label: 'you: ' + text });
+    // A delivery that takes more than a few seconds means the server is
+    // respawning a sleeping agent (~20s) — say so instead of sitting silent.
+    const wakeHint = setTimeout(
+      () => appendLog({ kind: 'info', label: 'agent was asleep — waking it (~20s)…' }), 3500);
     try {
-      const r = await fetch(API('message'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      const j = await r.json().catch(() => ({}));
+      // A 502 with retryable:true means the agent's channel isn't registered
+      // yet (the ~20s boot window instant-create opened) — retry with backoff
+      // instead of dropping the message (review finding #2).
+      let r, j, attempt = 0;
+      for (;;) {
+        r = await fetch(API('message'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        j = await r.json().catch(() => ({}));
+        if (r.ok || !j.retryable || attempt >= 6) break;
+        if (attempt === 0) appendLog({ kind: 'info', label: 'agent is still booting — holding your message…' });
+        attempt++;
+        await new Promise(res => setTimeout(res, 4000));
+      }
+      clearTimeout(wakeHint);
       if (!r.ok) {
         appendLog({ kind: 'warn', label: 'delivery failed: ' + (j.error || r.statusText) });
+        if (!msg.value) msg.value = text;      // give the operator their words back
         waiting = false; send.disabled = false;
       } else if (j.revived) {
-        // The agent had died; the server respawned it before delivering.
-        // Restart the no-response clock — the fresh agent starts from zero.
-        appendLog({ kind: 'info', label: 'agent was down — respawned, resuming this mindframe' });
-        sentAt = Date.now(); warned = false;
+        appendLog({ kind: 'info', label: 'agent is awake — resuming this mindframe' });
+        sentAt = Date.now(); warned = false;   // fresh agent starts the clock from zero
       }
-    } catch (e) { appendLog({ kind: 'warn', label: 'network error sending message' }); waiting = false; send.disabled = false; }
+    } catch (e) { clearTimeout(wakeHint); appendLog({ kind: 'warn', label: 'network error sending message' }); if (!msg.value) msg.value = text; waiting = false; send.disabled = false; }
   });
 </script>
 </body>

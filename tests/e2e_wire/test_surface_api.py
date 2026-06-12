@@ -37,8 +37,9 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
     /tasks/{id}. Set `agent_dead = True` to make /message 409
     agent_not_running until a /start arrives (the revive scenario)."""
 
-    calls: list = []          # (method, path, body)
-    agent_dead: bool = False  # 409 messages until a /start is seen
+    calls: list = []           # (method, path, body)
+    agent_dead: bool = False   # 409 messages until a /start is seen
+    task_missing: bool = False # 404 messages until a PUT defines the task
 
     def _send(self, code: int, body: dict) -> None:
         data = json.dumps(body).encode()
@@ -61,6 +62,7 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
     def do_PUT(self):
         body = self._body()
         type(self).calls.append(("PUT", self.path, body))
+        type(self).task_missing = False
         self._send(200, {"task_id": self.path.rsplit("/", 1)[-1], "created": True})
 
     def do_DELETE(self):
@@ -73,8 +75,12 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
         if self.path.endswith("/start"):
             type(self).agent_dead = False
             self._send(200, {"ok": True, "started": True, "status": "running"})
+        elif self.path.endswith("/stop"):
+            self._send(200, {"ok": True, "status": "stopped", "tmux_killed": True})
         elif self.path.endswith("/message"):
-            if type(self).agent_dead:
+            if type(self).task_missing:
+                self._send(404, {"detail": "task not found"})
+            elif type(self).agent_dead:
                 self._send(409, {"detail": {"code": "agent_not_running",
                                             "task_status": "crashed"}})
             else:
@@ -93,6 +99,7 @@ def stub_daemon(monkeypatch):
     thread.start()
     _StubTaskpilot.calls = []
     _StubTaskpilot.agent_dead = False
+    _StubTaskpilot.task_missing = False
     monkeypatch.setattr(srv, "TASKPILOT_DAEMON", f"http://127.0.0.1:{server.server_port}")
     yield _StubTaskpilot
     server.shutdown()
@@ -118,12 +125,13 @@ def frames_root(tmp_path, monkeypatch):
     return root
 
 
-def _make_frame(root: pathlib.Path, mid: str, task_id: str | None = None) -> pathlib.Path:
+def _make_frame(root: pathlib.Path, mid: str, task_id: str | None = None,
+                **meta_extra) -> pathlib.Path:
     fdir = root / mid
     fdir.mkdir()
     (fdir / "index.html").write_text("<!doctype html><title>t</title>ok", "utf-8")
     (fdir / "meta.json").write_text(
-        json.dumps({"id": mid, "title": mid, "task_id": task_id or mid}), "utf-8")
+        json.dumps({"id": mid, "title": mid, "task_id": task_id or mid, **meta_extra}), "utf-8")
     return fdir
 
 
@@ -139,16 +147,18 @@ def test_health_shape():
 # --------------------------- create ---------------------------
 
 
-def test_create_mints_frame_and_spawns(frames_root, stub_daemon):
+def test_create_returns_instantly_and_spawns_in_background(frames_root, stub_daemon):
     r = client.post("/api/frames/create", json={"prompt": "watch the build", "title": "Build"})
     assert r.status_code == 200
     j = r.json()
-    assert j["spawn"] == "ok" and j["url"] == f"/m/{j['id']}"
+    # Instant contract: the response says "starting"; the spawn happens in a
+    # background task (TestClient runs those before returning).
+    assert j["spawn"] == "starting" and j["url"] == f"/m/{j['id']}"
     fdir = frames_root / j["id"]
-    assert (fdir / "index.html").is_file() and "omposing" in (fdir / "index.html").read_text()
+    assert (fdir / "index.html").is_file() and "Starting this mindframe" in (fdir / "index.html").read_text()
     meta = json.loads((fdir / "meta.json").read_text())
     assert meta["task_id"] == j["id"] and meta["title"] == "Build"
-    # Create = idempotent define (PUT) then ensure-running (start).
+    # Background half = idempotent define (PUT) then ensure-running (start).
     put_body = next(b for m, p, b in stub_daemon.calls
                     if m == "PUT" and p == f"/tasks/{j['id']}")
     assert ("POST", f"/tasks/{j['id']}/start", {}) in stub_daemon.calls
@@ -157,6 +167,27 @@ def test_create_mints_frame_and_spawns(frames_root, stub_daemon):
     # The brief must teach the self-messaging button affordance, or agents
     # render prose offers instead of clickable actions.
     assert "location.pathname.replace('/page','/message')" in put_body["description"]
+
+
+def test_message_defines_and_starts_a_never_spawned_frame(frames_root, stub_daemon):
+    """If the background spawn after create failed, the frame's task doesn't
+    exist at all — the next message must define + start it, then deliver."""
+    fdir = _make_frame(frames_root, "frame1", task_id="task-77")
+    # keep the boot placeholder so recovery uses the first-compose flow
+    (fdir / "index.html").write_text(
+        "<!doctype html><meta charset=utf-8><title>composing…</title>ok", "utf-8")
+    stub_daemon.task_missing = True
+    r = client.post("/api/frame/frame1/message", json={"text": "hello?"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "revived": True}
+    methods = [(m, p) for m, p, _ in stub_daemon.calls]
+    assert methods == [
+        ("POST", "/tasks/task-77/message"),   # 404 — task never existed
+        ("PUT", "/tasks/task-77"),            # define from meta.json
+        ("POST", "/tasks/task-77/start"),     # first start (no prompt override)
+        ("POST", "/tasks/task-77/message"),   # delivered
+    ]
+    start_body = stub_daemon.calls[2][2]
+    assert start_body == {}                   # placeholder page → first-compose flow
 
 
 def test_create_with_daemon_down_leaves_no_orphan(frames_root, down_daemon):
@@ -271,6 +302,17 @@ def test_dotdot_frame_id_is_404(frames_root):
     assert client.get("/m/%2e%2e").status_code == 404
 
 
+def test_missing_frame_gets_a_real_page_not_json(frames_root):
+    r = client.get("/m/no-such-frame")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("text/html")
+    assert "doesn't exist" in r.text and 'href="/"' in r.text
+    assert "no-such-frame" in r.text
+    # script injection via the id stays inert (page ships zero <script> tags)
+    evil = client.get("/m/x%3Cscript%3E")
+    assert evil.status_code == 404 and "<script" not in evil.text
+
+
 # --------------------------- artifacts traversal ---------------------------
 
 
@@ -300,6 +342,270 @@ def test_artifact_symlink_escape_is_rejected(frames_root, tmp_path):
     except OSError:
         pytest.skip("symlinks unavailable (Windows without dev mode)")
     assert client.get("/artifacts/frame1/link.txt").status_code == 404
+
+
+# --------------------------- kinds / inbox / archive ---------------------------
+
+
+def test_frames_report_kind_and_provenance(frames_root):
+    _make_frame(frames_root, "deskf")
+    _make_frame(frames_root, "deliv", kind="delivered",
+                origin={"watch": "pr-prep", "event": "PR #14"})
+    by_id = {f["id"]: f for f in client.get("/api/frames").json()["frames"]}
+    assert by_id["deskf"]["kind"] == "created" and by_id["deskf"]["origin"] is None
+    assert by_id["deliv"]["kind"] == "delivered"
+    assert by_id["deliv"]["origin"]["watch"] == "pr-prep"
+    assert by_id["deliv"]["watch"] == "pr-prep"
+
+
+def test_archive_hides_frame_until_unarchive(frames_root):
+    _make_frame(frames_root, "deliv", kind="delivered")
+    assert client.post("/api/frame/deliv/archive").json()["archived"] is True
+    assert [f["id"] for f in client.get("/api/frames").json()["frames"]] == []
+    assert "deliv" in [f["id"] for f in client.get("/api/frames?archived=1").json()["frames"]]
+    client.post("/api/frame/deliv/unarchive")
+    assert [f["id"] for f in client.get("/api/frames").json()["frames"]] == ["deliv"]
+
+
+def test_newer_delivery_supersedes_older_same_watch(frames_root):
+    import os, time
+    old = _make_frame(frames_root, "deliv1", kind="delivered", origin={"watch": "pr-prep"})
+    new = _make_frame(frames_root, "deliv2", kind="delivered", origin={"watch": "pr-prep"})
+    other = _make_frame(frames_root, "deliv3", kind="delivered", origin={"watch": "email-triage"})
+    past = time.time() - 3600
+    os.utime(old / "index.html", (past, past))
+    ids = {f["id"] for f in client.get("/api/frames").json()["frames"]}
+    assert ids == {"deliv2", "deliv3"}          # older pr-prep delivery archived
+    assert json.loads((old / "meta.json").read_text())["superseded"] is True
+
+
+def test_promote_to_app_notifies_agent_and_back(frames_root, stub_daemon):
+    _make_frame(frames_root, "frame1", task_id="task-77")
+    r = client.post("/api/frame/frame1/kind", json={"kind": "app"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "id": "frame1",
+                                                 "kind": "app", "agent_notified": True}
+    # the maintenance contract reached the agent
+    note = next(b for m, p, b in stub_daemon.calls if p == "/tasks/task-77/message")
+    assert "MAINTAINER" in note["text"] and note["from_session"] == "mindframe-system"
+    assert {f["id"]: f["kind"] for f in client.get("/api/frames").json()["frames"]}["frame1"] == "app"
+    # demote is quiet (no second message), and protected kinds refuse
+    n_msgs = len([1 for m, p, _ in stub_daemon.calls if p.endswith("/message")])
+    assert client.post("/api/frame/frame1/kind", json={"kind": "created"}).status_code == 200
+    assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/message")]) == n_msgs
+    assert client.post("/api/frame/frame1/kind", json={"kind": "watch"}).status_code == 422
+
+
+def test_kind_change_refused_for_delivered(frames_root, stub_daemon):
+    _make_frame(frames_root, "deliv", kind="delivered", origin={"watch": "pr-prep"})
+    assert client.post("/api/frame/deliv/kind", json={"kind": "app"}).status_code == 409
+
+
+# --------------------------- watches ---------------------------
+
+
+def test_watch_open_is_a_singleton(frames_root, stub_daemon, tmp_path, monkeypatch):
+    rdir = tmp_path / "dispatcher" / "recipes" / "pr-prep"
+    rdir.mkdir(parents=True)
+    (rdir / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", tmp_path / "dispatcher")
+    r1 = client.post("/api/watches/pr-prep/open")
+    assert r1.status_code == 200 and r1.json()["spawn"] == "starting"
+    wid = r1.json()["id"]
+    assert wid == "watch-pr-prep"
+    meta = json.loads((frames_root / wid / "meta.json").read_text())
+    assert meta["kind"] == "watch" and meta["watch"] == "pr-prep"
+    # second open: same frame, no new spawn
+    spawn_calls_before = len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")])
+    r2 = client.post("/api/watches/pr-prep/open")
+    assert r2.json()["spawn"] == "existing" and r2.json()["id"] == wid
+    assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")]) == spawn_calls_before
+    assert client.post("/api/watches/nope/open").status_code == 404
+
+
+def test_watch_pause_resume_roundtrip(frames_root, tmp_path, monkeypatch):
+    dhome = tmp_path / "dispatcher"
+    (dhome / "recipes" / "pr-prep").mkdir(parents=True)
+    (dhome / "recipes" / "pr-prep" / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
+    (dhome / "channels.yaml").write_text(
+        "routes:\n"
+        "  - source: github\n"
+        "    event_type: pull_request.opened\n"
+        "    target: spawn:pr-prep\n", "utf-8")
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
+    monkeypatch.setattr(srv, "TASKPILOT_DB", tmp_path / "no.db")
+
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["wired"] is True and w["paused"] is False
+
+    r = client.post("/api/watches/pr-prep/pause")
+    assert r.status_code == 200 and r.json()["moved"] == 1
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["wired"] is False and w["paused"] is True
+    assert w["paused_triggers"] == ["github/pull_request.opened"]
+    # original preserved before the comment-stripping rewrite
+    assert (dhome / "channels.yaml.bak-original").is_file()
+    # pausing twice is a clean 409, not a duplicate move
+    assert client.post("/api/watches/pr-prep/pause").status_code == 409
+
+    r = client.post("/api/watches/pr-prep/resume")
+    assert r.status_code == 200
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["wired"] is True and w["paused"] is False
+
+
+def test_watches_carry_runs_and_deliveries(frames_root, tmp_path, monkeypatch):
+    import sqlite3
+    dhome = tmp_path / "dispatcher"
+    (dhome / "recipes" / "pr-prep").mkdir(parents=True)
+    (dhome / "recipes" / "pr-prep" / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
+    db = tmp_path / "tp.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT)")
+    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', '2026-06-11 18:00:00')")
+    con.commit(); con.close()
+    monkeypatch.setattr(srv, "TASKPILOT_DB", db)
+    _make_frame(frames_root, "pr-prep-evt9", kind="delivered", origin={"watch": "pr-prep"})
+
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["runs"][0]["task_id"] == "pr-prep-evt9"
+    assert w["deliveries"][0]["id"] == "pr-prep-evt9"
+
+
+def test_runs_classify_and_stop(frames_root, stub_daemon, tmp_path, monkeypatch):
+    import sqlite3
+    dhome = tmp_path / "dispatcher"
+    (dhome / "recipes" / "pr-prep").mkdir(parents=True)
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
+    db = tmp_path / "tp.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT)")
+    now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    con.execute("INSERT INTO tasks VALUES ('frame1', 'frame1', 'running', ?)", (now,))
+    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', ?)", (now,))
+    con.commit(); con.close()
+    monkeypatch.setattr(srv, "TASKPILOT_DB", db)
+    monkeypatch.setattr(srv, "_live_tmux_cached", lambda: {"frame1"})
+    _make_frame(frames_root, "frame1")
+
+    runs = {r["task_id"]: r for r in client.get("/api/runs").json()["runs"]}
+    assert runs["frame1"]["kind"] == "frame" and runs["frame1"]["alive"] is True
+    assert runs["frame1"]["frame_id"] == "frame1"
+    assert runs["pr-prep-evt9"]["kind"] == "watch-run" and runs["pr-prep-evt9"]["watch"] == "pr-prep"
+
+    r = client.post("/api/runs/frame1/stop")
+    assert r.status_code == 200
+    assert ("POST", "/tasks/frame1/stop", {}) in stub_daemon.calls
+
+
+# --------------------------- activity feed ---------------------------
+
+
+def test_activity_feed_narrates_deliveries(frames_root, monkeypatch):
+    monkeypatch.setattr(srv, "TASKPILOT_DB", frames_root / "no-such.db")
+    _make_frame(frames_root, "deliv", kind="delivered",
+                origin={"watch": "pr-prep", "event": "PR #14"})
+    items = client.get("/api/activity").json()["items"]
+    deliveries = [i for i in items if i["kind"] == "delivery"]
+    assert deliveries and deliveries[0]["frame_id"] == "deliv"
+    assert "pr-prep delivered" in deliveries[0]["text"]
+
+
+# --------------------------- data plane ---------------------------
+
+
+def test_data_put_get_roundtrip(frames_root):
+    _make_frame(frames_root, "frame1")
+    r = client.put("/api/frame/frame1/data/board",
+                   json={"cards": [{"id": 1, "col": "today"}]})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    g = client.get("/api/frame/frame1/data/board")
+    assert g.status_code == 200
+    assert g.json() == {"cards": [{"id": 1, "col": "today"}]}
+    # and the agent sees the same bytes as a plain file in its cwd
+    on_disk = json.loads((frames_root / "frame1" / "data" / "board.json").read_text())
+    assert on_disk["cards"][0]["col"] == "today"
+
+
+def test_data_list_keys(frames_root):
+    _make_frame(frames_root, "frame1")
+    client.put("/api/frame/frame1/data/a", json=1)
+    client.put("/api/frame/frame1/data/b", json={"x": 2})
+    keys = [k["key"] for k in client.get("/api/frame/frame1/data").json()["keys"]]
+    assert keys == ["a", "b"]
+
+
+def test_data_rejects_bad_keys_and_non_json(frames_root):
+    _make_frame(frames_root, "frame1")
+    assert client.put("/api/frame/frame1/data/Bad..Key", json=1).status_code == 422
+    # ".." normalizes to the list route (405) — either way it never reaches a file
+    assert client.put("/api/frame/frame1/data/..", json=1).status_code in (405, 422)
+    r = client.put("/api/frame/frame1/data/k",
+                   content=b"not json", headers={"Content-Type": "application/json"})
+    assert r.status_code == 422
+    assert client.get("/api/frame/frame1/data/missing").status_code == 404
+    assert client.get("/api/frame/nope/data").status_code == 404
+
+
+def test_data_size_cap(frames_root):
+    _make_frame(frames_root, "frame1")
+    big = "x" * (srv.DATA_MAX_BYTES + 10)
+    r = client.put("/api/frame/frame1/data/big",
+                   content=json.dumps(big).encode(),
+                   headers={"Content-Type": "application/json"})
+    assert r.status_code == 413
+
+
+# --------------------------- sharing ---------------------------
+
+
+def test_share_freezes_a_self_contained_snapshot(frames_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
+    fdir = _make_frame(frames_root, "frame1")
+    (fdir / "index.html").write_text(
+        '<!doctype html><html><head><link rel="stylesheet" href="/frame.css">'
+        '<title>t</title></head><body>hello</body></html>', "utf-8")
+    (fdir / "data").mkdir()
+    (fdir / "data" / "board.json").write_text('{"cards": [{"id": "x</script>"}]}', "utf-8")
+
+    r = client.post("/api/frame/frame1/share")
+    assert r.status_code == 200
+    j = r.json()
+    assert len(j["slug"]) == 14
+
+    page = client.get(j["url"])
+    assert page.status_code == 200
+    body = page.text
+    assert '<link' not in body                      # css inlined
+    assert "--color-bg" in body                     # tokens present
+    assert '"cards"' in body and "</script>\"" not in body  # data baked, escaped
+    assert "share shim" in body and "shared from mindframe" in body
+    # re-share mints a new immutable slug
+    j2 = client.post("/api/frame/frame1/share").json()
+    assert j2["slug"] != j["slug"]
+
+
+def test_export_downloads_one_file(frames_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
+    fdir = _make_frame(frames_root, "frame1")
+    (fdir / "index.html").write_text(
+        '<!doctype html><html><head><link rel="stylesheet" href="/frame.css">'
+        '<title>My Board</title></head><body>hello</body></html>', "utf-8")
+    r = client.get("/api/frame/frame1/export")
+    assert r.status_code == 200
+    assert r.headers["content-disposition"] == 'attachment; filename="My-Board.html"'
+    assert "<link" not in r.text and "--color-bg" in r.text   # self-contained
+    assert client.get("/api/frame/nope/export").status_code == 404
+
+
+def test_share_unknown_frame_and_bad_slug_404(frames_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
+    assert client.post("/api/frame/nope/share").status_code == 404
+    assert client.get("/share/doesnotexist123").status_code == 404
+    # traversal normalizes into the SPA catch-all, which is containment-checked
+    # — it must never leak file contents
+    trav = client.get("/share/../etc/passwd")
+    assert "root:" not in trav.text
 
 
 # --------------------------- rev + listing ---------------------------

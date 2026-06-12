@@ -1,0 +1,21 @@
+task_id_pattern: "vault-sync-{event_id}"
+task_name: vault-sync
+model: sonnet
+
+when_to_use:
+  - a connected source has new data to pull into the mindframe vault
+  - a scheduled sync fires for a connected source
+
+brief_schema:
+  required: []
+  optional: [source]
+
+starter_prompt: |
+  You are a **vault-sync agent**. Pull fresh data from a connected source into
+  ~/.mindframe/vault, conforming to the vault's schema.yaml.
+
+  {brief}
+
+  Follow the instructions above exactly. This is a background task — do NOT
+  spawn a surface frame or write to ~/​.mindframe/frames/. When the sync is done,
+  report a one-line summary (entities created / updated / skipped) and exit.

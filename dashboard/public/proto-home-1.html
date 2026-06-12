@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mindframe — V1 The Desk</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b0b0c; color: #ececf0;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  #wrap { max-width: 760px; margin: 0 auto; padding: 2.2rem 1.4rem 4rem; }
+  #brand { font-size: .68rem; letter-spacing: .2em; color: #6b6b73; font-weight: 700; margin-bottom: 2.2rem; }
+  #brand .ok { color: #3f8f5f; }
+
+  /* the start bar — type to start a purposeful frame; empty = launchpad */
+  #startform { display: flex; gap: .6rem; margin-bottom: 2.4rem; }
+  #start {
+    flex: 1; padding: .95rem 1.1rem; font-size: 16px; color: #ececf0;
+    background: #131316; border: 1px solid #2a2a31; border-radius: 12px; outline: none;
+  }
+  #start:focus { border-color: #5b6cff; }
+  #go { padding: .95rem 1.3rem; border: 0; border-radius: 12px; background: #5b6cff; color: #fff; font-size: 15px; cursor: pointer; }
+
+  .sec { margin-bottom: 2rem; }
+  .sechdr {
+    display: flex; align-items: baseline; gap: .6rem; margin-bottom: .55rem;
+    font-size: .6rem; letter-spacing: .18em; text-transform: uppercase; color: #5a5a63;
+  }
+  .sechdr .n { color: #c9a86a; }
+  .row {
+    display: flex; align-items: center; gap: .8rem; padding: .6rem .75rem;
+    border-radius: 10px; text-decoration: none; color: #c9c9d0;
+  }
+  .row:hover { background: #141417; }
+  .mark { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; border: 1px solid #3f3f48; }
+  .mark.on { background: #3f8f5f; border-color: transparent; }
+  .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14.5px; }
+  .sub { color: #5a5a63; font-size: 11.5px; font-family: ui-monospace, monospace; white-space: nowrap; }
+  .done {
+    border: 0; background: transparent; color: #5a5a63; cursor: pointer;
+    font-size: 13px; border-radius: 6px; width: 22px; height: 22px;
+  }
+  .done:hover { background: #1f3a28; color: #8aff9a; }
+
+  /* activity: quieter, time-grouped */
+  .feed .row { padding: .32rem .75rem; }
+  .feed .title { color: #8a8a93; font-size: 13px; font-family: ui-monospace, monospace; }
+  .feed .row.delivery .title { color: #cfe0ff; }
+  .feed .sub { flex: 0 0 4.4em; text-align: right; }
+
+  #foot { display: flex; gap: .6rem; margin-top: 2.6rem; }
+  .chip {
+    padding: .45rem .8rem; border-radius: 999px; border: 1px solid #26262c;
+    color: #8a8a93; font-size: 12.5px; text-decoration: none; background: #101013;
+  }
+  .chip b { color: #c9a86a; font-weight: 600; }
+  .chip:hover { border-color: #3a4a8a; color: #cfe0ff; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="brand">MINDFRAME <span class="ok">· ready</span></div>
+
+  <form id="startform">
+    <input id="start" placeholder="Start something — describe it, or leave empty to get suggestions…" autofocus>
+    <button id="go">Start</button>
+  </form>
+
+  <div class="sec" id="inbox-sec" hidden>
+    <div class="sechdr">Inbox <span class="n" id="inbox-n"></span></div>
+    <div id="inbox"></div>
+  </div>
+
+  <div class="sec" id="desk-sec" hidden>
+    <div class="sechdr">Desk</div>
+    <div id="desk"></div>
+  </div>
+
+  <div class="sec feed" id="feed-sec" hidden>
+    <div class="sechdr">Activity</div>
+    <div id="feed"></div>
+  </div>
+
+  <div id="foot">
+    <a class="chip" href="#"><b id="n-watches">·</b> watches</a>
+    <a class="chip" href="#"><b id="n-kb">·</b> things you know</a>
+    <a class="chip" href="#"><b id="n-conn">·</b> connections</a>
+  </div>
+</div>
+<script>
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const ago = ms => { const m = Math.round((Date.now()-ms)/60000);
+    return m<1?'now':m<60?m+'m':m<1440?Math.round(m/60)+'h':Math.round(m/1440)+'d'; };
+
+  document.getElementById('startform').addEventListener('submit', e => { e.preventDefault(); });
+
+  (async () => {
+    const frames = (await (await fetch('/api/frames')).json()).frames || [];
+    const inbox = frames.filter(f => f.kind === 'delivered');
+    const desk  = frames.filter(f => f.kind === 'created').slice(0, 6);
+    if (inbox.length){
+      document.getElementById('inbox-sec').hidden = false;
+      document.getElementById('inbox-n').textContent = inbox.length;
+      document.getElementById('inbox').innerHTML = inbox.map(f => `
+        <a class="row" href="/m/${encodeURIComponent(f.id)}">
+          <span class="mark on"></span>
+          <span class="title">${esc(f.title)}</span>
+          <span class="sub">${esc(f.origin?.watch || 'delivered')} · ${ago(f.modified)}</span>
+          <button class="done" title="done">✓</button>
+        </a>`).join('');
+    }
+    if (desk.length){
+      document.getElementById('desk-sec').hidden = false;
+      document.getElementById('desk').innerHTML = desk.map(f => `
+        <a class="row" href="/m/${encodeURIComponent(f.id)}">
+          <span class="mark"></span>
+          <span class="title">${esc(f.title)}</span>
+          <span class="sub">${ago(f.modified)}</span>
+        </a>`).join('');
+    }
+    const items = ((await (await fetch('/api/activity')).json()).items || []).slice(0, 7);
+    if (items.length){
+      document.getElementById('feed-sec').hidden = false;
+      document.getElementById('feed').innerHTML = items.map(i => `
+        <a class="row ${esc(i.kind)}" href="${i.frame_id ? '/m/'+encodeURIComponent(i.frame_id) : '#'}">
+          <span class="sub">${ago(i.at)}</span>
+          <span class="title">${esc(i.text)}</span>
+        </a>`).join('');
+    }
+    const w = await (await fetch('/api/watches')).json();
+    document.getElementById('n-watches').textContent = (w.watches||[]).length;
+    const v = await (await fetch('/api/vault')).json();
+    document.getElementById('n-kb').textContent = v.total_entries || 0;
+    const c = await (await fetch('/api/connections')).json();
+    document.getElementById('n-conn').textContent = (c.connections||[]).length;
+  })();
+</script>
+</body>
+</html>

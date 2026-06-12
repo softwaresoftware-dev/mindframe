@@ -19,13 +19,11 @@ mesh channel).
 
 ## The home hub
 
-`/` is a node graph: a central **New** node ringed by **five satellites** —
-Mindframes, Knowledge base, Agents, Connections, Events. Mindframes and
-Knowledge base open drawers over the graph; Agents, Connections, and Events
-each spawn a domain mindframe (a fresh agent grounded in that domain's live
-state). The center spawns a launchpad mindframe. A dock along the edge
-switches between live frames, pulsing the ones whose agents are working
-(`/api/frames/activity`). Opened via `/mindframe:open`.
+`/` is the **calm launcher**: one "What should we work on?" input — typed
+text creates a purposeful frame directly, empty opens a launchpad — then the
+operator's attention in a few lines (inbox deliveries with provenance, resume,
+recent activity), app chips, and a footer opening drawers for frames, watches,
+agents, knowledge, and connections.
 
 ## Endpoints
 
@@ -96,8 +94,8 @@ The vault path is **not** configurable — `~/.mindframe/vault`, hardcoded.
 |---|---|
 | `server/server.py` | The FastAPI server — every endpoint above. |
 | `server/requirements.txt` | FastAPI + uvicorn + httpx + PyYAML. |
-| `public/index.html` | SPA shell — the home (`/`) hub graph. |
-| `public/main.js` | SPA logic — hub graph, drawers, domain-mindframe spawning. |
+| `public/index.html` | SPA shell — the home (`/`) calm launcher. |
+| `public/main.js` | SPA logic — calm launcher, activity feed, management drawers. |
 | `public/surface.html` | Per-mindframe shell served at `/m/<id>`. The "working" indicator derives from the transcript's mtime; Send re-enables when the agent goes idle after replying, or after a 40s no-response warning. |
 | `public/style.css` | Chrome. |
 | `artifacts/<id>/` | Sibling files an agent writes next to its page. |

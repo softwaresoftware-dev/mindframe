@@ -45,7 +45,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Header, Request
+from fastapi import BackgroundTasks, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
@@ -198,10 +198,79 @@ def _page_title(index: Path) -> str | None:
     return t if t.lower() not in _PLACEHOLDER_TITLES else None
 
 
+# Frame kinds — the operator-facing ontology:
+#   created   — a CONVERSATION: a place the operator thinks with an agent;
+#               the page is the agent's voice (default; launchpads, ad-hoc)
+#   app       — an ARTIFACT: a functional, long-lived tool the agent built
+#               and maintains; the operator USES it (fast loop only) and the
+#               agent wakes only for maintenance. Full-bleed presentation.
+#   delivered — a watch's deliverable; arrives unprompted, lives in the Inbox
+#               until handled, carries origin {watch, event, at}
+#   watch     — a singleton frame that manages one watch (recipe + route)
+_FRAME_KINDS = {"created", "app", "delivered", "watch"}
+
+# Sent to a frame's agent when the operator (or the agent's own judgment, via
+# the promote endpoint) turns a conversation into an app.
+APP_PROMOTION_NOTE = """This frame is now an APP — a long-lived functional tool the operator USES \
+rather than converses with. Restructure your index.html into app-grade:
+  - instant client-side interactions for everything the app does; persistent \
+state in your data plane (data/<key>.json — read it at the start of every turn)
+  - keep <meta name="mf-patch" content="safe"> and idempotent, event-delegated script
+  - theming is yours: keep your own look, or build on the operator's design \
+system (<link rel="stylesheet" href="/frame.css">) if it fits the tool
+  - NO conversational flow-buttons in the app UI — the app's controls do app \
+things; change requests reach you through the maintenance bar instead
+  - give the app a real name in <title> and meta.json's title field
+You are now its MAINTAINER: future messages are change requests or bug \
+reports. Evolve the app with Edit; never replace it with a conversation page. \
+Apply the restructure now."""
+
+# Appended to the revival brief when the dead frame is an app, so the
+# successor agent maintains instead of conversing.
+APP_REVIVAL_NOTE = """\n\nIMPORTANT: this frame is an APP, not a conversation. The page is a \
+functional tool the operator uses; its state lives in data/<key>.json. You \
+are its maintainer — treat the operator's message as a change request or bug \
+report, evolve the app with Edit, and never replace it with a conversation \
+page."""
+
+
+def _write_meta(fdir: Path, meta: dict[str, Any]) -> None:
+    (fdir / "meta.json").write_text(json.dumps(meta, indent=2), "utf-8")
+
+
+def _supersede_deliveries(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Within one watch, a newer unhandled delivery supersedes older ones —
+    the old frames are auto-archived (page stays on disk; history lives in
+    the watch's frame). Mutates meta on disk for the superseded; returns the
+    list minus them."""
+    newest_per_watch: dict[str, int] = {}
+    for f in frames:
+        if f["kind"] == "delivered" and not f["archived"] and f.get("watch"):
+            newest_per_watch[f["watch"]] = max(
+                newest_per_watch.get(f["watch"], 0), f["modified"])
+    keep: list[dict[str, Any]] = []
+    for f in frames:
+        if (f["kind"] == "delivered" and not f["archived"] and f.get("watch")
+                and f["modified"] < newest_per_watch.get(f["watch"], 0)):
+            fdir = FRAMES_ROOT / f["id"]
+            meta = _read_meta(fdir)
+            meta["archived"] = True
+            meta["superseded"] = True
+            try:
+                _write_meta(fdir, meta)
+            except OSError:
+                pass
+            continue
+        keep.append(f)
+    return keep
+
+
 @app.get("/api/frames")
-async def api_frames() -> dict[str, Any]:
+async def api_frames(archived: int = 0) -> dict[str, Any]:
     """List surface mindframes — frame dirs under FRAMES_ROOT holding an
-    index.html — newest-activity first."""
+    index.html — newest-activity first, with the operator-facing kind
+    (created / delivered / watch) and delivery provenance. Archived frames
+    are hidden unless ?archived=1; superseded deliveries auto-archive."""
     out: list[dict[str, Any]] = []
     if not FRAMES_ROOT.is_dir():
         return {"frames": []}
@@ -220,28 +289,93 @@ async def api_frames() -> dict[str, Any]:
             modified = int(index.stat().st_mtime * 1000)
         except OSError:
             modified = 0
+        # True recency is the latest of: the agent rewrote the page, the
+        # agent's transcript moved, or the operator touched the frame's data
+        # plane (moved a card, checked a box). The page mtime alone goes
+        # stale the moment activity doesn't end in a rewrite.
+        try:
+            tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+            if tp is not None:
+                modified = max(modified, int(tp.stat().st_mtime * 1000))
+        except OSError:
+            pass
+        try:
+            ddir = fdir / "data"
+            if ddir.is_dir():
+                modified = max(modified, int(ddir.stat().st_mtime * 1000))
+        except OSError:
+            pass
+        kind = meta.get("kind")
+        if kind not in _FRAME_KINDS:
+            kind = "created"
+        origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
         out.append({
             "id": fdir.name,
             "title": _page_title(index) or meta.get("title") or fdir.name,
             "status": meta.get("status") or "active",
+            "kind": kind,
+            "archived": bool(meta.get("archived")),
+            "watch": origin.get("watch") or (meta.get("watch") if kind == "watch" else None),
+            "origin": origin or None,
             "modified": modified,
             "tags": meta.get("tags") or [],
         })
+    out = _supersede_deliveries(out)
+    if not archived:
+        out = [f for f in out if not f["archived"]]
     out.sort(key=lambda f: f["modified"], reverse=True)
     return {"frames": out}
+
+
+@app.post("/api/frame/{mid}/archive")
+def archive_frame(mid: str) -> Response:
+    """Mark a frame handled — hidden from the dock, page kept on disk."""
+    return _set_archived(mid, True)
+
+
+@app.post("/api/frame/{mid}/unarchive")
+def unarchive_frame(mid: str) -> Response:
+    return _set_archived(mid, False)
+
+
+def _set_archived(mid: str, value: bool) -> Response:
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    meta = _read_meta(fdir)
+    meta["archived"] = value
+    try:
+        _write_meta(fdir, meta)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "id": mid, "archived": value})
 
 
 # Window (seconds) within which a transcript write counts as "the agent is
 # working right now" — backs the surface dock's per-frame pulse markers.
 _FRAME_ACTIVE_WINDOW_S = 8.0
 
+# tmux-session set cache: the dock polls activity every ~2s per open tab; one
+# `tmux ls` per TTL keeps that O(1) subprocesses regardless of tabs/frames.
+_tmux_cache: dict[str, Any] = {"at": 0.0, "set": set()}
+_TMUX_TTL_S = 2.0
+
+
+def _live_tmux_cached() -> set[str]:
+    now = time.time()
+    if (now - _tmux_cache["at"]) > _TMUX_TTL_S:
+        _tmux_cache["set"] = _tmux_sessions()
+        _tmux_cache["at"] = now
+    return _tmux_cache["set"]
+
 
 @app.get("/api/frames/activity")
 async def api_frames_activity() -> dict[str, Any]:
-    """Per-frame 'is the agent working right now' signal for the surface dock.
-    Working = the agent's transcript was written within _FRAME_ACTIVE_WINDOW_S.
-    Cheap: one transcript stat per frame, no parsing — so the dock can poll it
-    every couple seconds to pulse whichever frames are live, even unfocused ones."""
+    """Per-frame liveness for the surface dock, two signals per frame:
+      working — the agent's transcript was written within _FRAME_ACTIVE_WINDOW_S
+      awake   — the agent's tmux session exists (asleep frames wake on message)
+    Cheap: one transcript stat per frame + one cached `tmux ls`, so the dock
+    can poll every couple seconds."""
     now = time.time()
     out: list[dict[str, Any]] = []
     if not FRAMES_ROOT.is_dir():
@@ -250,19 +384,21 @@ async def api_frames_activity() -> dict[str, Any]:
         entries = list(FRAMES_ROOT.iterdir())
     except OSError:
         return {"frames": []}
+    live = _live_tmux_cached()
     for fdir in entries:
         if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
             continue
         if not (fdir / "index.html").is_file():
             continue
         working = False
+        task_id = _frame_task_id(fdir.name, fdir)
         try:
-            tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+            tp = _agent_transcript(fdir, task_id)
             if tp is not None and (now - tp.stat().st_mtime) < _FRAME_ACTIVE_WINDOW_S:
                 working = True
         except OSError:
             pass
-        out.append({"id": fdir.name, "working": working})
+        out.append({"id": fdir.name, "working": working, "awake": task_id in live})
     return {"frames": out}
 
 
@@ -273,38 +409,74 @@ async def api_frames_activity() -> dict[str, Any]:
 # spawner CLI (the agent-spawning provider), located via the installed-plugins
 # manifest. The agent writes its page with the plain Write tool — no MCP.
 
-MINDFRAME_BRIEF = """You are a mindframe — an autonomous agent that works for the operator by \
-composing a single live web page. You own exactly ONE file:
+MINDFRAME_BRIEF = """You are a mindframe — an autonomous agent that builds and evolves ONE small \
+living web app for the operator. You own exactly ONE file:
 
     {index}
 
-THE LOOP
-  1. The operator sends you a message (their first request is below).
-  2. You do the real work it implies — run Bash, read files, query the MCPs and \
-CLIs available to you. Never fabricate; if you can't reach something, say so on the page.
-  3. You use the Write tool to rewrite the ENTIRE file above as one complete, \
-valid, self-contained HTML document that reflects the new state.
-  4. You stop and wait for the next message. The operator's browser reloads \
-automatically when the file changes.
+It is a real app with two loops. The FAST loop is the page itself: its own \
+JavaScript handles instant interaction while you sleep. The SLOW loop is you: \
+you wake when messaged, do real work (Bash, files, the MCPs and CLIs available \
+to you — never fabricate; if you can't reach something, say so on the page), \
+and evolve the page to match the new state. Then you stop and wait.
 
-RULES
-  - ALWAYS write the COMPLETE document — never a fragment, never an append. Inline \
-all CSS. The page is the whole interface; there is no chat transcript, so render \
-what matters now, not a log.
-  - Make it calm and legible: type, weight, colour, and spacing carry meaning. No emoji.
-  - Make every concrete action or suggestion you offer a clickable BUTTON that \
-messages you, not prose asking the operator to reply. Use EXACTLY this pattern \
-(your page is served at /api/frame/<id>/page; swapping /page for /message reaches you):
+EVOLVE, DON'T REPLACE
+  - The file must ALWAYS be one complete, valid HTML document (no fragments). \
+Start your <head> with <link rel="stylesheet" href="/frame.css"> — the \
+operator's design system (calm dark; indigo = action, gold = identity; \
+ready-made .card, .pill, .label, .pending-action, .actions, button styles). \
+Build on it and add only page-specific CSS inline. Prefer the Edit tool for \
+targeted changes — \
+update a number, add a section, append a row. Use a full Write only when the \
+page's structure genuinely needs recomposition. Like code: edit normally, \
+refactor when it drifts.
+  - Put <meta name="mf-patch" content="safe"> in <head> and keep your script \
+idempotent (event delegation on document, init guarded so it can run once). \
+The shell then patches your edits into the live page with no reload, no \
+flicker, no lost state. If you change your <script>, the shell reloads — \
+that's expected. If your script renders DOM from data, listen for the \
+shell's 'mf:patched' window event and re-render on it.
+  - While a long turn is in progress, you may make one early Edit that marks \
+the affected section ("updating…") so the operator sees where you're working.
+
+THREE KINDS OF INTERACTION — choose the cheapest that works:
+  1. INSTANT (no you): plain client-side JS in the page — filtering, sorting, \
+toggling, calculating. Build real app behavior here; you are allowed and \
+encouraged to write substantial JS.
+  2. STATE (no you, remembered): persist operator input to your data plane so \
+you see it next time you wake. From page JS (your page is served at \
+/api/frame/<id>/page; swap /page for /data/<key>):
+      fetch(location.pathname.replace('/page','/data/board'),{{method:'PUT',\
+headers:{{'Content-Type':'application/json'}},body:JSON.stringify(state)}})
+     The same values are plain files in YOUR cwd at data/<key>.json — read \
+them at the start of every turn; the operator may have changed things while \
+you slept.
+  3. WAKE ME (intelligence needed): a button that messages you. Use EXACTLY \
+this pattern (swap /page for /message):
       <button onclick="fetch(location.pathname.replace('/page','/message'),\
 {{method:'POST',headers:{{'Content-Type':'application/json'}},\
 body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
 .then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
-    Style buttons to match the page. The message box remains for free-form asks.
-  - NEVER declare yourself done. End every page with a forward question or a clear \
-next step so the conversation keeps going.
-  - Anything irreversible or outward-facing: draw the pending action on the page — \
-with an explicit approval button — and wait for the operator to approve (button \
-click or message) before doing it.
+     Reserve these for work that needs thinking; never use a slow button where \
+instant JS or state would do. The message box remains for free-form asks.
+
+RULES
+  - Calm and legible: the design system carries the look; you carry the \
+content hierarchy. No emoji. Include <meta name="viewport" \
+content="width=device-width, initial-scale=1"> and keep the page readable on \
+a phone. Draw irreversible-action approvals as a .pending-action card.
+  - The page shows what matters NOW — it is the interface, not a log.
+  - TWO CONCEPTS: if your mission is to BUILD A FUNCTIONAL TOOL the operator \
+will use repeatedly (a board, a tracker, a calculator) rather than to hold a \
+working conversation, set "kind": "app" in your meta.json. The shell then \
+presents your page full-bleed as an app with a maintenance bar, and your role \
+becomes its maintainer — app controls do app things; no conversational \
+flow-buttons in an app's UI.
+  - NEVER declare yourself done. End every page with a forward question or a \
+clear next step.
+  - Anything irreversible or outward-facing: draw the pending action on the \
+page with an explicit approval button and wait for the operator to approve \
+before doing it.
 
 THE OPERATOR'S FIRST REQUEST
 {prompt}
@@ -317,48 +489,49 @@ understand and your first concrete step, and end with a question."""
 # agent resumes ownership instead of composing a "first" page over it. Sent as
 # the `prompt` override on POST /tasks/<id>/start; the operator's actual
 # message follows as a normal channel message right after.
-REVIVAL_BRIEF = """You are a mindframe — an autonomous agent that works for the operator by \
-composing a single live web page. You are RESUMING ownership of an existing \
+REVIVAL_BRIEF = """You are a mindframe — an autonomous agent that builds and evolves ONE small \
+living web app for the operator. You are RESUMING ownership of an existing \
 mindframe whose previous agent session ended (machine reboot or crash). You \
 own exactly ONE file:
 
     {index}
 
 It already holds the current state of your work — READ IT FIRST to recover \
-context. The request that originally created this mindframe was:
+context. Also read any data/<key>.json files in your cwd: that is your data \
+plane, and the operator may have changed state through the page while no \
+agent was alive. The request that originally created this mindframe was:
 
 {prompt}
 
-THE LOOP
-  1. The operator sends you a message.
-  2. You do the real work it implies — run Bash, read files, query the MCPs and \
-CLIs available to you. Never fabricate; if you can't reach something, say so on the page.
-  3. You use the Write tool to rewrite the ENTIRE file above as one complete, \
-valid, self-contained HTML document that reflects the new state.
-  4. You stop and wait for the next message. The operator's browser reloads \
-automatically when the file changes.
+THE MODEL — two loops:
+  - FAST loop: the page's own JavaScript handles instant interaction while \
+you sleep, and persists operator input to the data plane \
+(fetch PUT on location.pathname.replace('/page','/data/<key>') from page JS \
+= data/<key>.json in your cwd).
+  - SLOW loop: you. You wake when messaged, do real work (Bash, files, MCPs, \
+CLIs — never fabricate), and evolve the page to match the new state. Then \
+you stop and wait.
+
+EVOLVE, DON'T REPLACE
+  - The file must ALWAYS be one complete, valid HTML document. Keep (or add) \
+<link rel="stylesheet" href="/frame.css"> first in <head> — the operator's \
+design system — and only page-specific CSS inline. Prefer the Edit tool for \
+targeted changes; full Write only when the structure needs recomposition.
+  - Keep <meta name="mf-patch" content="safe"> in <head> with idempotent, \
+event-delegated script so the shell can patch updates in without reloading.
+  - Buttons that need your intelligence message you (swap /page for /message \
+in your page's own URL); anything instant or stateful belongs in page JS + \
+the data plane instead.
 
 RULES
-  - ALWAYS write the COMPLETE document — never a fragment, never an append. Inline \
-all CSS. The page is the whole interface; there is no chat transcript, so render \
-what matters now, not a log.
-  - Make it calm and legible: type, weight, colour, and spacing carry meaning. No emoji.
-  - Make every concrete action or suggestion you offer a clickable BUTTON that \
-messages you, not prose asking the operator to reply. Use EXACTLY this pattern \
-(your page is served at /api/frame/<id>/page; swapping /page for /message reaches you):
-      <button onclick="fetch(location.pathname.replace('/page','/message'),\
-{{method:'POST',headers:{{'Content-Type':'application/json'}},\
-body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
-.then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
-    Style buttons to match the page. The message box remains for free-form asks.
-  - NEVER declare yourself done. End every page with a forward question or a clear \
-next step so the conversation keeps going.
-  - Anything irreversible or outward-facing: draw the pending action on the page — \
-with an explicit approval button — and wait for the operator to approve (button \
-click or message) before doing it.
+  - Calm and legible, no emoji, viewport meta, readable on a phone.
+  - NEVER declare yourself done; end with a forward question or next step.
+  - Irreversible or outward-facing actions: draw a pending action with an \
+approval button and wait for operator approval.
 
-Do NOT rewrite the page yet — the operator's message arrives immediately after \
-this brief. Read the current page, act on that message, then rewrite."""
+Do NOT rewrite the page yet — the operator's message arrives immediately \
+after this brief. Read the current page and data plane, act on that message, \
+then evolve the page."""
 
 
 def _mint_frame_id(n: int = 10) -> str:
@@ -366,13 +539,11 @@ def _mint_frame_id(n: int = 10) -> str:
     return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(n))
 
 
-async def _spawn_surface_frame(mid: str, title: str, prompt: str,
-                              spawned_by: dict[str, Any]) -> dict[str, Any]:
-    """Mint frames/<mid>, drop the 'composing…' placeholder + meta.json, and
-    spawn the owning agent via the taskpilot daemon. Shared by the random-id
-    create path and the singleton manager. Caller has already chosen `mid`,
-    confirmed it is free, and verified the daemon is reachable. mkdir raises
-    FileExistsError if the dir appeared since (caller decides what that means)."""
+def _mint_frame(mid: str, title: str, prompt: str,
+                spawned_by: dict[str, Any]) -> Path:
+    """Mint frames/<mid> on disk: placeholder page + meta.json. Instant — no
+    daemon calls. mkdir raises FileExistsError if the dir appeared since the
+    caller checked (caller decides what a lost race means)."""
     fdir = FRAMES_ROOT / mid
     fdir.mkdir(parents=True, mode=0o755)   # no exist_ok: surface a lost race to the caller
     index = fdir / "index.html"
@@ -381,19 +552,27 @@ async def _spawn_surface_frame(mid: str, title: str, prompt: str,
         "<!doctype html><meta charset=utf-8><title>composing…</title>"
         "<body style='margin:0;height:100vh;display:grid;place-items:center;"
         "font:16px system-ui;color:#888;background:#0d0d0f'>"
-        f"<div style='text-align:center'>Composing this mindframe…<br>"
-        f"<small style='color:#555'>{safe_title}</small></div>",
+        "<style>@keyframes b{0%,100%{opacity:.25}50%{opacity:1}}</style>"
+        "<div style='text-align:center'>"
+        "<div style='width:10px;height:10px;border-radius:50%;background:#5b6cff;"
+        "margin:0 auto 14px;animation:b 1.1s ease-in-out infinite'></div>"
+        f"Starting this mindframe&hellip;<br><small style='color:#555'>{safe_title}</small><br>"
+        "<small style='color:#555'>the agent boots (~20s), then composes this page — "
+        "watch it think in the strip below</small></div>",
         "utf-8",
     )
     (fdir / "meta.json").write_text(json.dumps({
         "id": mid, "title": title, "task_id": mid, "status": "active",
         "prompt": prompt, "spawned_by": spawned_by,
     }, indent=2), "utf-8")
+    return fdir
 
-    brief = MINDFRAME_BRIEF.format(index=str(index), prompt=prompt.strip())
-    # Define the task, then ensure it's running. Both idempotent on the
-    # taskpilot side; start blocks ~16s while tmux launches, so allow
-    # generous headroom.
+
+async def _define_and_start(mid: str, fdir: Path, prompt: str,
+                            start_prompt: str | None = None) -> tuple[bool, str]:
+    """PUT the task definition + ensure it's running. Returns (ok, error).
+    Blocks ~16s on a real spawn — callers run it in the background."""
+    brief = MINDFRAME_BRIEF.format(index=str(fdir / "index.html"), prompt=prompt.strip())
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.put(
@@ -401,19 +580,29 @@ async def _spawn_surface_frame(mid: str, title: str, prompt: str,
                 json={"name": mid, "description": brief, "cwd": str(fdir)},
             )
             if r.status_code < 300:
-                r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{mid}/start", json={})
+                body = {"prompt": start_prompt} if start_prompt is not None else {}
+                r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{mid}/start", json=body)
     except httpx.HTTPError as e:
-        return {"id": mid, "url": f"/m/{mid}", "spawn": "error", "error": f"spawn failed: {e}"}
+        return False, f"spawn failed: {e}"
     if r.status_code >= 300:
-        return {"id": mid, "url": f"/m/{mid}", "spawn": "error",
-                "spawn_result": {"ok": False, "error": f"daemon {r.status_code}: {r.text[:400]}"}}
-    try:
-        spawn_result = r.json()
-    except ValueError:
-        spawn_result = {"ok": False, "error": (r.text or "no spawner output")[:400]}
-    return {"id": mid, "url": f"/m/{mid}",
-            "spawn": "ok" if spawn_result.get("ok") else "error",
-            "spawn_result": spawn_result}
+        return False, f"daemon {r.status_code}: {r.text[:400]}"
+    return True, ""
+
+
+async def _spawn_frame_bg(mid: str, fdir: Path, prompt: str) -> None:
+    """Background half of create: define + start the agent. A failure is
+    recorded in meta.json (the surface shows it; the next operator message
+    self-heals by re-running define+start through the message path)."""
+    ok, err = await _define_and_start(mid, fdir, prompt)
+    if not ok:
+        log(f"background spawn failed for {mid}: {err}")
+        try:
+            meta = _read_meta(fdir)
+            meta["status"] = "spawn_failed"
+            meta["spawn_error"] = err
+            (fdir / "meta.json").write_text(json.dumps(meta, indent=2), "utf-8")
+        except OSError:
+            pass
 
 
 async def _daemon_reachable() -> bool:
@@ -432,15 +621,15 @@ class CreateMindframe(BaseModel):
 
 
 @app.post("/api/frames/create")
-async def create_mindframe(body: CreateMindframe) -> Response:
-    """Create a surface mindframe: mint a frame dir, drop a placeholder page,
-    then spawn a persistent agent (cwd = frame dir) that owns index.html via the
-    taskpilot daemon's create_and_spawn endpoint. The daemon slugifies the name
-    into the task_id; mindframe ids are already [0-9a-z]+, so task_id == mid and
-    later /api/frame/<id>/message routes to the same agent.
-    Returns the new id + url so the SPA can open /m/<id> immediately."""
-    # Probe the daemon before minting a frame dir, so a down spawner doesn't
-    # leave an orphan frame behind (mirrors the old pre-mint availability check).
+async def create_mindframe(body: CreateMindframe, background_tasks: BackgroundTasks) -> Response:
+    """Create a surface mindframe INSTANTLY: mint the frame dir + placeholder
+    and return the id at once; the agent spawn (define + start, ~16s) runs in
+    the background. The SPA navigates to /m/<id> immediately and the surface
+    narrates the boot. Task_id == mid, so /api/frame/<id>/message routes to
+    the same agent — and if the background spawn failed, that message path
+    re-runs define+start, so a frame can never get permanently stuck."""
+    # Probe the daemon before minting, so a down spawner doesn't mint frames
+    # whose agents can never start. Fast (~ms) when the daemon is up.
     if not await _daemon_reachable():
         return JSONResponse(
             {"error": "taskpilot daemon (agent-spawning) not reachable — can't spawn a mindframe agent."},
@@ -455,10 +644,11 @@ async def create_mindframe(body: CreateMindframe) -> Response:
 
     title = (body.title or body.prompt.strip().split("\n", 1)[0])[:120]
     try:
-        result = await _spawn_surface_frame(mid, title, body.prompt, {"kind": "dashboard"})
+        fdir = _mint_frame(mid, title, body.prompt, {"kind": "dashboard"})
     except OSError as e:
         return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
-    return JSONResponse(result)
+    background_tasks.add_task(_spawn_frame_bg, mid, fdir, body.prompt)
+    return JSONResponse({"id": mid, "url": f"/m/{mid}", "spawn": "starting"})
 
 
 # --------------------------- mindframe surface (viewing) ---------------------------
@@ -487,12 +677,42 @@ def _frame_task_id(mid: str, fdir: Path) -> str:
     return _read_meta(fdir).get("task_id") or mid
 
 
+_NOT_FOUND_PAGE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mindframe — not found</title>
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  body {{ margin:0; min-height:100vh; display:grid; place-items:center;
+         background: radial-gradient(ellipse at 50% 38%, #131318 0%, var(--color-bg) 62%);
+         font-family: var(--font-ui); color: var(--color-text-soft); }}
+  .box {{ text-align:center; padding:2rem; }}
+  .label {{ font-family: var(--font-mono); font-size:.62rem; letter-spacing:.16em;
+           text-transform:uppercase; color: var(--color-text-faint); }}
+  h1 {{ font-family: var(--font-heading); color: var(--color-text);
+       font-size:1.4rem; margin:.5rem 0 .4rem; }}
+  p {{ color: var(--color-text-dim); font-size:14px; margin:0 0 1.6rem; line-height:1.6; }}
+  .id {{ font-family: var(--font-mono); color: var(--color-gold); }}
+  a.btn {{ display:inline-block; padding:.6rem 1.2rem; border-radius:8px;
+          background: var(--color-accent); color:#fff; text-decoration:none; font-size:14px; }}
+</style></head><body>
+<div class="box">
+  <div class="label">mindframe</div>
+  <h1>This mindframe doesn't exist</h1>
+  <p><span class="id">{mid}</span> — it may have been deleted, or the link is stale.</p>
+  <a class="btn" href="/">back to home</a>
+</div></body></html>"""
+
+
 @app.get("/m/{mid}")
 def surface_shell(mid: str) -> Response:
     """The mindframe surface shell — iframe over the agent's page + message rail
-    + cognition log. The page's JS derives the id from the URL."""
+    + cognition log. The page's JS derives the id from the URL. A missing or
+    deleted frame gets a real page with a way out, never raw JSON."""
     if _frame_dir(mid) is None:
-        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+        safe = mid.replace("&", "&amp;").replace("<", "&lt;")[:64]
+        return Response(_NOT_FOUND_PAGE.format(mid=safe), media_type="text/html",
+                        status_code=404, headers={"Cache-Control": "no-store"})
     shell = WEB_ROOT / "surface.html"
     if not shell.is_file():
         return JSONResponse({"error": "surface shell missing"}, status_code=500)
@@ -547,54 +767,111 @@ def _daemon_error_code(r: httpx.Response) -> str:
         return ""
 
 
-@app.post("/api/frame/{mid}/message")
-async def frame_message(mid: str, body: FrameMessage) -> Response:
-    """Deliver a user message to the mindframe's agent via the taskpilot
-    daemon — reviving the agent first if it died.
+def _revival_brief(fdir: Path) -> str:
+    """The resume-ownership brief for this frame, app-flavored when the frame
+    is an app (the successor maintains; it doesn't converse)."""
+    meta = _read_meta(fdir)
+    brief = REVIVAL_BRIEF.format(
+        index=str(fdir / "index.html"),
+        prompt=(meta.get("prompt") or "(unrecorded)").strip(),
+    )
+    if meta.get("kind") == "app":
+        brief += APP_REVIVAL_NOTE
+    return brief
 
-    A frame outlives its agent process (reboots, crashes, context
-    exhaustion); the page on disk is the durable state. When taskpilot says
-    `agent_not_running` (409), we respawn the task with a revival brief —
-    "resume ownership of the existing page" — and deliver the message to the
-    fresh agent. The response carries `revived: true` so the surface can say
-    what happened."""
-    fdir = _frame_dir(mid)
-    if fdir is None:
-        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+
+async def _deliver_to_frame(mid: str, fdir: Path, text: str,
+                            from_session: str = "mindframe-surface") -> tuple[int, dict]:
+    """Deliver text to the frame's agent, reviving or even re-defining it as
+    needed. Returns (http_status, body) ready to wrap in a JSONResponse.
+    Shared by the message endpoint and anything else that must reach the
+    agent (e.g. the app-promotion note)."""
     task_id = _frame_task_id(mid, fdir)
-    payload = {"text": body.text, "from_session": "mindframe-surface"}
+    payload = {"text": text, "from_session": from_session}
     msg_url = f"{TASKPILOT_DAEMON}/tasks/{task_id}/message"
-
     try:
         # start blocks ~16s on a revival; size the client timeout for that.
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(msg_url, json=payload, timeout=20)
             revived = False
             if r.status_code == 409 and _daemon_error_code(r) == "agent_not_running":
-                brief = REVIVAL_BRIEF.format(
-                    index=str(fdir / "index.html"),
-                    prompt=(_read_meta(fdir).get("prompt") or "(unrecorded)").strip(),
-                )
                 rs = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/start",
-                                       json={"prompt": brief})
+                                       json={"prompt": _revival_brief(fdir)})
                 if rs.status_code >= 300:
-                    return JSONResponse(
-                        {"ok": False,
-                         "error": f"agent was dead and revival failed: daemon {rs.status_code}: {rs.text[:200]}"},
-                        status_code=502)
+                    return 502, {"ok": False,
+                                 "error": f"agent was dead and revival failed: daemon {rs.status_code}: {rs.text[:200]}"}
+                revived = True
+                r = await client.post(msg_url, json=payload, timeout=20)
+            elif r.status_code == 404:
+                # The task row doesn't exist at all — the background spawn
+                # after create failed (or the taskpilot DB was reset). Define
+                # + start from meta.json, then deliver. A frame that still
+                # shows the boot placeholder gets the normal first-compose
+                # flow; one with a real page gets the revival brief.
+                meta = _read_meta(fdir)
+                prompt = (meta.get("prompt") or "(unrecorded)").strip()
+                start_prompt = None
+                if _page_title(fdir / "index.html") is not None:
+                    start_prompt = _revival_brief(fdir)
+                ok, err = await _define_and_start(task_id, fdir, prompt, start_prompt)
+                if not ok:
+                    return 502, {"ok": False,
+                                 "error": f"agent was never spawned and recovery failed: {err}"}
                 revived = True
                 r = await client.post(msg_url, json=payload, timeout=20)
             if r.status_code >= 300:
                 code = _daemon_error_code(r)
-                retryable = code == "channel_not_ready"
-                return JSONResponse(
-                    {"ok": False, "revived": revived, "retryable": retryable,
-                     "error": f"daemon {r.status_code}: {r.text[:200]}"},
-                    status_code=502)
+                return 502, {"ok": False, "revived": revived,
+                             "retryable": code == "channel_not_ready",
+                             "error": f"daemon {r.status_code}: {r.text[:200]}"}
     except httpx.HTTPError as e:
-        return JSONResponse({"ok": False, "error": f"taskpilot daemon unreachable: {e}"},
-                            status_code=502)
-    return JSONResponse({"ok": True, "revived": revived})
+        return 502, {"ok": False, "error": f"taskpilot daemon unreachable: {e}"}
+    return 200, {"ok": True, "revived": revived}
+
+
+@app.post("/api/frame/{mid}/message")
+async def frame_message(mid: str, body: FrameMessage) -> Response:
+    """Deliver a user message to the mindframe's agent via the taskpilot
+    daemon — reviving (or re-defining) the agent first if needed. The
+    response carries `revived: true` when that happened."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    status, payload = await _deliver_to_frame(mid, fdir, body.text)
+    return JSONResponse(payload, status_code=status)
+
+
+class FrameKind(BaseModel):
+    kind: str
+
+
+@app.post("/api/frame/{mid}/kind")
+async def set_frame_kind(mid: str, body: FrameKind) -> Response:
+    """Switch a frame between the two operator concepts: a conversation
+    ('created') and an app ('app'). Delivered and watch frames keep their
+    kinds. Promoting to app also tells the agent to restructure the page to
+    app-grade (the maintenance contract)."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if body.kind not in ("created", "app"):
+        return JSONResponse({"error": "kind must be 'created' or 'app'"}, status_code=422)
+    meta = _read_meta(fdir)
+    if meta.get("kind") in ("delivered", "watch"):
+        return JSONResponse({"error": f"a {meta['kind']} frame can't change kind"}, status_code=409)
+    was = meta.get("kind") or "created"
+    meta["kind"] = body.kind
+    try:
+        _write_meta(fdir, meta)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    delivered = False
+    if body.kind == "app" and was != "app":
+        status, _payload = await _deliver_to_frame(mid, fdir, APP_PROMOTION_NOTE,
+                                                   from_session="mindframe-system")
+        delivered = status == 200
+    return JSONResponse({"ok": True, "id": mid, "kind": body.kind,
+                         "agent_notified": delivered})
 
 
 @app.delete("/api/frame/{mid}")
@@ -628,6 +905,231 @@ async def delete_frame(mid: str) -> Response:
     return JSONResponse({"ok": True, "id": mid, "killed": killed})
 
 
+# --------------------------- frame data plane ---------------------------
+#
+# Shared state between a frame's PAGE (fast loop: client JS, instant) and its
+# AGENT (slow loop: thinking, wakes on messages). Keys are JSON files at
+# <framedir>/data/<key>.json — the page reads/writes them over HTTP
+# (relative to its own URL: /page → /data/<key>); the agent reads/writes the
+# same files directly in its cwd and sees operator input on its next turn.
+# Deliberately tiny — a per-frame KV store, not a backend.
+
+DATA_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+DATA_MAX_BYTES = 256 * 1024
+DATA_MAX_KEYS = 200
+
+
+def _data_dir(fdir: Path) -> Path:
+    return fdir / "data"
+
+
+@app.get("/api/frame/{mid}/data")
+def frame_data_list(mid: str) -> Response:
+    """List this frame's data keys with sizes + mtimes."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    out = []
+    ddir = _data_dir(fdir)
+    if ddir.is_dir():
+        for f in sorted(ddir.glob("*.json")):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            out.append({"key": f.stem, "size": st.st_size,
+                        "modified": int(st.st_mtime * 1000)})
+    return JSONResponse({"keys": out}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/frame/{mid}/data/{key}")
+def frame_data_get(mid: str, key: str) -> Response:
+    """Read one data key (the JSON value, verbatim)."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not DATA_KEY_RE.match(key):
+        return JSONResponse({"error": "bad key"}, status_code=422)
+    f = _data_dir(fdir) / f"{key}.json"
+    if not f.is_file():
+        return JSONResponse({"error": "no such key"}, status_code=404)
+    try:
+        body = f.read_bytes()
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return Response(body, media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.put("/api/frame/{mid}/data/{key}")
+async def frame_data_put(mid: str, key: str, request: Request) -> Response:
+    """Write one data key. Body must be JSON; capped at DATA_MAX_BYTES.
+    Atomic (tmp + rename) so the agent never reads a torn write."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not DATA_KEY_RE.match(key):
+        return JSONResponse({"error": "bad key"}, status_code=422)
+    body = await request.body()
+    if len(body) > DATA_MAX_BYTES:
+        return JSONResponse({"error": f"value too large (max {DATA_MAX_BYTES} bytes)"},
+                            status_code=413)
+    try:
+        json.loads(body)
+    except ValueError:
+        return JSONResponse({"error": "body must be JSON"}, status_code=422)
+    ddir = _data_dir(fdir)
+    ddir.mkdir(exist_ok=True)
+    if not (ddir / f"{key}.json").exists() and len(list(ddir.glob("*.json"))) >= DATA_MAX_KEYS:
+        return JSONResponse({"error": f"too many keys (max {DATA_MAX_KEYS})"}, status_code=409)
+    tmp = ddir / f".{key}.json.tmp"
+    try:
+        tmp.write_bytes(body)
+        tmp.replace(ddir / f"{key}.json")
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "key": key, "size": len(body)})
+
+
+# --------------------------- sharing (frozen snapshots) ---------------------------
+#
+# Share = an immutable, self-contained snapshot of a frame's page at an
+# unguessable slug. The stylesheets are inlined, the data plane is baked in
+# (a fetch shim answers /data/<key> GETs from the embedded values), and
+# anything that would reach the agent (/message, data PUTs) is politely
+# blocked — a shared page never wakes or writes anything. Two doors:
+#   GET  /api/frame/<id>/export — download the snapshot as an .html file
+#                                 (host it anywhere, mail it, slack it)
+#   POST /api/frame/<id>/share  — keep a copy served at /share/<slug>
+#                                 for same-machine / tailnet links
+
+SHARES_DIR = Path(os.environ.get("MINDFRAME_SHARES_DIR", str(Path.home() / ".mindframe" / "shares")))
+
+_SHARE_SHIM = """<script>/* mindframe share shim — this is a frozen snapshot */
+(function(){
+  var D = __MF_DATA__;
+  var of = window.fetch ? window.fetch.bind(window) : null;
+  window.fetch = function(u, o){
+    var s = String(u);
+    var m = s.match(/\\/data\\/([a-z0-9_-]+)$/);
+    if (m) {
+      if (!o || !o.method || o.method === 'GET') {
+        var v = D[m[1]];
+        return Promise.resolve(new Response(JSON.stringify(v === undefined ? null : v),
+          { status: v === undefined ? 404 : 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{"ok":false,"shared":true}', { status: 403 }));
+    }
+    if (s.indexOf('/message') !== -1 || s.indexOf('/api/') !== -1) {
+      try { var b = document.getElementById('mf-share-pill');
+            if (b) { b.textContent = 'snapshot — buttons are disabled'; setTimeout(function(){ b.textContent = 'shared from mindframe'; }, 2200); } } catch(e){}
+      return Promise.resolve(new Response('{"ok":false,"shared":true}', { status: 403 }));
+    }
+    return of ? of(u, o) : Promise.reject(new Error('offline snapshot'));
+  };
+})();</script>"""
+
+_SHARE_PILL = """<div id="mf-share-pill" style="position:fixed;bottom:12px;right:14px;z-index:9999;\
+font:11.5px ui-monospace,monospace;color:#8a8a93;background:rgba(13,13,15,.88);\
+border:1px solid #26262c;border-radius:999px;padding:.35rem .8rem;pointer-events:none">\
+shared from mindframe</div>"""
+
+
+def _inline_share_css(html: str) -> str:
+    """Replace /frame.css and /tokens.css links with inline <style> so the
+    snapshot is self-contained anywhere."""
+    try:
+        tokens = (WEB_ROOT / "tokens.css").read_text("utf-8")
+        framec = (WEB_ROOT / "frame.css").read_text("utf-8").replace('@import url("/tokens.css");', "")
+    except OSError:
+        return html
+    html = re.sub(r'<link[^>]*href="/frame\.css"[^>]*>',
+                  "<style>" + tokens + "\n" + framec + "</style>", html, count=1)
+    html = re.sub(r'<link[^>]*href="/(frame|tokens)\.css"[^>]*>', "", html)
+    return html
+
+
+def _build_snapshot(fdir: Path) -> str:
+    """The frozen, self-contained share HTML for a frame's current page."""
+    html = (fdir / "index.html").read_text("utf-8", errors="replace")
+    html = _inline_share_css(html)
+    data: dict[str, Any] = {}
+    ddir = fdir / "data"
+    if ddir.is_dir():
+        for f in ddir.glob("*.json"):
+            try:
+                data[f.stem] = json.loads(f.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+    payload = json.dumps(data).replace("<", "\\u003c")
+    shim = _SHARE_SHIM.replace("__MF_DATA__", payload)
+    if "<head>" in html:
+        html = html.replace("<head>", "<head>" + shim, 1)
+    else:
+        html = shim + html
+    if "</body>" in html:
+        html = html.replace("</body>", _SHARE_PILL + "</body>", 1)
+    else:
+        html += _SHARE_PILL
+    return html
+
+
+@app.post("/api/frame/{mid}/share")
+def share_frame(mid: str) -> Response:
+    """Freeze this frame's page into an immutable snapshot at a new
+    unguessable slug. Returns the local URL and, when publishing is
+    configured, the public one."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not (fdir / "index.html").is_file():
+        return JSONResponse({"error": "nothing to share yet"}, status_code=409)
+    try:
+        snapshot = _build_snapshot(fdir)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    slug = "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(14))
+    SHARES_DIR.mkdir(parents=True, exist_ok=True)
+    out = SHARES_DIR / f"{slug}.html"
+    try:
+        out.write_text(snapshot, "utf-8")
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "slug": slug, "url": f"/share/{slug}"})
+
+
+@app.get("/api/frame/{mid}/export")
+def export_frame(mid: str) -> Response:
+    """Download this frame's page as one self-contained .html file — the
+    simple export. Same snapshot as sharing, delivered as an attachment."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not (fdir / "index.html").is_file():
+        return JSONResponse({"error": "nothing to export yet"}, status_code=409)
+    try:
+        snapshot = _build_snapshot(fdir)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    title = _page_title(fdir / "index.html") or _read_meta(fdir).get("title") or mid
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-")[:60] or mid
+    return Response(snapshot, media_type="text/html", headers={
+        "Content-Disposition": f'attachment; filename="{fname}.html"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.get("/share/{slug}")
+def serve_share(slug: str) -> Response:
+    if not re.match(r"^[a-z0-9]{6,32}$", slug):
+        return PlainTextResponse("not found", status_code=404)
+    f = SHARES_DIR / f"{slug}.html"
+    if not f.is_file():
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(f, media_type="text/html",
+                        headers={"Cache-Control": "no-store"})
+
+
 # --- cognition log: tail the agent's Claude transcript (ported from surface/) ---
 
 def _pretty_model(name: str) -> str:
@@ -639,16 +1141,19 @@ def _pretty_model(name: str) -> str:
 
 
 def _agent_transcript(fdir: Path, task_id: str) -> Path | None:
-    """Newest Claude session JSONL for this mindframe's agent. Handles both spawn
-    styles: a normal taskpilot spawn runs with the real $HOME and cwd = the frame
-    dir, so Claude stores the transcript at ~/.claude/projects/<encoded-cwd>/
-    (each '/' and '.' becomes '-'); an isolated spawn (e.g. setup) keeps it under
-    ~/.taskpilot/<task_id>/.claude/projects/<proj>/."""
+    """Newest Claude session JSONL for this mindframe's agent. Handles three
+    spawn styles: a normal taskpilot spawn runs with the real $HOME and cwd =
+    the frame dir, so Claude stores the transcript at
+    ~/.claude/projects/<encoded-cwd>/ (each '/' and '.' becomes '-'); an
+    ephemeral *deliverer* (an event agent that drops this frame as its
+    deliverable) runs with cwd = its taskpilot task dir; an isolated spawn
+    (e.g. setup) keeps it under ~/.taskpilot/<task_id>/.claude/projects/."""
     files: list[Path] = []
-    enc = re.sub(r"[/.]", "-", str(fdir.resolve()))
-    real_proj = Path.home() / ".claude" / "projects" / enc
-    if real_proj.is_dir():
-        files.extend(real_proj.glob("*.jsonl"))
+    for cwd in (fdir.resolve(), TASKPILOT_HOME / task_id):
+        enc = re.sub(r"[/.]", "-", str(cwd))
+        proj = Path.home() / ".claude" / "projects" / enc
+        if proj.is_dir():
+            files.extend(proj.glob("*.jsonl"))
     iso_proj = TASKPILOT_HOME / task_id / ".claude" / "projects"
     if iso_proj.is_dir():
         files.extend(iso_proj.glob("*/*.jsonl"))
@@ -1312,7 +1817,7 @@ def _discover_connections() -> dict:
         if m["id"].lower() in seen:
             continue
         seen.add(m["id"].lower())
-        conns.append({"id": m["id"], "kind": "mcp", "name": m["name"]})
+        conns.append({"id": m["id"], "kind": "mcp", "name": m["name"], "state": m["state"]})
 
     # Connector skills — any SKILL.md with a `connection:` fingerprint. Listed
     # whether or not their tool is installed/authed; that's the deferred status.
@@ -1326,6 +1831,7 @@ def _discover_connections() -> dict:
             "id": sid,
             "kind": str(fp.get("kind") or "skill"),
             "name": fp.get("label") or _CONN_DISPLAY.get(sid, sid.replace("-", " ").title()),
+            "state": "unprobed",
         })
 
     conns.sort(key=lambda c: (c["kind"] != "cli", c["name"]))
@@ -1514,6 +2020,369 @@ def _live_agents(limit: int = 40) -> list[dict[str, Any]]:
     # Live first, then by recency (already DESC), capped.
     out.sort(key=lambda a: not a["live"])
     return out[:limit]
+
+
+# --------------------------- watches ---------------------------
+#
+# A WATCH is the operator-facing bundle of: a dispatcher route (when), a
+# recipe (what), and the ephemeral runs it spawns (results, delivered as
+# frames). The operator never edits recipe.yaml or channels.yaml directly —
+# each watch has ONE singleton frame (id: watch-<recipe>) whose agent manages
+# it: shows trigger + behavior + recent runs, and edits the config on
+# instruction, drawing a pending action and waiting for approval.
+
+WATCH_BRIEF = """You are the manager of ONE watch — an automation the operator owns. The watch \
+is '{rid}': recipe at ~/.dispatcher/recipes/{rid}/ (recipe.yaml + brief.json) \
+plus any routes targeting spawn:{rid} in ~/.dispatcher/channels.yaml. You own \
+exactly ONE file, your page:
+
+    {index}
+
+YOUR JOB
+  1. READ the recipe, its brief, and the channels.yaml routes. Also look at \
+recent runs (task rows named like {rid}-* via `curl -s http://127.0.0.1:8912/tasks` \
+or ~/.taskpilot/) and recent deliverables (frames under ~/.mindframe/frames/ \
+whose meta.json origin.watch == "{rid}").
+  2. COMPOSE your page as the watch's home: what triggers it (in plain words), \
+what it does, whether it is currently wired (route present) or unwired, its \
+recent runs and deliverables (link deliverable frames as /m/<id>), and any \
+problems you can see.
+  3. The operator CHANGES the watch by talking to you. When asked to change \
+behavior (different trigger, different brief, pause, resume): draft the exact \
+config edit, show it on the page as a PENDING ACTION with the diff and an \
+explicit approval button, and only apply it to the files after the operator \
+approves (button click or message). Pausing = removing/commenting its route \
+in channels.yaml; the recipe stays.
+
+PAGE RULES
+  - One complete HTML document; <link rel="stylesheet" href="/frame.css"> \
+first in <head> (the design system — use .card/.pill/.label/.pending-action), \
+viewport meta, <meta name="mf-patch" content="safe">; no emoji. Prefer Edit \
+for updates; full Write only for recomposition.
+  - Buttons message you (swap /page for /message on your own URL):
+      <button onclick="fetch(location.pathname.replace('/page','/message'),\
+{{method:'POST',headers:{{'Content-Type':'application/json'}},\
+body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
+.then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
+  - NEVER declare yourself done; end with the watch's current state and a \
+forward question.
+
+Compose your watch home page now."""
+
+
+def _paused_triggers() -> dict[str, list[str]]:
+    """Recipe name -> (source/event_type) trigger strings parked under the
+    channels.yaml `paused_routes:` key. The dispatcher reads only `routes:`,
+    so a parked route is inert — that's what pausing IS."""
+    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    out: dict[str, list[str]] = {}
+    for r in (chan.get("paused_routes") or []):
+        if isinstance(r, dict):
+            t = _split_target(r.get("target", ""))
+            if t["kind"] == "spawn":
+                out.setdefault(t["name"], []).append(
+                    f"{r.get('source', '?')}/{r.get('event_type', '*')}")
+    return out
+
+
+def _watch_runs(rid: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Recent taskpilot runs spawned by this watch (task ids are
+    '<recipe>-<event id>' by recipe convention)."""
+    if not TASKPILOT_DB.is_file():
+        return []
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+        rows = con.execute(
+            "SELECT task_id, status, updated_at FROM tasks WHERE task_id LIKE ? "
+            "ORDER BY updated_at DESC LIMIT ?", (f"{rid}-%", limit)).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    return [{"task_id": r[0], "status": r[1], "updated_at": r[2]} for r in rows]
+
+
+def _watch_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
+    """This watch's recent delivered frames (newest first, archived included
+    so history survives the inbox)."""
+    out = []
+    if not FRAMES_ROOT.is_dir():
+        return out
+    for fdir in FRAMES_ROOT.iterdir():
+        if not fdir.is_dir() or not (fdir / "index.html").is_file():
+            continue
+        meta = _read_meta(fdir)
+        origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
+        if meta.get("kind") == "delivered" and origin.get("watch") == rid:
+            try:
+                mt = int((fdir / "index.html").stat().st_mtime * 1000)
+            except OSError:
+                mt = 0
+            out.append({"id": fdir.name,
+                        "title": _page_title(fdir / "index.html") or meta.get("title") or fdir.name,
+                        "archived": bool(meta.get("archived")), "modified": mt})
+    out.sort(key=lambda d: d["modified"], reverse=True)
+    return out[:limit]
+
+
+@app.get("/api/watches")
+def list_watches() -> Response:
+    """Watches = recipes joined with routes (active + paused), recent runs,
+    recent deliveries, and the singleton manager frame. The operator-facing
+    automation list — everything a management panel needs in one call."""
+    defs = _agent_definitions()
+    paused = _paused_triggers()
+    out = []
+    for d in defs:
+        wid = f"watch-{d['id']}"[:64]
+        out.append({
+            "id": d["id"],
+            "name": d["name"],
+            "triggered_by": d["triggered_by"],
+            "paused_triggers": paused.get(d["id"], []),
+            "wired": bool(d["triggered_by"]),
+            "paused": not d["triggered_by"] and bool(paused.get(d["id"])),
+            "frame_id": wid if (FRAMES_ROOT / wid / "index.html").is_file() else None,
+            "runs": _watch_runs(d["id"]),
+            "deliveries": _watch_deliveries(d["id"]),
+        })
+    return JSONResponse({"watches": out})
+
+
+def _move_watch_routes(rid: str, pause: bool) -> Response:
+    """Move this watch's routes between `routes:` (live) and `paused_routes:`
+    (inert) in channels.yaml. The file is rewritten via YAML (comments are
+    lost — a one-time .bak preserves the original); a backup is also taken
+    on every change to .bak-last."""
+    try:
+        import yaml
+    except ImportError:
+        return JSONResponse({"error": "PyYAML unavailable"}, status_code=500)
+    chan_path = DISPATCHER_HOME / "channels.yaml"
+    if not chan_path.is_file():
+        return JSONResponse({"error": "no channels.yaml"}, status_code=404)
+    data = _load_yaml(chan_path) or {}
+    src_key, dst_key = ("routes", "paused_routes") if pause else ("paused_routes", "routes")
+    src = [r for r in (data.get(src_key) or []) if isinstance(r, dict)]
+    dst = [r for r in (data.get(dst_key) or []) if isinstance(r, dict)]
+    moving = [r for r in src if _split_target(r.get("target", "")) == {"kind": "spawn", "name": rid}]
+    if not moving:
+        return JSONResponse({"error": f"no {'active' if pause else 'paused'} routes for '{rid}'"},
+                            status_code=409)
+    keep = [r for r in src if r not in moving]
+    data[src_key] = keep
+    data[dst_key] = dst + moving
+    try:
+        original = chan_path.read_text("utf-8")
+        once = chan_path.with_suffix(".yaml.bak-original")
+        if not once.exists():
+            once.write_text(original, "utf-8")
+        chan_path.with_suffix(".yaml.bak-last").write_text(original, "utf-8")
+        chan_path.write_text(yaml.safe_dump(data, sort_keys=False), "utf-8")
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "id": rid, "paused": pause, "moved": len(moving)})
+
+
+@app.post("/api/watches/{rid}/pause")
+def pause_watch(rid: str) -> Response:
+    """Park this watch's routes — the dispatcher stops firing it. Reversible."""
+    return _move_watch_routes(rid, pause=True)
+
+
+@app.post("/api/watches/{rid}/resume")
+def resume_watch(rid: str) -> Response:
+    return _move_watch_routes(rid, pause=False)
+
+
+@app.post("/api/watches/{rid}/open")
+async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
+    """Open (create-if-missing) the singleton frame that manages this watch.
+    Instant, like create: mint + return; the agent spawns in the background.
+    Re-opening an existing watch frame just returns its URL — no new agent."""
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", rid):
+        return JSONResponse({"error": "bad watch id"}, status_code=422)
+    if not (DISPATCHER_HOME / "recipes" / rid / "recipe.yaml").is_file():
+        return JSONResponse({"error": f"no recipe '{rid}'"}, status_code=404)
+    wid = f"watch-{rid}"[:64]
+    fdir = FRAMES_ROOT / wid
+    if (fdir / "index.html").is_file():
+        return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
+    if not await _daemon_reachable():
+        return JSONResponse({"error": "taskpilot daemon not reachable"}, status_code=503)
+    prompt = WATCH_BRIEF.format(rid=rid, index=str(fdir / "index.html"))
+    try:
+        fdir = _mint_frame(wid, f"Watch: {rid}", prompt, {"kind": "watch-open"})
+    except FileExistsError:
+        return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
+    except OSError as e:
+        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
+    meta = _read_meta(fdir)
+    meta["kind"] = "watch"
+    meta["watch"] = rid
+    _write_meta(fdir, meta)
+    background_tasks.add_task(_spawn_frame_bg, wid, fdir, prompt)
+    return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "starting"})
+
+
+# --------------------------- runs (live agent management) ---------------------------
+#
+# "What is running right now, and what ran recently" — every taskpilot task,
+# classified for the operator: a FRAME agent (interactive, belongs to a dock
+# frame), a WATCH run (ephemeral, spawned by a route), or OTHER. Mechanical
+# controls only: kill. Behavioral changes happen in the frame/watch surfaces.
+
+
+def _frame_task_index() -> dict[str, str]:
+    """task_id -> frame_id for every frame on disk."""
+    out: dict[str, str] = {}
+    if not FRAMES_ROOT.is_dir():
+        return out
+    for fdir in FRAMES_ROOT.iterdir():
+        if fdir.is_dir() and (fdir / "index.html").is_file():
+            out[_frame_task_id(fdir.name, fdir)] = fdir.name
+    return out
+
+
+@app.get("/api/runs")
+def list_runs() -> Response:
+    """Live + recent (48h) taskpilot tasks, classified. Live = tmux exists."""
+    if not TASKPILOT_DB.is_file():
+        return JSONResponse({"runs": [], "taskpilot_present": False})
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+        rows = con.execute(
+            "SELECT task_id, name, status, updated_at FROM tasks "
+            "ORDER BY updated_at DESC LIMIT 200").fetchall()
+        con.close()
+    except sqlite3.Error:
+        return JSONResponse({"runs": [], "taskpilot_present": False})
+    live = _live_tmux_cached()
+    frame_of = _frame_task_index()
+    recipes = set()
+    rdir = DISPATCHER_HOME / "recipes"
+    if rdir.is_dir():
+        recipes = {d.name for d in rdir.iterdir() if d.is_dir()}
+    now = time.time()
+    out = []
+    for task_id, name, status, updated_at in rows:
+        try:
+            dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
+            at = dt.replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            at = 0.0
+        alive = task_id in live
+        if not alive and (now - at) >= _FEED_WINDOW_S:
+            continue
+        watch = next((r for r in recipes if task_id.startswith(r + "-")), None)
+        out.append({
+            "task_id": task_id,
+            "name": name or task_id,
+            "status": status,
+            "alive": alive,
+            "updated": int(at * 1000),
+            "kind": "frame" if task_id in frame_of else "watch-run" if watch else "task",
+            "frame_id": frame_of.get(task_id),
+            "watch": watch,
+        })
+    out.sort(key=lambda r: (not r["alive"], -r["updated"]))
+    return JSONResponse({"runs": out, "taskpilot_present": True})
+
+
+@app.post("/api/runs/{task_id}/stop")
+async def stop_run(task_id: str) -> Response:
+    """Kill a run — proxies taskpilot's idempotent stop."""
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", task_id):
+        return JSONResponse({"error": "bad task id"}, status_code=422)
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/stop")
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"taskpilot daemon unreachable: {e}"}, status_code=502)
+    if r.status_code >= 300:
+        return JSONResponse({"error": f"daemon {r.status_code}: {r.text[:200]}"}, status_code=502)
+    return JSONResponse(r.json())
+
+
+_FEED_WINDOW_S = 48 * 3600.0
+
+
+@app.get("/api/activity")
+def activity_feed(limit: int = 30) -> Response:
+    """The home feed: what happened while you were away, newest first.
+    One narrative over three stores that already exist —
+      deliveries  (frames with kind=delivered; provenance from meta.origin)
+      frame work  (a frame's transcript moved recently = its agent worked)
+      runs        (taskpilot rows that are NOT frame agents = watch runs)
+    Read-only; window capped at 48h so the feed is news, not archaeology."""
+    now = time.time()
+    items: list[dict[str, Any]] = []
+    frame_ids: set[str] = set()
+
+    if FRAMES_ROOT.is_dir():
+        for fdir in FRAMES_ROOT.iterdir():
+            if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
+                continue
+            if not (fdir / "index.html").is_file():
+                continue
+            frame_ids.add(fdir.name)
+            meta = _read_meta(fdir)
+            title = _page_title(fdir / "index.html") or meta.get("title") or fdir.name
+            origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
+            if meta.get("kind") == "delivered":
+                try:
+                    at = float(origin.get("at_epoch") or (fdir / "index.html").stat().st_mtime)
+                except (OSError, ValueError):
+                    at = 0.0
+                if now - at < _FEED_WINDOW_S:
+                    items.append({
+                        "at": int(at * 1000), "kind": "delivery",
+                        "text": f"{origin.get('watch') or 'a watch'} delivered: {title}",
+                        "frame_id": fdir.name,
+                    })
+            try:
+                tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+                if tp is not None:
+                    mt = tp.stat().st_mtime
+                    if now - mt < _FEED_WINDOW_S:
+                        items.append({
+                            "at": int(mt * 1000), "kind": "frame",
+                            "text": f"worked: {title}",
+                            "frame_id": fdir.name,
+                        })
+            except OSError:
+                pass
+
+    # Watch runs: taskpilot tasks that aren't frame agents.
+    if TASKPILOT_DB.is_file():
+        import sqlite3
+        try:
+            con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+            rows = con.execute(
+                "SELECT task_id, name, status, updated_at FROM tasks "
+                "ORDER BY updated_at DESC LIMIT 100").fetchall()
+            con.close()
+        except sqlite3.Error:
+            rows = []
+        for task_id, name, status, updated_at in rows:
+            if task_id in frame_ids:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
+                at = dt.replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
+            if now - at >= _FEED_WINDOW_S:
+                continue
+            items.append({
+                "at": int(at * 1000), "kind": "run",
+                "text": f"run: {name or task_id} · {status}",
+                "task_id": task_id,
+            })
+
+    items.sort(key=lambda i: i["at"], reverse=True)
+    return JSONResponse({"items": items[:limit]})
 
 
 @app.get("/api/agents")
