@@ -58,6 +58,11 @@ connection:
   check: [...]                   # argv that exits 0 only when usable; non-zero = needs-auth
   account: [...]                 # optional: prints the identity label
   docs: <help-cmd or URL>        # where a future agent learns to use it (CLI: `<tool> --help`; API: docs URL)
+sync:                            # optional — omit if this source has no vault-relevant data
+  entities: [<type>, ...]        # entity types in schema.yaml this source is authoritative for
+  pull: "<shell command>"        # command whose stdout contains fresh source data; exits 0 on success
+  schedule: daily                # hourly | daily | weekly | manual
+  triggers: [<event-type>, ...]  # dispatcher event types that should re-trigger this sync
 ---
 <body: the how-to an agent follows to use this connection. Keep irreversible
 or outward-facing actions behind operator confirmation.>
@@ -67,7 +72,21 @@ Rules:
 - **`auth` is a POINTER, never the secret.** The credential lives in the provider's own store, an env var, or a file — never inline in the skill.
 - **`check` must exit non-zero when the connection is not usable** (logged out, no key) and be cheap and read-only.
 - **`docs` points a future agent at the reference** — almost always `<tool> --help` for a CLI door, or the API docs URL. Prefer the live `--help` (version-accurate) over a stale URL.
+- **`sync` is optional.** Include it when this source has data worth keeping fresh in the vault. Omit it for sources that are action-only (e.g. a Slack connector that only sends messages has no vault data to pull). If included, `pull` must be a real shell command you tested — never invent an endpoint.
 - A worked example for **every door kind** is in **Examples by door kind** at the end of this skill — adapt the one matching your door.
+
+## Step 3b — Author the `sync:` block (if the source has vault-relevant data)
+
+Ask the operator one question: "Does this source have data worth keeping fresh in the vault — like repos, people, docs, or decisions?"
+
+If yes, add a `sync:` block to the connector. To author it:
+
+1. **Identify entity types** — which types in `~/.mindframe/vault/schema.yaml` does this source own? GitHub owns `repository`; Confluence might own `decision`, `convention`, `project`; a CRM owns `customer`.
+2. **Find the pull command** — a cheap, read-only shell command whose stdout lists the relevant objects. Test it yourself before including it. Use `bash -lc "..."` if it needs env vars.
+3. **Set schedule** — default to `daily`. Ask if they want `hourly` or `manual`.
+4. **Set triggers** — if you know the dispatcher event types this source emits (e.g. GitHub emits `push`, `pull_request`), list them. Otherwise omit.
+
+If no: omit the `sync:` block entirely. Don't add it as a placeholder.
 
 ## Step 4 — Get the credential in place
 
@@ -84,12 +103,13 @@ Once the operator approves the draft and the credential is in place:
 1. Create the directory and write the SKILL.md with the Write tool.
 2. Run the `check` command yourself. Exit 0 → connected. Non-zero → report what failed (usually the credential isn't where the `auth` pointer says), help fix it, then re-check.
 3. `~/.claude/skills/` is watched, so the connector loads immediately — no restart.
+4. If the connector has a `sync:` block, run `/mindframe:sync <source>` immediately to do the initial vault population.
 
 Never report a connection working you didn't actually run the `check` against.
 
 ## Step 6 — Confirm
 
-Tell the operator plainly: `<service>` is connected, it shows on the dashboard's Connections node, and any agent can now use it (the connector's body is the how-to). End by asking whether they want to connect anything else, or to put this connection to work now.
+Tell the operator plainly: `<service>` is connected, it shows on the dashboard's Connections node, and any agent can now use it (the connector's body is the how-to). If the connector has a `sync:` block, note that vault entities will stay fresh on the configured schedule — they can also run `/mindframe:sync <source>` at any time to force a refresh. End by asking whether they want to connect anything else, or to put this connection to work now.
 
 ## Examples by door kind
 

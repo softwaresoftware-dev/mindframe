@@ -405,9 +405,36 @@ Setup populates the vault after it has assembled and written `schema.yaml`. Thre
 2. **Manual seeding** — what discovery can't infer: top Products, active Projects, foundational Decisions, Conventions, Glossary terms.
 3. **Organic growth** — Events and most Processes start empty; mindframe agents add to them as they work.
 
+## Continuous sync
+
+Each connector skill (`~/.claude/skills/<source>/SKILL.md`) may carry a `sync:` block declaring which entity types it can keep fresh and how to pull them. The `/mindframe:sync` skill reads these blocks and drives vault updates:
+
+```yaml
+sync:
+  entities: [repository, service]   # entity types this source owns
+  pull: "gh repo list --json name,description,visibility,pushedAt,topics --limit 200"
+  schedule: daily                   # hourly | daily | weekly | manual
+  triggers: [push, pull_request]    # dispatcher event types that re-trigger this sync
+```
+
+**What sync does:**
+- For new entities: creates a conforming note with frontmatter from the source and a one-line body stub.
+- For existing entities: updates only frontmatter fields sourced from this pull — never overwrites body prose or manually-set fields.
+- Sets `last_synced: YYYY-MM-DD` on every touched note.
+- Updates `CATALOG.md` and commits if the vault is a git repo.
+
+**What sync does not do:**
+- Delete vault entities absent from a pull (absence ≠ deletion).
+- Overwrite body prose written by humans or agents.
+- Write `last_synced` on entities that weren't touched.
+
+**Meeting transcripts** are not synced via the connector sync path — they're one-time events. Use `/meeting-transcribe:distill` after each transcript is finalized; it writes directly to the vault following this schema.
+
+`/mindframe:sync` may be run on demand, on a cron schedule, or triggered by dispatcher events (configure routes in `~/.dispatcher/channels.yaml`). See the sync skill's documentation for the full authoring contract and worked examples.
+
 ## Authoring discipline
 
-The vault is written by setup's bootstrap and by mindframe agents as they work. A writer validates against `schema.yaml`, writes the note, and updates CATALOG.md and bidirectional links. There is no separate curator agent or automated capture loop.
+The vault is written by three paths: setup's bootstrap, mindframe agents working on tasks, and the continuous sync pull from connected sources. Every writer — human, agent, or sync — validates against `schema.yaml`, writes the note, and updates CATALOG.md and bidirectional links. **One authoritative source per field**: when multiple connected sources know about the same entity (e.g. both GitHub and Jira know a project exists), decide which source owns the vault entry. The other can reference it but should not overwrite.
 
 ## What is NOT in the vault
 
