@@ -991,21 +991,17 @@ async def frame_data_put(mid: str, key: str, request: Request) -> Response:
     return JSONResponse({"ok": True, "key": key, "size": len(body)})
 
 
-# --------------------------- sharing (frozen snapshots) ---------------------------
+# --------------------------- export (frozen snapshots) ---------------------------
 #
-# Share = an immutable, self-contained snapshot of a frame's page at an
-# unguessable slug. The stylesheets are inlined, the data plane is baked in
-# (a fetch shim answers /data/<key> GETs from the embedded values), and
-# anything that would reach the agent (/message, data PUTs) is politely
-# blocked — a shared page never wakes or writes anything. Two doors:
+# Export = an immutable, self-contained snapshot of a frame's page, delivered
+# as one .html file (host it anywhere, mail it, slack it). The stylesheets are
+# inlined, the data plane is baked in (a fetch shim answers /data/<key> GETs
+# from the embedded values), and anything that would reach the agent
+# (/message, data PUTs) is politely blocked — an exported page never wakes or
+# writes anything. One door:
 #   GET  /api/frame/<id>/export — download the snapshot as an .html file
-#                                 (host it anywhere, mail it, slack it)
-#   POST /api/frame/<id>/share  — keep a copy served at /share/<slug>
-#                                 for same-machine / tailnet links
 
-SHARES_DIR = Path(os.environ.get("MINDFRAME_SHARES_DIR", str(Path.home() / ".mindframe" / "shares")))
-
-_SHARE_SHIM = """<script>/* mindframe share shim — this is a frozen snapshot */
+_EXPORT_SHIM = """<script>/* mindframe export shim — this is a frozen snapshot */
 (function(){
   var D = __MF_DATA__;
   var of = window.fetch ? window.fetch.bind(window) : null;
@@ -1021,21 +1017,21 @@ _SHARE_SHIM = """<script>/* mindframe share shim — this is a frozen snapshot *
       return Promise.resolve(new Response('{"ok":false,"shared":true}', { status: 403 }));
     }
     if (s.indexOf('/message') !== -1 || s.indexOf('/api/') !== -1) {
-      try { var b = document.getElementById('mf-share-pill');
-            if (b) { b.textContent = 'snapshot — buttons are disabled'; setTimeout(function(){ b.textContent = 'shared from mindframe'; }, 2200); } } catch(e){}
+      try { var b = document.getElementById('mf-export-pill');
+            if (b) { b.textContent = 'snapshot — buttons are disabled'; setTimeout(function(){ b.textContent = 'exported from mindframe'; }, 2200); } } catch(e){}
       return Promise.resolve(new Response('{"ok":false,"shared":true}', { status: 403 }));
     }
     return of ? of(u, o) : Promise.reject(new Error('offline snapshot'));
   };
 })();</script>"""
 
-_SHARE_PILL = """<div id="mf-share-pill" style="position:fixed;bottom:12px;right:14px;z-index:9999;\
+_EXPORT_PILL = """<div id="mf-export-pill" style="position:fixed;bottom:12px;right:14px;z-index:9999;\
 font:11.5px ui-monospace,monospace;color:#8a8a93;background:rgba(13,13,15,.88);\
 border:1px solid #26262c;border-radius:999px;padding:.35rem .8rem;pointer-events:none">\
-shared from mindframe</div>"""
+exported from mindframe</div>"""
 
 
-def _inline_share_css(html: str) -> str:
+def _inline_snapshot_css(html: str) -> str:
     """Replace /frame.css and /tokens.css links with inline <style> so the
     snapshot is self-contained anywhere."""
     try:
@@ -1050,9 +1046,9 @@ def _inline_share_css(html: str) -> str:
 
 
 def _build_snapshot(fdir: Path) -> str:
-    """The frozen, self-contained share HTML for a frame's current page."""
+    """The frozen, self-contained export HTML for a frame's current page."""
     html = (fdir / "index.html").read_text("utf-8", errors="replace")
-    html = _inline_share_css(html)
+    html = _inline_snapshot_css(html)
     data: dict[str, Any] = {}
     ddir = fdir / "data"
     if ddir.is_dir():
@@ -1062,46 +1058,22 @@ def _build_snapshot(fdir: Path) -> str:
             except (OSError, ValueError):
                 continue
     payload = json.dumps(data).replace("<", "\\u003c")
-    shim = _SHARE_SHIM.replace("__MF_DATA__", payload)
+    shim = _EXPORT_SHIM.replace("__MF_DATA__", payload)
     if "<head>" in html:
         html = html.replace("<head>", "<head>" + shim, 1)
     else:
         html = shim + html
     if "</body>" in html:
-        html = html.replace("</body>", _SHARE_PILL + "</body>", 1)
+        html = html.replace("</body>", _EXPORT_PILL + "</body>", 1)
     else:
-        html += _SHARE_PILL
+        html += _EXPORT_PILL
     return html
-
-
-@app.post("/api/frame/{mid}/share")
-def share_frame(mid: str) -> Response:
-    """Freeze this frame's page into an immutable snapshot at a new
-    unguessable slug. Returns the local URL and, when publishing is
-    configured, the public one."""
-    fdir = _frame_dir(mid)
-    if fdir is None:
-        return JSONResponse({"error": "mindframe not found"}, status_code=404)
-    if not (fdir / "index.html").is_file():
-        return JSONResponse({"error": "nothing to share yet"}, status_code=409)
-    try:
-        snapshot = _build_snapshot(fdir)
-    except OSError as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    slug = "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(14))
-    SHARES_DIR.mkdir(parents=True, exist_ok=True)
-    out = SHARES_DIR / f"{slug}.html"
-    try:
-        out.write_text(snapshot, "utf-8")
-    except OSError as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-    return JSONResponse({"ok": True, "slug": slug, "url": f"/share/{slug}"})
 
 
 @app.get("/api/frame/{mid}/export")
 def export_frame(mid: str) -> Response:
-    """Download this frame's page as one self-contained .html file — the
-    simple export. Same snapshot as sharing, delivered as an attachment."""
+    """Download this frame's page as one self-contained .html file,
+    delivered as an attachment."""
     fdir = _frame_dir(mid)
     if fdir is None:
         return JSONResponse({"error": "mindframe not found"}, status_code=404)
@@ -1117,17 +1089,6 @@ def export_frame(mid: str) -> Response:
         "Content-Disposition": f'attachment; filename="{fname}.html"',
         "Cache-Control": "no-store",
     })
-
-
-@app.get("/share/{slug}")
-def serve_share(slug: str) -> Response:
-    if not re.match(r"^[a-z0-9]{6,32}$", slug):
-        return PlainTextResponse("not found", status_code=404)
-    f = SHARES_DIR / f"{slug}.html"
-    if not f.is_file():
-        return PlainTextResponse("not found", status_code=404)
-    return FileResponse(f, media_type="text/html",
-                        headers={"Cache-Control": "no-store"})
 
 
 # --- cognition log: tail the agent's Claude transcript (ported from surface/) ---

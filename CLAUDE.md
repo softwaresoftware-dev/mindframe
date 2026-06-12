@@ -180,5 +180,3 @@ mindframe owns its knowledge layer directly now.)
 - **Watch noise at volume** — supersede-within-watch works for one watch;
   many chatty watches will still flood the inbox. Consider per-watch digest
   or quiet hours when real volume arrives.
-- **shares.softwaresoftware.dev** is untracked in the parent staticsites repo
-  (submodule add pending; parent had unrelated dirty state at session end).

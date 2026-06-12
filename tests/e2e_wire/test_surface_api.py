@@ -556,56 +556,31 @@ def test_data_size_cap(frames_root):
     assert r.status_code == 413
 
 
-# --------------------------- sharing ---------------------------
+# --------------------------- export ---------------------------
 
 
-def test_share_freezes_a_self_contained_snapshot(frames_root, tmp_path, monkeypatch):
-    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
-    fdir = _make_frame(frames_root, "frame1")
-    (fdir / "index.html").write_text(
-        '<!doctype html><html><head><link rel="stylesheet" href="/frame.css">'
-        '<title>t</title></head><body>hello</body></html>', "utf-8")
-    (fdir / "data").mkdir()
-    (fdir / "data" / "board.json").write_text('{"cards": [{"id": "x</script>"}]}', "utf-8")
-
-    r = client.post("/api/frame/frame1/share")
-    assert r.status_code == 200
-    j = r.json()
-    assert len(j["slug"]) == 14
-
-    page = client.get(j["url"])
-    assert page.status_code == 200
-    body = page.text
-    assert '<link' not in body                      # css inlined
-    assert "--color-bg" in body                     # tokens present
-    assert '"cards"' in body and "</script>\"" not in body  # data baked, escaped
-    assert "share shim" in body and "shared from mindframe" in body
-    # re-share mints a new immutable slug
-    j2 = client.post("/api/frame/frame1/share").json()
-    assert j2["slug"] != j["slug"]
-
-
-def test_export_downloads_one_file(frames_root, tmp_path, monkeypatch):
-    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
+def test_export_downloads_a_self_contained_snapshot(frames_root):
     fdir = _make_frame(frames_root, "frame1")
     (fdir / "index.html").write_text(
         '<!doctype html><html><head><link rel="stylesheet" href="/frame.css">'
         '<title>My Board</title></head><body>hello</body></html>', "utf-8")
+    (fdir / "data").mkdir()
+    (fdir / "data" / "board.json").write_text('{"cards": [{"id": "x</script>"}]}', "utf-8")
+
     r = client.get("/api/frame/frame1/export")
     assert r.status_code == 200
     assert r.headers["content-disposition"] == 'attachment; filename="My-Board.html"'
-    assert "<link" not in r.text and "--color-bg" in r.text   # self-contained
+    body = r.text
+    assert "<link" not in body                      # css inlined
+    assert "--color-bg" in body                     # tokens present
+    assert '"cards"' in body and "</script>\"" not in body  # data baked, escaped
+    assert "export shim" in body and "exported from mindframe" in body
+
+
+def test_export_unknown_or_empty_frame(frames_root):
     assert client.get("/api/frame/nope/export").status_code == 404
-
-
-def test_share_unknown_frame_and_bad_slug_404(frames_root, tmp_path, monkeypatch):
-    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
-    assert client.post("/api/frame/nope/share").status_code == 404
-    assert client.get("/share/doesnotexist123").status_code == 404
-    # traversal normalizes into the SPA catch-all, which is containment-checked
-    # — it must never leak file contents
-    trav = client.get("/share/../etc/passwd")
-    assert "root:" not in trav.text
+    (frames_root / "frame1").mkdir()  # frame exists but has no page yet
+    assert client.get("/api/frame/frame1/export").status_code == 409
 
 
 # --------------------------- rev + listing ---------------------------
