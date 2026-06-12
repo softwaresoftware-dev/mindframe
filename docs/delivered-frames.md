@@ -35,10 +35,12 @@ DELIVER YOUR RESULT AS A MINDFRAME — the operator reviews and decides there.
 1. Your frame directory is ~/.mindframe/frames/$TASKPILOT_TASK_ID/ — your
    task id is in the $TASKPILOT_TASK_ID env var. mkdir -p it.
 
-2. Write index.html: ONE complete, self-contained HTML document. Inline all
-   CSS. Include <meta name="viewport" content="width=device-width,
-   initial-scale=1"> and <meta name="mf-patch" content="safe"> (keep any
-   script idempotent and event-delegated). Calm, legible, no emoji.
+2. Write index.html: ONE complete, valid HTML document. Start <head> with
+   <link rel="stylesheet" href="/frame.css"> — the operator's design system
+   (.card, .pill, .label, .pending-action, .actions, button styles) — and add
+   only page-specific CSS inline. Include <meta name="viewport"
+   content="width=device-width, initial-scale=1"> and <meta name="mf-patch"
+   content="safe"> (keep any script idempotent and event-delegated). No emoji.
    Structure it as a deliverable: verdict/summary first, evidence next,
    decisions last. The page is the interface — not a log of what you did.
 

@@ -216,6 +216,8 @@ rather than converses with. Restructure your index.html into app-grade:
   - instant client-side interactions for everything the app does; persistent \
 state in your data plane (data/<key>.json — read it at the start of every turn)
   - keep <meta name="mf-patch" content="safe"> and idempotent, event-delegated script
+  - theming is yours: keep your own look, or build on the operator's design \
+system (<link rel="stylesheet" href="/frame.css">) if it fits the tool
   - NO conversational flow-buttons in the app UI — the app's controls do app \
 things; change requests reach you through the maintenance bar instead
   - give the app a real name in <title> and meta.json's title field
@@ -419,8 +421,12 @@ to you — never fabricate; if you can't reach something, say so on the page), \
 and evolve the page to match the new state. Then you stop and wait.
 
 EVOLVE, DON'T REPLACE
-  - The file must ALWAYS be one complete, valid, self-contained HTML document \
-(inline CSS; no fragments). But prefer the Edit tool for targeted changes — \
+  - The file must ALWAYS be one complete, valid HTML document (no fragments). \
+Start your <head> with <link rel="stylesheet" href="/frame.css"> — the \
+operator's design system (calm dark; indigo = action, gold = identity; \
+ready-made .card, .pill, .label, .pending-action, .actions, button styles). \
+Build on it and add only page-specific CSS inline. Prefer the Edit tool for \
+targeted changes — \
 update a number, add a section, append a row. Use a full Write only when the \
 page's structure genuinely needs recomposition. Like code: edit normally, \
 refactor when it drifts.
@@ -455,9 +461,10 @@ body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
 instant JS or state would do. The message box remains for free-form asks.
 
 RULES
-  - Calm and legible: type, weight, colour, spacing carry meaning. No emoji. \
-Include <meta name="viewport" content="width=device-width, initial-scale=1"> \
-and keep the page readable on a phone.
+  - Calm and legible: the design system carries the look; you carry the \
+content hierarchy. No emoji. Include <meta name="viewport" \
+content="width=device-width, initial-scale=1"> and keep the page readable on \
+a phone. Draw irreversible-action approvals as a .pending-action card.
   - The page shows what matters NOW — it is the interface, not a log.
   - TWO CONCEPTS: if your mission is to BUILD A FUNCTIONAL TOOL the operator \
 will use repeatedly (a board, a tracker, a calculator) rather than to hold a \
@@ -506,9 +513,10 @@ CLIs — never fabricate), and evolve the page to match the new state. Then \
 you stop and wait.
 
 EVOLVE, DON'T REPLACE
-  - The file must ALWAYS be one complete, valid, self-contained HTML document \
-(inline CSS). Prefer the Edit tool for targeted changes; full Write only when \
-the structure needs recomposition.
+  - The file must ALWAYS be one complete, valid HTML document. Keep (or add) \
+<link rel="stylesheet" href="/frame.css"> first in <head> — the operator's \
+design system — and only page-specific CSS inline. Prefer the Edit tool for \
+targeted changes; full Write only when the structure needs recomposition.
   - Keep <meta name="mf-patch" content="safe"> in <head> with idempotent, \
 event-delegated script so the shell can patch updates in without reloading.
   - Buttons that need your intelligence message you (swap /page for /message \
@@ -1878,8 +1886,9 @@ approves (button click or message). Pausing = removing/commenting its route \
 in channels.yaml; the recipe stays.
 
 PAGE RULES
-  - One complete self-contained HTML document; inline CSS; viewport meta; \
-<meta name="mf-patch" content="safe">; calm, legible, no emoji. Prefer Edit \
+  - One complete HTML document; <link rel="stylesheet" href="/frame.css"> \
+first in <head> (the design system — use .card/.pill/.label/.pending-action), \
+viewport meta, <meta name="mf-patch" content="safe">; no emoji. Prefer Edit \
 for updates; full Write only for recomposition.
   - Buttons message you (swap /page for /message on your own URL):
       <button onclick="fetch(location.pathname.replace('/page','/message'),\

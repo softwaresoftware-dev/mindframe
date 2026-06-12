@@ -6,9 +6,12 @@ truth is [`dashboard/public/tokens.css`](../dashboard/public/tokens.css);
 `style.css` imports it and `surface.html` links it. If a color or radius
 isn't a token, it's a bug waiting to drift.
 
-**Scope:** the SHELL only. Agent-authored pages (mindframe pages, apps) pick
-their own theme — Plugboard is light on purpose. The briefs give agents
-principles (calm, legible, no emoji, viewport meta), not our palette.
+**Scope:** the shell, plus an offered base for agent pages. Conversations and
+watch frames build on [`frame.css`](../dashboard/public/frame.css) — tokens +
+a minimal semantic base (.card, .pill, .label, .pending-action, buttons,
+tables) linked same-origin, so pages inherit the language and follow token
+changes without redeploys. APPS may keep their own theme (Plugboard is light
+on purpose) — for artifacts, brand belongs to the artifact.
 
 ## Principles
 
