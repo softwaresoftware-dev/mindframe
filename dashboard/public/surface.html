@@ -21,6 +21,12 @@
   #topbar a:hover { color: var(--color-accent-wash); }
   #topbar .sep { color: #3a3a42; }
   #topbar .id { color: #5a5a63; }
+  #share {
+    margin-left: auto; font: inherit; font-size: 11.5px; cursor: pointer;
+    color: var(--color-text-muted); background: transparent;
+    border: 1px solid var(--color-border); border-radius: 999px; padding: .25rem .7rem;
+  }
+  #share:hover { color: var(--color-accent-wash); border-color: var(--color-accent-soft); }
 
   /* main = left dock + the surface */
   #main { flex: 1; display: flex; flex-direction: row; min-height: 0; }
@@ -210,12 +216,14 @@
   <div id="appbar" aria-label="app controls">
     <span class="apptitle" id="apptitle"></span>
     <a href="/" class="apphome" title="home">home</a>
+    <button id="share-app" type="button" title="freeze this app into a shareable snapshot">share</button>
     <button class="gear" id="maintain-toggle" type="button" title="maintain this app — talk to its agent">⚙ maintain</button>
   </div>
   <div id="topbar">
     <a href="/">← home</a>
     <span class="sep">/</span>
     <span class="id" id="frame-id"></span>
+    <button id="share" type="button" title="freeze this page into a shareable snapshot">share</button>
   </div>
   <div id="main">
     <nav id="dock" aria-label="mindframes"><div id="docklist"></div></nav>
@@ -340,6 +348,27 @@
     if (open) logbody.scrollTop = logbody.scrollHeight;
   }
   toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
+  // ----- share: freeze the page into a snapshot, put the link on the clipboard -----
+  async function doShare(btn){
+    const was = btn.textContent;
+    btn.textContent = 'freezing…';
+    try {
+      const r = await fetch(API('share'), { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      const link = j.public_url || (location.origin + j.url);
+      try { await navigator.clipboard.writeText(link); } catch (e) {}
+      btn.textContent = 'link copied ✓';
+      appendLog({ kind: 'info', label: 'shared: ' + link + (j.public_url ? '' : ' (local — configure publishing for a public link)') });
+    } catch (e) {
+      btn.textContent = 'share failed';
+      appendLog({ kind: 'warn', label: 'share failed: ' + e.message });
+    }
+    setTimeout(() => { btn.textContent = was; }, 2200);
+  }
+  document.getElementById('share').addEventListener('click', (e) => doShare(e.target));
+  document.getElementById('share-app').addEventListener('click', (e) => doShare(e.target));
+
   const maintainBtn = document.getElementById('maintain-toggle');
   function setMaintain(on){
     document.body.classList.toggle('maintain', on);

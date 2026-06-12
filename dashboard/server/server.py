@@ -991,6 +991,148 @@ async def frame_data_put(mid: str, key: str, request: Request) -> Response:
     return JSONResponse({"ok": True, "key": key, "size": len(body)})
 
 
+# --------------------------- sharing (frozen snapshots) ---------------------------
+#
+# Share = an immutable, self-contained snapshot of a frame's page at an
+# unguessable slug. The stylesheets are inlined, the data plane is baked in
+# (a fetch shim answers /data/<key> GETs from the embedded values), and
+# anything that would reach the agent (/message, data PUTs) is politely
+# blocked — a shared page never wakes or writes anything. Served locally at
+# /share/<slug>; optionally also copied to a public static-site dir:
+#
+#   MINDFRAME_SHARE_PUBLISH_DIR  — a deployed static dir to copy snapshots into
+#   MINDFRAME_SHARE_PUBLIC_BASE  — the public URL base for that dir
+#
+# Publishing uses `sudo -n cp` as a fallback when the dir isn't writable
+# (matches the operator's static-deploy convention); both are best-effort.
+
+SHARES_DIR = Path(os.environ.get("MINDFRAME_SHARES_DIR", str(Path.home() / ".mindframe" / "shares")))
+SHARE_PUBLISH_DIR = os.environ.get("MINDFRAME_SHARE_PUBLISH_DIR") or None
+SHARE_PUBLIC_BASE = (os.environ.get("MINDFRAME_SHARE_PUBLIC_BASE") or "").rstrip("/") or None
+
+_SHARE_SHIM = """<script>/* mindframe share shim — this is a frozen snapshot */
+(function(){
+  var D = __MF_DATA__;
+  var of = window.fetch ? window.fetch.bind(window) : null;
+  window.fetch = function(u, o){
+    var s = String(u);
+    var m = s.match(/\\/data\\/([a-z0-9_-]+)$/);
+    if (m) {
+      if (!o || !o.method || o.method === 'GET') {
+        var v = D[m[1]];
+        return Promise.resolve(new Response(JSON.stringify(v === undefined ? null : v),
+          { status: v === undefined ? 404 : 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{"ok":false,"shared":true}', { status: 403 }));
+    }
+    if (s.indexOf('/message') !== -1 || s.indexOf('/api/') !== -1) {
+      try { var b = document.getElementById('mf-share-pill');
+            if (b) { b.textContent = 'snapshot — buttons are disabled'; setTimeout(function(){ b.textContent = 'shared from mindframe'; }, 2200); } } catch(e){}
+      return Promise.resolve(new Response('{"ok":false,"shared":true}', { status: 403 }));
+    }
+    return of ? of(u, o) : Promise.reject(new Error('offline snapshot'));
+  };
+})();</script>"""
+
+_SHARE_PILL = """<div id="mf-share-pill" style="position:fixed;bottom:12px;right:14px;z-index:9999;\
+font:11.5px ui-monospace,monospace;color:#8a8a93;background:rgba(13,13,15,.88);\
+border:1px solid #26262c;border-radius:999px;padding:.35rem .8rem;pointer-events:none">\
+shared from mindframe</div>"""
+
+
+def _inline_share_css(html: str) -> str:
+    """Replace /frame.css and /tokens.css links with inline <style> so the
+    snapshot is self-contained anywhere."""
+    try:
+        tokens = (WEB_ROOT / "tokens.css").read_text("utf-8")
+        framec = (WEB_ROOT / "frame.css").read_text("utf-8").replace('@import url("/tokens.css");', "")
+    except OSError:
+        return html
+    html = re.sub(r'<link[^>]*href="/frame\.css"[^>]*>',
+                  "<style>" + tokens + "\n" + framec + "</style>", html, count=1)
+    html = re.sub(r'<link[^>]*href="/(frame|tokens)\.css"[^>]*>', "", html)
+    return html
+
+
+def _build_snapshot(fdir: Path) -> str:
+    """The frozen, self-contained share HTML for a frame's current page."""
+    html = (fdir / "index.html").read_text("utf-8", errors="replace")
+    html = _inline_share_css(html)
+    data: dict[str, Any] = {}
+    ddir = fdir / "data"
+    if ddir.is_dir():
+        for f in ddir.glob("*.json"):
+            try:
+                data[f.stem] = json.loads(f.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+    payload = json.dumps(data).replace("<", "\\u003c")
+    shim = _SHARE_SHIM.replace("__MF_DATA__", payload)
+    if "<head>" in html:
+        html = html.replace("<head>", "<head>" + shim, 1)
+    else:
+        html = shim + html
+    if "</body>" in html:
+        html = html.replace("</body>", _SHARE_PILL + "</body>", 1)
+    else:
+        html += _SHARE_PILL
+    return html
+
+
+def _publish_snapshot(filename: str, src: Path) -> str | None:
+    """Best-effort copy into the configured public static dir. Returns the
+    public URL or None."""
+    if not (SHARE_PUBLISH_DIR and SHARE_PUBLIC_BASE):
+        return None
+    dst = Path(SHARE_PUBLISH_DIR) / filename
+    try:
+        shutil.copyfile(src, dst)
+    except (OSError, PermissionError):
+        # Match the operator's static-deploy sudoers shape exactly:
+        # /usr/bin/cp -r <src> /var/www/<...>
+        r = _conn_run(["sudo", "-n", "/usr/bin/cp", "-r", str(src), str(dst)], timeout=10)
+        if not r or r.returncode != 0:
+            return None
+    return f"{SHARE_PUBLIC_BASE}/{filename}"
+
+
+@app.post("/api/frame/{mid}/share")
+def share_frame(mid: str) -> Response:
+    """Freeze this frame's page into an immutable snapshot at a new
+    unguessable slug. Returns the local URL and, when publishing is
+    configured, the public one."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not (fdir / "index.html").is_file():
+        return JSONResponse({"error": "nothing to share yet"}, status_code=409)
+    try:
+        snapshot = _build_snapshot(fdir)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    slug = "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(14))
+    SHARES_DIR.mkdir(parents=True, exist_ok=True)
+    out = SHARES_DIR / f"{slug}.html"
+    try:
+        out.write_text(snapshot, "utf-8")
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    public_url = _publish_snapshot(f"{slug}.html", out)
+    return JSONResponse({"ok": True, "slug": slug, "url": f"/share/{slug}",
+                         "public_url": public_url})
+
+
+@app.get("/share/{slug}")
+def serve_share(slug: str) -> Response:
+    if not re.match(r"^[a-z0-9]{6,32}$", slug):
+        return PlainTextResponse("not found", status_code=404)
+    f = SHARES_DIR / f"{slug}.html"
+    if not f.is_file():
+        return PlainTextResponse("not found", status_code=404)
+    return FileResponse(f, media_type="text/html",
+                        headers={"Cache-Control": "no-store"})
+
+
 # --- cognition log: tail the agent's Claude transcript (ported from surface/) ---
 
 def _pretty_model(name: str) -> str:
