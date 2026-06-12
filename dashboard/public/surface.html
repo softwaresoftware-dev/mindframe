@@ -484,7 +484,9 @@
 
   async function pollRev(){
     try {
-      const r = (await fetch(API('rev'), { cache: 'no-store' }).then(x => x.json())).rev;
+      const x = await fetch(API('rev'), { cache: 'no-store' });
+      if (x.status === 404) { location.reload(); return; }   // deleted under us → server's not-found page
+      const r = (await x.json()).rev;
       if (rev !== null && r !== rev) {
         await applyPageUpdate();                      // agent evolved the page
         if (waiting) { waiting = false; send.disabled = false; }

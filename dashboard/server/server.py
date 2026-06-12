@@ -677,12 +677,42 @@ def _frame_task_id(mid: str, fdir: Path) -> str:
     return _read_meta(fdir).get("task_id") or mid
 
 
+_NOT_FOUND_PAGE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mindframe — not found</title>
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  body {{ margin:0; min-height:100vh; display:grid; place-items:center;
+         background: radial-gradient(ellipse at 50% 38%, #131318 0%, var(--color-bg) 62%);
+         font-family: var(--font-ui); color: var(--color-text-soft); }}
+  .box {{ text-align:center; padding:2rem; }}
+  .label {{ font-family: var(--font-mono); font-size:.62rem; letter-spacing:.16em;
+           text-transform:uppercase; color: var(--color-text-faint); }}
+  h1 {{ font-family: var(--font-heading); color: var(--color-text);
+       font-size:1.4rem; margin:.5rem 0 .4rem; }}
+  p {{ color: var(--color-text-dim); font-size:14px; margin:0 0 1.6rem; line-height:1.6; }}
+  .id {{ font-family: var(--font-mono); color: var(--color-gold); }}
+  a.btn {{ display:inline-block; padding:.6rem 1.2rem; border-radius:8px;
+          background: var(--color-accent); color:#fff; text-decoration:none; font-size:14px; }}
+</style></head><body>
+<div class="box">
+  <div class="label">mindframe</div>
+  <h1>This mindframe doesn't exist</h1>
+  <p><span class="id">{mid}</span> — it may have been deleted, or the link is stale.</p>
+  <a class="btn" href="/">back to home</a>
+</div></body></html>"""
+
+
 @app.get("/m/{mid}")
 def surface_shell(mid: str) -> Response:
     """The mindframe surface shell — iframe over the agent's page + message rail
-    + cognition log. The page's JS derives the id from the URL."""
+    + cognition log. The page's JS derives the id from the URL. A missing or
+    deleted frame gets a real page with a way out, never raw JSON."""
     if _frame_dir(mid) is None:
-        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+        safe = mid.replace("&", "&amp;").replace("<", "&lt;")[:64]
+        return Response(_NOT_FOUND_PAGE.format(mid=safe), media_type="text/html",
+                        status_code=404, headers={"Cache-Control": "no-store"})
     shell = WEB_ROOT / "surface.html"
     if not shell.is_file():
         return JSONResponse({"error": "surface shell missing"}, status_code=500)

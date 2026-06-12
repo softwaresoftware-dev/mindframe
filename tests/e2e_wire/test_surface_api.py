@@ -302,6 +302,17 @@ def test_dotdot_frame_id_is_404(frames_root):
     assert client.get("/m/%2e%2e").status_code == 404
 
 
+def test_missing_frame_gets_a_real_page_not_json(frames_root):
+    r = client.get("/m/no-such-frame")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("text/html")
+    assert "doesn't exist" in r.text and 'href="/"' in r.text
+    assert "no-such-frame" in r.text
+    # script injection via the id stays inert (page ships zero <script> tags)
+    evil = client.get("/m/x%3Cscript%3E")
+    assert evil.status_code == 404 and "<script" not in evil.text
+
+
 # --------------------------- artifacts traversal ---------------------------
 
 
