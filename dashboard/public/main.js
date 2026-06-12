@@ -215,7 +215,7 @@ async function drawerConnections(body) {
       e.preventDefault();
       const txt = e.target.querySelector("input").value.trim();
       if (!txt) return;
-      createMindframe(`Connect ${txt} so my mindframes and watches can reach it. Research the best door (an MCP, an authed CLI, an API, or the browser), draft the connector, and show me anything requiring credentials or irreversible setup as a pending action before doing it.`);
+      createMindframe(`Connect ${txt} — follow /mindframe:connect in full. Research the best door, draft the connector, show me anything requiring credentials as a pending action before writing it. Once credentials are confirmed and the connector is written, wire the sync automatically (Step 5b): deploy the vault-sync recipe, add the channels.yaml routes, write the event-source YAML if applicable, install the cron for schedule-based sources, then run the initial sync.`);
     });
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>couldn't load connections: ${escapeHtml(String(e))}</p></div>`;
@@ -288,7 +288,7 @@ SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never 
 
 SURVEY: GET {origin}/api/connections for the list. Probe real status yourself: run "claude mcp list" (look for Connected vs needs-auth vs failed), "gh auth status", "gcloud auth list", "aws sts get-caller-identity" where those CLIs exist.
 SHOW + JUDGE: group by kind (CLIs, MCP servers, connectors). Flag problems plainly: an MCP that's down or failed to start, a connection that needs auth. Healthy ones can be quiet; broken ones should stand out.
-SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the finance MCP is down — diagnose it", or, if everything's healthy, an obvious useful tool they haven't connected. Connecting means walking them through the tool's auth (an MCP, a CLI login, or authoring a connector SKILL.md) and verifying it.`,
+SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the finance MCP is down — diagnose it", or, if everything's healthy, an obvious useful tool they haven't connected. Connecting means following /mindframe:connect in full — researching the door, authoring the connector, placing the credential, wiring the sync (dispatcher routes + cron), and running the initial vault pull.`,
   },
   events: {
     title: "Event sources",
