@@ -174,10 +174,39 @@
   #msg:focus { border-color: #5b6cff; }
   #send { padding: .65rem 1.15rem; border: 0; border-radius: 8px; background: #5b6cff; color: #fff; font-size: 15px; cursor: pointer; }
   #send:disabled { opacity: .45; cursor: default; }
+
+  /* ----- app mode: the frame is an ARTIFACT the operator uses, not a
+     conversation. Full-bleed app, conversation chrome hidden behind a
+     floating maintenance toggle. body.app-mode flips it; body.maintain
+     brings the rail/dock/ribbon back for change requests. ----- */
+  #appbar {
+    display: none; position: fixed; top: 10px; right: 14px; z-index: 80;
+    align-items: center; gap: .5rem;
+    background: rgba(13,13,15,.88); border: 1px solid #26262c; border-radius: 999px;
+    padding: .3rem .45rem .3rem .85rem; font-family: ui-monospace, monospace; font-size: 11.5px;
+  }
+  #appbar a, #appbar button {
+    color: #8a8a93; text-decoration: none; background: transparent; border: 0;
+    font: inherit; cursor: pointer; padding: .2rem .5rem; border-radius: 999px;
+  }
+  #appbar a:hover, #appbar button:hover { color: #cfe0ff; background: #1c1c21; }
+  #appbar .apptitle { color: #c9a86a; letter-spacing: .06em; }
+  body.app-mode #appbar { display: flex; }
+  body.app-mode #topbar, body.app-mode #dock, body.app-mode #rail,
+  body.app-mode #ribbon, body.app-mode #logs { display: none; }
+  body.app-mode.maintain #topbar, body.app-mode.maintain #dock,
+  body.app-mode.maintain #rail, body.app-mode.maintain #ribbon { display: flex; }
+  body.app-mode.maintain #logs { display: block; }
+  body.app-mode.maintain #appbar .gear { color: #9aa6ff; }
 </style>
 </head>
 <body>
   <div id="edge" aria-hidden="true"></div>
+  <div id="appbar" aria-label="app controls">
+    <span class="apptitle" id="apptitle"></span>
+    <a href="/" title="home">home</a>
+    <button class="gear" id="maintain-toggle" type="button" title="maintain this app — talk to its agent">⚙ maintain</button>
+  </div>
   <div id="topbar">
     <a href="/">← home</a>
     <span class="sep">/</span>
@@ -306,6 +335,10 @@
     if (open) logbody.scrollTop = logbody.scrollHeight;
   }
   toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
+  document.getElementById('maintain-toggle').addEventListener('click', () => {
+    const on = document.body.classList.toggle('maintain');
+    if (on) msg.focus();
+  });
 
   // ----- dock: list every mindframe, switch without new tabs -----
   let dockFrames = [], spawnFailWarned = false;
@@ -321,6 +354,11 @@
         spawnFailWarned = true;
         appendLog({ kind: 'warn', label: 'the agent failed to start — send a message to retry (it respawns automatically)' });
       }
+      // App mode: this frame is an artifact in use, not a conversation —
+      // full-bleed, conversation chrome behind the ⚙ maintain toggle.
+      const isApp = !!(me && me.kind === 'app');
+      document.body.classList.toggle('app-mode', isApp);
+      if (isApp) document.getElementById('apptitle').textContent = me.title || MF_ID;
     } catch (e) {}
   }
   function timeAgo(ms){
@@ -374,6 +412,7 @@
     const groups = [
       ['inbox',   dockFrames.filter(f => f.kind === 'delivered')],
       ['desk',    dockFrames.filter(f => f.kind === 'created')],
+      ['apps',    dockFrames.filter(f => f.kind === 'app')],
       ['watches', dockFrames.filter(f => f.kind === 'watch')],
     ];
     for (const [label, frames] of groups){
@@ -470,6 +509,9 @@
     try { morphEl(cur.documentElement, next.documentElement); }
     catch (e) { surface.contentWindow.location.reload(); return; }
     w.scrollTo(sx, sy);
+    // Pages that render from the data plane re-render on this signal — a
+    // morph syncs the file's skeleton, not their dynamic DOM.
+    try { w.dispatchEvent(new w.CustomEvent('mf:patched')); } catch (e) {}
   }
   // Minimal recursive morph — index-aligned children, attribute sync, focused
   // inputs left untouched. Agent pages are simple documents; anything this

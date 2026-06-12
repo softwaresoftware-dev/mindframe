@@ -549,6 +549,7 @@ function renderHome() {
           <input id="calm-start" placeholder="What should we work on?" autofocus>
         </form>
         <div class="calm-hint">enter to begin &middot; empty for suggestions</div>
+        <div id="calm-apps" aria-label="your apps"></div>
         <div id="calm-lines" aria-label="attention"></div>
         <div class="calm-more" id="calm-more"></div>
       </div>
@@ -606,6 +607,11 @@ async function loadCalmLines() {
     const frames = ((await (await fetch("/api/frames")).json()).frames) || [];
     const inbox = frames.filter(f => f.kind === "delivered");
     const desk  = frames.filter(f => f.kind === "created");
+    // Apps are destinations, not attention items — a quiet chip row.
+    const apps = frames.filter(f => f.kind === "app");
+    const appsBox = $("calm-apps");
+    if (appsBox) appsBox.innerHTML = apps.map(f =>
+      `<a class="calm-app" href="/m/${encodeURIComponent(f.id)}">${escapeHtml(f.title)}</a>`).join("");
     for (const f of inbox.slice(0, 2)) lines.push({ k: "inbox", f,
       sub: `${f.origin?.watch || "delivered"} · ${relativeTime(f.modified)}`, done: true });
     if (desk[0]) lines.push({ k: "resume", f: desk[0], sub: relativeTime(desk[0].modified) });

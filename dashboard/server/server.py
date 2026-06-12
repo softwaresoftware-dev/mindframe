@@ -199,11 +199,37 @@ def _page_title(index: Path) -> str | None:
 
 
 # Frame kinds — the operator-facing ontology:
-#   created   — a place the operator works (default; launchpads, ad-hoc frames)
+#   created   — a CONVERSATION: a place the operator thinks with an agent;
+#               the page is the agent's voice (default; launchpads, ad-hoc)
+#   app       — an ARTIFACT: a functional, long-lived tool the agent built
+#               and maintains; the operator USES it (fast loop only) and the
+#               agent wakes only for maintenance. Full-bleed presentation.
 #   delivered — a watch's deliverable; arrives unprompted, lives in the Inbox
 #               until handled, carries origin {watch, event, at}
 #   watch     — a singleton frame that manages one watch (recipe + route)
-_FRAME_KINDS = {"created", "delivered", "watch"}
+_FRAME_KINDS = {"created", "app", "delivered", "watch"}
+
+# Sent to a frame's agent when the operator (or the agent's own judgment, via
+# the promote endpoint) turns a conversation into an app.
+APP_PROMOTION_NOTE = """This frame is now an APP — a long-lived functional tool the operator USES \
+rather than converses with. Restructure your index.html into app-grade:
+  - instant client-side interactions for everything the app does; persistent \
+state in your data plane (data/<key>.json — read it at the start of every turn)
+  - keep <meta name="mf-patch" content="safe"> and idempotent, event-delegated script
+  - NO conversational flow-buttons in the app UI — the app's controls do app \
+things; change requests reach you through the maintenance bar instead
+  - give the app a real name in <title> and meta.json's title field
+You are now its MAINTAINER: future messages are change requests or bug \
+reports. Evolve the app with Edit; never replace it with a conversation page. \
+Apply the restructure now."""
+
+# Appended to the revival brief when the dead frame is an app, so the
+# successor agent maintains instead of conversing.
+APP_REVIVAL_NOTE = """\n\nIMPORTANT: this frame is an APP, not a conversation. The page is a \
+functional tool the operator uses; its state lives in data/<key>.json. You \
+are its maintainer — treat the operator's message as a change request or bug \
+report, evolve the app with Edit, and never replace it with a conversation \
+page."""
 
 
 def _write_meta(fdir: Path, meta: dict[str, Any]) -> None:
@@ -402,7 +428,8 @@ refactor when it drifts.
 idempotent (event delegation on document, init guarded so it can run once). \
 The shell then patches your edits into the live page with no reload, no \
 flicker, no lost state. If you change your <script>, the shell reloads — \
-that's expected.
+that's expected. If your script renders DOM from data, listen for the \
+shell's 'mf:patched' window event and re-render on it.
   - While a long turn is in progress, you may make one early Edit that marks \
 the affected section ("updating…") so the operator sees where you're working.
 
@@ -432,6 +459,12 @@ RULES
 Include <meta name="viewport" content="width=device-width, initial-scale=1"> \
 and keep the page readable on a phone.
   - The page shows what matters NOW — it is the interface, not a log.
+  - TWO CONCEPTS: if your mission is to BUILD A FUNCTIONAL TOOL the operator \
+will use repeatedly (a board, a tracker, a calculator) rather than to hold a \
+working conversation, set "kind": "app" in your meta.json. The shell then \
+presents your page full-bleed as an app with a maintenance bar, and your role \
+becomes its maintainer — app controls do app things; no conversational \
+flow-buttons in an app's UI.
   - NEVER declare yourself done. End every page with a forward question or a \
 clear next step.
   - Anything irreversible or outward-facing: draw the pending action on the \
@@ -696,41 +729,39 @@ def _daemon_error_code(r: httpx.Response) -> str:
         return ""
 
 
-@app.post("/api/frame/{mid}/message")
-async def frame_message(mid: str, body: FrameMessage) -> Response:
-    """Deliver a user message to the mindframe's agent via the taskpilot
-    daemon — reviving the agent first if it died.
+def _revival_brief(fdir: Path) -> str:
+    """The resume-ownership brief for this frame, app-flavored when the frame
+    is an app (the successor maintains; it doesn't converse)."""
+    meta = _read_meta(fdir)
+    brief = REVIVAL_BRIEF.format(
+        index=str(fdir / "index.html"),
+        prompt=(meta.get("prompt") or "(unrecorded)").strip(),
+    )
+    if meta.get("kind") == "app":
+        brief += APP_REVIVAL_NOTE
+    return brief
 
-    A frame outlives its agent process (reboots, crashes, context
-    exhaustion); the page on disk is the durable state. When taskpilot says
-    `agent_not_running` (409), we respawn the task with a revival brief —
-    "resume ownership of the existing page" — and deliver the message to the
-    fresh agent. The response carries `revived: true` so the surface can say
-    what happened."""
-    fdir = _frame_dir(mid)
-    if fdir is None:
-        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+
+async def _deliver_to_frame(mid: str, fdir: Path, text: str,
+                            from_session: str = "mindframe-surface") -> tuple[int, dict]:
+    """Deliver text to the frame's agent, reviving or even re-defining it as
+    needed. Returns (http_status, body) ready to wrap in a JSONResponse.
+    Shared by the message endpoint and anything else that must reach the
+    agent (e.g. the app-promotion note)."""
     task_id = _frame_task_id(mid, fdir)
-    payload = {"text": body.text, "from_session": "mindframe-surface"}
+    payload = {"text": text, "from_session": from_session}
     msg_url = f"{TASKPILOT_DAEMON}/tasks/{task_id}/message"
-
     try:
         # start blocks ~16s on a revival; size the client timeout for that.
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.post(msg_url, json=payload, timeout=20)
             revived = False
             if r.status_code == 409 and _daemon_error_code(r) == "agent_not_running":
-                brief = REVIVAL_BRIEF.format(
-                    index=str(fdir / "index.html"),
-                    prompt=(_read_meta(fdir).get("prompt") or "(unrecorded)").strip(),
-                )
                 rs = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/start",
-                                       json={"prompt": brief})
+                                       json={"prompt": _revival_brief(fdir)})
                 if rs.status_code >= 300:
-                    return JSONResponse(
-                        {"ok": False,
-                         "error": f"agent was dead and revival failed: daemon {rs.status_code}: {rs.text[:200]}"},
-                        status_code=502)
+                    return 502, {"ok": False,
+                                 "error": f"agent was dead and revival failed: daemon {rs.status_code}: {rs.text[:200]}"}
                 revived = True
                 r = await client.post(msg_url, json=payload, timeout=20)
             elif r.status_code == 404:
@@ -743,26 +774,66 @@ async def frame_message(mid: str, body: FrameMessage) -> Response:
                 prompt = (meta.get("prompt") or "(unrecorded)").strip()
                 start_prompt = None
                 if _page_title(fdir / "index.html") is not None:
-                    start_prompt = REVIVAL_BRIEF.format(
-                        index=str(fdir / "index.html"), prompt=prompt)
+                    start_prompt = _revival_brief(fdir)
                 ok, err = await _define_and_start(task_id, fdir, prompt, start_prompt)
                 if not ok:
-                    return JSONResponse(
-                        {"ok": False, "error": f"agent was never spawned and recovery failed: {err}"},
-                        status_code=502)
+                    return 502, {"ok": False,
+                                 "error": f"agent was never spawned and recovery failed: {err}"}
                 revived = True
                 r = await client.post(msg_url, json=payload, timeout=20)
             if r.status_code >= 300:
                 code = _daemon_error_code(r)
-                retryable = code == "channel_not_ready"
-                return JSONResponse(
-                    {"ok": False, "revived": revived, "retryable": retryable,
-                     "error": f"daemon {r.status_code}: {r.text[:200]}"},
-                    status_code=502)
+                return 502, {"ok": False, "revived": revived,
+                             "retryable": code == "channel_not_ready",
+                             "error": f"daemon {r.status_code}: {r.text[:200]}"}
     except httpx.HTTPError as e:
-        return JSONResponse({"ok": False, "error": f"taskpilot daemon unreachable: {e}"},
-                            status_code=502)
-    return JSONResponse({"ok": True, "revived": revived})
+        return 502, {"ok": False, "error": f"taskpilot daemon unreachable: {e}"}
+    return 200, {"ok": True, "revived": revived}
+
+
+@app.post("/api/frame/{mid}/message")
+async def frame_message(mid: str, body: FrameMessage) -> Response:
+    """Deliver a user message to the mindframe's agent via the taskpilot
+    daemon — reviving (or re-defining) the agent first if needed. The
+    response carries `revived: true` when that happened."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    status, payload = await _deliver_to_frame(mid, fdir, body.text)
+    return JSONResponse(payload, status_code=status)
+
+
+class FrameKind(BaseModel):
+    kind: str
+
+
+@app.post("/api/frame/{mid}/kind")
+async def set_frame_kind(mid: str, body: FrameKind) -> Response:
+    """Switch a frame between the two operator concepts: a conversation
+    ('created') and an app ('app'). Delivered and watch frames keep their
+    kinds. Promoting to app also tells the agent to restructure the page to
+    app-grade (the maintenance contract)."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if body.kind not in ("created", "app"):
+        return JSONResponse({"error": "kind must be 'created' or 'app'"}, status_code=422)
+    meta = _read_meta(fdir)
+    if meta.get("kind") in ("delivered", "watch"):
+        return JSONResponse({"error": f"a {meta['kind']} frame can't change kind"}, status_code=409)
+    was = meta.get("kind") or "created"
+    meta["kind"] = body.kind
+    try:
+        _write_meta(fdir, meta)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    delivered = False
+    if body.kind == "app" and was != "app":
+        status, _payload = await _deliver_to_frame(mid, fdir, APP_PROMOTION_NOTE,
+                                                   from_session="mindframe-system")
+        delivered = status == 200
+    return JSONResponse({"ok": True, "id": mid, "kind": body.kind,
+                         "agent_notified": delivered})
 
 
 @app.delete("/api/frame/{mid}")

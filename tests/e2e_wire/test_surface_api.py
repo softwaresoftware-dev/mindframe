@@ -368,6 +368,27 @@ def test_newer_delivery_supersedes_older_same_watch(frames_root):
     assert json.loads((old / "meta.json").read_text())["superseded"] is True
 
 
+def test_promote_to_app_notifies_agent_and_back(frames_root, stub_daemon):
+    _make_frame(frames_root, "frame1", task_id="task-77")
+    r = client.post("/api/frame/frame1/kind", json={"kind": "app"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "id": "frame1",
+                                                 "kind": "app", "agent_notified": True}
+    # the maintenance contract reached the agent
+    note = next(b for m, p, b in stub_daemon.calls if p == "/tasks/task-77/message")
+    assert "MAINTAINER" in note["text"] and note["from_session"] == "mindframe-system"
+    assert {f["id"]: f["kind"] for f in client.get("/api/frames").json()["frames"]}["frame1"] == "app"
+    # demote is quiet (no second message), and protected kinds refuse
+    n_msgs = len([1 for m, p, _ in stub_daemon.calls if p.endswith("/message")])
+    assert client.post("/api/frame/frame1/kind", json={"kind": "created"}).status_code == 200
+    assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/message")]) == n_msgs
+    assert client.post("/api/frame/frame1/kind", json={"kind": "watch"}).status_code == 422
+
+
+def test_kind_change_refused_for_delivered(frames_root, stub_daemon):
+    _make_frame(frames_root, "deliv", kind="delivered", origin={"watch": "pr-prep"})
+    assert client.post("/api/frame/deliv/kind", json={"kind": "app"}).status_code == 409
+
+
 # --------------------------- watches ---------------------------
 
 

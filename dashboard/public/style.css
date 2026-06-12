@@ -1628,3 +1628,12 @@ a:hover { color: var(--color-accent-hover); }
   background: #131316; border: 1px dashed #2c2c34; border-radius: 10px; outline: none;
 }
 .mgmt-new input:focus { border-color: #5b6cff; border-style: solid; }
+
+/* apps on the calm home: a quiet destination row */
+#calm-apps { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin-bottom: 1.6rem; }
+#calm-apps:empty { display: none; }
+.calm-app {
+  padding: .42rem .9rem; border-radius: 999px; text-decoration: none;
+  font-size: 13px; color: #c9c9d0; background: #131318; border: 1px solid #26262e;
+}
+.calm-app:hover { border-color: #3a4a8a; color: #cfe0ff; }
