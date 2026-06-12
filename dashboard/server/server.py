@@ -1136,15 +1136,15 @@ def _parse_cognition(line: str) -> list[dict[str, str]]:
         return []
     content = msg.get("content")
     if isinstance(content, str):
-        s = content.strip().replace("\n", " ")
-        return [{"kind": "text", "label": s[:160]}] if s else []
+        s = content.strip()
+        return [{"kind": "text", "label": s[:2000]}] if s else []
     if not isinstance(content, list):
         return []
     out: list[dict[str, str]] = []
     for b in content:
         t = b.get("type")
         if t == "text" and b.get("text", "").strip():
-            out.append({"kind": "text", "label": b["text"].strip().replace("\n", " ")[:160]})
+            out.append({"kind": "text", "label": b["text"].strip()[:2000]})
         elif t == "thinking":
             out.append({"kind": "thinking", "label": "thinking…"})
         elif t == "tool_use":
@@ -1153,7 +1153,7 @@ def _parse_cognition(line: str) -> list[dict[str, str]]:
                     or inp.get("path") or inp.get("url") or "")
             label = b.get("name") or "tool"
             if hint:
-                label += ": " + str(hint)[:100]
+                label += ": " + str(hint).replace("\n", " ")[:200]
             out.append({"kind": "tool", "label": label})
     return out
 
