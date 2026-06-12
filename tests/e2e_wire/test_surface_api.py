@@ -75,6 +75,8 @@ class _StubTaskpilot(BaseHTTPRequestHandler):
         if self.path.endswith("/start"):
             type(self).agent_dead = False
             self._send(200, {"ok": True, "started": True, "status": "running"})
+        elif self.path.endswith("/stop"):
+            self._send(200, {"ok": True, "status": "stopped", "tmux_killed": True})
         elif self.path.endswith("/message"):
             if type(self).task_missing:
                 self._send(404, {"detail": "task not found"})
@@ -386,6 +388,82 @@ def test_watch_open_is_a_singleton(frames_root, stub_daemon, tmp_path, monkeypat
     assert r2.json()["spawn"] == "existing" and r2.json()["id"] == wid
     assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")]) == spawn_calls_before
     assert client.post("/api/watches/nope/open").status_code == 404
+
+
+def test_watch_pause_resume_roundtrip(frames_root, tmp_path, monkeypatch):
+    dhome = tmp_path / "dispatcher"
+    (dhome / "recipes" / "pr-prep").mkdir(parents=True)
+    (dhome / "recipes" / "pr-prep" / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
+    (dhome / "channels.yaml").write_text(
+        "routes:\n"
+        "  - source: github\n"
+        "    event_type: pull_request.opened\n"
+        "    target: spawn:pr-prep\n", "utf-8")
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
+    monkeypatch.setattr(srv, "TASKPILOT_DB", tmp_path / "no.db")
+
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["wired"] is True and w["paused"] is False
+
+    r = client.post("/api/watches/pr-prep/pause")
+    assert r.status_code == 200 and r.json()["moved"] == 1
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["wired"] is False and w["paused"] is True
+    assert w["paused_triggers"] == ["github/pull_request.opened"]
+    # original preserved before the comment-stripping rewrite
+    assert (dhome / "channels.yaml.bak-original").is_file()
+    # pausing twice is a clean 409, not a duplicate move
+    assert client.post("/api/watches/pr-prep/pause").status_code == 409
+
+    r = client.post("/api/watches/pr-prep/resume")
+    assert r.status_code == 200
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["wired"] is True and w["paused"] is False
+
+
+def test_watches_carry_runs_and_deliveries(frames_root, tmp_path, monkeypatch):
+    import sqlite3
+    dhome = tmp_path / "dispatcher"
+    (dhome / "recipes" / "pr-prep").mkdir(parents=True)
+    (dhome / "recipes" / "pr-prep" / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
+    db = tmp_path / "tp.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT)")
+    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', '2026-06-11 18:00:00')")
+    con.commit(); con.close()
+    monkeypatch.setattr(srv, "TASKPILOT_DB", db)
+    _make_frame(frames_root, "pr-prep-evt9", kind="delivered", origin={"watch": "pr-prep"})
+
+    w = client.get("/api/watches").json()["watches"][0]
+    assert w["runs"][0]["task_id"] == "pr-prep-evt9"
+    assert w["deliveries"][0]["id"] == "pr-prep-evt9"
+
+
+def test_runs_classify_and_stop(frames_root, stub_daemon, tmp_path, monkeypatch):
+    import sqlite3
+    dhome = tmp_path / "dispatcher"
+    (dhome / "recipes" / "pr-prep").mkdir(parents=True)
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
+    db = tmp_path / "tp.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT)")
+    now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    con.execute("INSERT INTO tasks VALUES ('frame1', 'frame1', 'running', ?)", (now,))
+    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', ?)", (now,))
+    con.commit(); con.close()
+    monkeypatch.setattr(srv, "TASKPILOT_DB", db)
+    monkeypatch.setattr(srv, "_live_tmux_cached", lambda: {"frame1"})
+    _make_frame(frames_root, "frame1")
+
+    runs = {r["task_id"]: r for r in client.get("/api/runs").json()["runs"]}
+    assert runs["frame1"]["kind"] == "frame" and runs["frame1"]["alive"] is True
+    assert runs["frame1"]["frame_id"] == "frame1"
+    assert runs["pr-prep-evt9"]["kind"] == "watch-run" and runs["pr-prep-evt9"]["watch"] == "pr-prep"
+
+    r = client.post("/api/runs/frame1/stop")
+    assert r.status_code == 200
+    assert ("POST", "/tasks/frame1/stop", {}) in stub_daemon.calls
 
 
 # --------------------------- activity feed ---------------------------

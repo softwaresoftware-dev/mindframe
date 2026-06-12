@@ -1580,3 +1580,51 @@ a:hover { color: var(--color-accent-hover); }
 .calm-more { text-align: center; margin-top: 2.6rem; }
 .calm-more, .calm-more a { color: #50505a; font-size: 11.5px; text-decoration: none; letter-spacing: .06em; }
 .calm-more a:hover { color: #9aa6ff; }
+
+/* ----- management panels (watches / agents / connections drawers) ----- */
+.mgmt-card {
+  background: #121216; border: 1px solid #222229; border-radius: 12px;
+  padding: .9rem 1rem; margin-bottom: .8rem;
+}
+.mgmt-head { display: flex; align-items: center; gap: .6rem; }
+.mgmt-name { font-size: 15px; color: #ececf0; font-weight: 600; }
+.mgmt-sub { color: #6b6b73; font-size: 12px; margin: .25rem 0 .5rem; }
+.mgmt-sec {
+  font-size: .56rem; letter-spacing: .16em; text-transform: uppercase;
+  color: #50505a; margin: .6rem 0 .2rem;
+}
+.mgmt-line {
+  display: flex; align-items: center; gap: .55rem; padding: .26rem .1rem;
+  font-size: 12.5px; color: #9a9aa2; text-decoration: none;
+}
+.mgmt-line.mgmt-link:hover span { color: #cfe0ff; }
+.mgmt-runname { color: #c9c9d0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.mgmt-dim { color: #50505a; font-size: 11px; font-family: ui-monospace, monospace; margin-left: auto; white-space: nowrap; }
+.mgmt-run .mgmt-dim { margin-left: 0; }
+.mgmt-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; border: 1px solid #3f3f48; }
+.mgmt-dot.st-live, .mgmt-dot.st-connected, .mgmt-dot.st-running { background: #3f8f5f; border-color: transparent; }
+.mgmt-dot.st-completed, .mgmt-dot.st-delivered { background: #5b6cff; border-color: transparent; }
+.mgmt-dot.st-crashed { background: #b3434f; border-color: transparent; }
+.mgmt-dot.st-needs-auth { background: #d9a441; border-color: transparent; }
+.mgmt-actions { display: flex; gap: .5rem; margin-top: .7rem; }
+.btn-mini {
+  font-size: 11.5px; padding: .3rem .7rem; border-radius: 7px; cursor: pointer;
+  background: #1c1c21; color: #9a9aa2; border: 1px solid #2c2c33; text-decoration: none;
+}
+.btn-mini:hover { color: #cfe0ff; border-color: #3a4a8a; }
+.btn-mini.btn-go { color: #9aa6ff; }
+.btn-mini.btn-danger:hover { color: #ff8a8a; border-color: #5a2a30; background: #2a1418; }
+.pill {
+  font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: .14rem .5rem; border-radius: 999px; border: 1px solid #2c2c33;
+}
+.pill-live { color: #6fcf97; border-color: #1f3a28; background: #11201730; }
+.pill-paused { color: #d9a441; border-color: #4a3a18; }
+.pill-unwired { color: #6b6b73; }
+.pill-kind { color: #6b6b73; }
+.mgmt-new { margin-top: 1rem; }
+.mgmt-new input {
+  width: 100%; padding: .65rem .8rem; font-size: 13.5px; color: #ececf0;
+  background: #131316; border: 1px dashed #2c2c34; border-radius: 10px; outline: none;
+}
+.mgmt-new input:focus { border-color: #5b6cff; border-style: solid; }

@@ -1569,7 +1569,7 @@ def _discover_connections() -> dict:
         if m["id"].lower() in seen:
             continue
         seen.add(m["id"].lower())
-        conns.append({"id": m["id"], "kind": "mcp", "name": m["name"]})
+        conns.append({"id": m["id"], "kind": "mcp", "name": m["name"], "state": m["state"]})
 
     # Connector skills — any SKILL.md with a `connection:` fingerprint. Listed
     # whether or not their tool is installed/authed; that's the deferred status.
@@ -1583,6 +1583,7 @@ def _discover_connections() -> dict:
             "id": sid,
             "kind": str(fp.get("kind") or "skill"),
             "name": fp.get("label") or _CONN_DISPLAY.get(sid, sid.replace("-", " ").title()),
+            "state": "unprobed",
         })
 
     conns.sort(key=lambda c: (c["kind"] != "cli", c["name"]))
@@ -1820,11 +1821,68 @@ forward question.
 Compose your watch home page now."""
 
 
+def _paused_triggers() -> dict[str, list[str]]:
+    """Recipe name -> (source/event_type) trigger strings parked under the
+    channels.yaml `paused_routes:` key. The dispatcher reads only `routes:`,
+    so a parked route is inert — that's what pausing IS."""
+    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    out: dict[str, list[str]] = {}
+    for r in (chan.get("paused_routes") or []):
+        if isinstance(r, dict):
+            t = _split_target(r.get("target", ""))
+            if t["kind"] == "spawn":
+                out.setdefault(t["name"], []).append(
+                    f"{r.get('source', '?')}/{r.get('event_type', '*')}")
+    return out
+
+
+def _watch_runs(rid: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Recent taskpilot runs spawned by this watch (task ids are
+    '<recipe>-<event id>' by recipe convention)."""
+    if not TASKPILOT_DB.is_file():
+        return []
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+        rows = con.execute(
+            "SELECT task_id, status, updated_at FROM tasks WHERE task_id LIKE ? "
+            "ORDER BY updated_at DESC LIMIT ?", (f"{rid}-%", limit)).fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    return [{"task_id": r[0], "status": r[1], "updated_at": r[2]} for r in rows]
+
+
+def _watch_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
+    """This watch's recent delivered frames (newest first, archived included
+    so history survives the inbox)."""
+    out = []
+    if not FRAMES_ROOT.is_dir():
+        return out
+    for fdir in FRAMES_ROOT.iterdir():
+        if not fdir.is_dir() or not (fdir / "index.html").is_file():
+            continue
+        meta = _read_meta(fdir)
+        origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
+        if meta.get("kind") == "delivered" and origin.get("watch") == rid:
+            try:
+                mt = int((fdir / "index.html").stat().st_mtime * 1000)
+            except OSError:
+                mt = 0
+            out.append({"id": fdir.name,
+                        "title": _page_title(fdir / "index.html") or meta.get("title") or fdir.name,
+                        "archived": bool(meta.get("archived")), "modified": mt})
+    out.sort(key=lambda d: d["modified"], reverse=True)
+    return out[:limit]
+
+
 @app.get("/api/watches")
 def list_watches() -> Response:
-    """Watches = recipes joined with their routes and their singleton frame
-    (if opened). The operator-facing automation list."""
+    """Watches = recipes joined with routes (active + paused), recent runs,
+    recent deliveries, and the singleton manager frame. The operator-facing
+    automation list — everything a management panel needs in one call."""
     defs = _agent_definitions()
+    paused = _paused_triggers()
     out = []
     for d in defs:
         wid = f"watch-{d['id']}"[:64]
@@ -1832,10 +1890,60 @@ def list_watches() -> Response:
             "id": d["id"],
             "name": d["name"],
             "triggered_by": d["triggered_by"],
+            "paused_triggers": paused.get(d["id"], []),
             "wired": bool(d["triggered_by"]),
+            "paused": not d["triggered_by"] and bool(paused.get(d["id"])),
             "frame_id": wid if (FRAMES_ROOT / wid / "index.html").is_file() else None,
+            "runs": _watch_runs(d["id"]),
+            "deliveries": _watch_deliveries(d["id"]),
         })
     return JSONResponse({"watches": out})
+
+
+def _move_watch_routes(rid: str, pause: bool) -> Response:
+    """Move this watch's routes between `routes:` (live) and `paused_routes:`
+    (inert) in channels.yaml. The file is rewritten via YAML (comments are
+    lost — a one-time .bak preserves the original); a backup is also taken
+    on every change to .bak-last."""
+    try:
+        import yaml
+    except ImportError:
+        return JSONResponse({"error": "PyYAML unavailable"}, status_code=500)
+    chan_path = DISPATCHER_HOME / "channels.yaml"
+    if not chan_path.is_file():
+        return JSONResponse({"error": "no channels.yaml"}, status_code=404)
+    data = _load_yaml(chan_path) or {}
+    src_key, dst_key = ("routes", "paused_routes") if pause else ("paused_routes", "routes")
+    src = [r for r in (data.get(src_key) or []) if isinstance(r, dict)]
+    dst = [r for r in (data.get(dst_key) or []) if isinstance(r, dict)]
+    moving = [r for r in src if _split_target(r.get("target", "")) == {"kind": "spawn", "name": rid}]
+    if not moving:
+        return JSONResponse({"error": f"no {'active' if pause else 'paused'} routes for '{rid}'"},
+                            status_code=409)
+    keep = [r for r in src if r not in moving]
+    data[src_key] = keep
+    data[dst_key] = dst + moving
+    try:
+        original = chan_path.read_text("utf-8")
+        once = chan_path.with_suffix(".yaml.bak-original")
+        if not once.exists():
+            once.write_text(original, "utf-8")
+        chan_path.with_suffix(".yaml.bak-last").write_text(original, "utf-8")
+        chan_path.write_text(yaml.safe_dump(data, sort_keys=False), "utf-8")
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "id": rid, "paused": pause, "moved": len(moving)})
+
+
+@app.post("/api/watches/{rid}/pause")
+def pause_watch(rid: str) -> Response:
+    """Park this watch's routes — the dispatcher stops firing it. Reversible."""
+    return _move_watch_routes(rid, pause=True)
+
+
+@app.post("/api/watches/{rid}/resume")
+def resume_watch(rid: str) -> Response:
+    return _move_watch_routes(rid, pause=False)
 
 
 @app.post("/api/watches/{rid}/open")
@@ -1866,6 +1974,86 @@ async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
     _write_meta(fdir, meta)
     background_tasks.add_task(_spawn_frame_bg, wid, fdir, prompt)
     return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "starting"})
+
+
+# --------------------------- runs (live agent management) ---------------------------
+#
+# "What is running right now, and what ran recently" — every taskpilot task,
+# classified for the operator: a FRAME agent (interactive, belongs to a dock
+# frame), a WATCH run (ephemeral, spawned by a route), or OTHER. Mechanical
+# controls only: kill. Behavioral changes happen in the frame/watch surfaces.
+
+
+def _frame_task_index() -> dict[str, str]:
+    """task_id -> frame_id for every frame on disk."""
+    out: dict[str, str] = {}
+    if not FRAMES_ROOT.is_dir():
+        return out
+    for fdir in FRAMES_ROOT.iterdir():
+        if fdir.is_dir() and (fdir / "index.html").is_file():
+            out[_frame_task_id(fdir.name, fdir)] = fdir.name
+    return out
+
+
+@app.get("/api/runs")
+def list_runs() -> Response:
+    """Live + recent (48h) taskpilot tasks, classified. Live = tmux exists."""
+    if not TASKPILOT_DB.is_file():
+        return JSONResponse({"runs": [], "taskpilot_present": False})
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+        rows = con.execute(
+            "SELECT task_id, name, status, updated_at FROM tasks "
+            "ORDER BY updated_at DESC LIMIT 200").fetchall()
+        con.close()
+    except sqlite3.Error:
+        return JSONResponse({"runs": [], "taskpilot_present": False})
+    live = _live_tmux_cached()
+    frame_of = _frame_task_index()
+    recipes = set()
+    rdir = DISPATCHER_HOME / "recipes"
+    if rdir.is_dir():
+        recipes = {d.name for d in rdir.iterdir() if d.is_dir()}
+    now = time.time()
+    out = []
+    for task_id, name, status, updated_at in rows:
+        try:
+            dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
+            at = dt.replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            at = 0.0
+        alive = task_id in live
+        if not alive and (now - at) >= _FEED_WINDOW_S:
+            continue
+        watch = next((r for r in recipes if task_id.startswith(r + "-")), None)
+        out.append({
+            "task_id": task_id,
+            "name": name or task_id,
+            "status": status,
+            "alive": alive,
+            "updated": int(at * 1000),
+            "kind": "frame" if task_id in frame_of else "watch-run" if watch else "task",
+            "frame_id": frame_of.get(task_id),
+            "watch": watch,
+        })
+    out.sort(key=lambda r: (not r["alive"], -r["updated"]))
+    return JSONResponse({"runs": out, "taskpilot_present": True})
+
+
+@app.post("/api/runs/{task_id}/stop")
+async def stop_run(task_id: str) -> Response:
+    """Kill a run — proxies taskpilot's idempotent stop."""
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", task_id):
+        return JSONResponse({"error": "bad task id"}, status_code=422)
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(f"{TASKPILOT_DAEMON}/tasks/{task_id}/stop")
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"taskpilot daemon unreachable: {e}"}, status_code=502)
+    if r.status_code >= 300:
+        return JSONResponse({"error": f"daemon {r.status_code}: {r.text[:200]}"}, status_code=502)
+    return JSONResponse(r.json())
 
 
 _FEED_WINDOW_S = 48 * 3600.0

@@ -102,34 +102,98 @@ async function drawerMindframes(body) {
   }
 }
 
-// One automation per row: when it fires, what it does, and its manager
-// frame. Opening is instant (singleton; create-if-missing, spawn in bg).
+// ----- management panels -----
+//
+// Mechanical operations get buttons (pause, resume, kill, open); behavioral
+// changes get conversation (each panel routes you to the right frame).
+
+const agoM = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d"; };
+
 async function drawerWatches(body) {
   try {
     const j = await (await fetch("/api/watches")).json();
     const ws = j.watches || [];
-    if (!ws.length) {
-      body.innerHTML = `<div class="empty"><p>No watches yet. A watch runs for you on a trigger — wire one from a launchpad, or ask any mindframe to set one up.</p></div>`;
-      return;
-    }
-    body.innerHTML = `<div class="frame-list">` + ws.map(w => `
-      <a class="frame-row" href="#" data-watch="${escapeHtml(w.id)}">
-        <span class="frame-marker frame-marker-${w.wired ? "active" : "idle"}"></span>
-        <span class="frame-title-wrap">
-          <span class="frame-title">${escapeHtml(w.name)}</span>
-          <span class="frame-sub">${w.wired ? escapeHtml(w.triggered_by.join(", ")) : "not wired to any event"}</span>
-        </span>
-        <span class="frame-open">${w.frame_id ? "→" : "open"}</span>
-      </a>`).join("") + `</div>`;
-    body.querySelectorAll("[data-watch]").forEach(row => row.addEventListener("click", async (e) => {
-      e.preventDefault();
-      const r = await fetch(`/api/watches/${encodeURIComponent(row.dataset.watch)}/open`, { method: "POST" });
-      const d = await r.json();
-      if (r.ok) location.href = d.url;
-      else showToast(`couldn't open watch: ${d.error || r.statusText}`, "err");
+    const cards = ws.map(w => {
+      const state = w.wired ? ["live", "the dispatcher fires it on " + w.triggered_by.join(", ")]
+        : w.paused ? ["paused", "parked — was " + w.paused_triggers.join(", ")]
+        : ["unwired", "no route feeds it yet"];
+      const runs = (w.runs || []).slice(0, 3).map(r =>
+        `<div class="mgmt-line"><span class="mgmt-dot st-${escapeHtml(r.status)}"></span>
+         <span class="mono">${escapeHtml(r.task_id)}</span><span class="mgmt-dim">${escapeHtml(r.status)}</span></div>`).join("");
+      const dels = (w.deliveries || []).map(d =>
+        `<a class="mgmt-line mgmt-link" href="/m/${encodeURIComponent(d.id)}">
+         <span class="mgmt-dot st-delivered"></span><span>${escapeHtml(d.title)}</span>
+         <span class="mgmt-dim">${d.archived ? "archived" : "in inbox"} · ${agoM(d.modified)}</span></a>`).join("");
+      return `
+      <div class="mgmt-card" data-w="${escapeHtml(w.id)}">
+        <div class="mgmt-head">
+          <span class="mgmt-name">${escapeHtml(w.name)}</span>
+          <span class="pill pill-${state[0]}">${state[0]}</span>
+        </div>
+        <div class="mgmt-sub">${escapeHtml(state[1])}</div>
+        ${runs ? `<div class="mgmt-sec">runs</div>${runs}` : ""}
+        ${dels ? `<div class="mgmt-sec">deliveries</div>${dels}` : ""}
+        <div class="mgmt-actions">
+          ${w.wired ? `<button class="btn-mini" data-act="pause">pause</button>` : ""}
+          ${w.paused ? `<button class="btn-mini" data-act="resume">resume</button>` : ""}
+          <button class="btn-mini btn-go" data-act="manage">manage →</button>
+        </div>
+      </div>`;
+    }).join("");
+    body.innerHTML = (cards || `<div class="empty"><p>No watches yet.</p></div>`) + `
+      <form class="mgmt-new" id="watch-new">
+        <input placeholder="set up a new watch — describe what should run, and when…">
+      </form>`;
+    body.querySelectorAll(".mgmt-card [data-act]").forEach(b => b.addEventListener("click", async (e) => {
+      const id = e.target.closest(".mgmt-card").dataset.w, act = e.target.dataset.act;
+      if (act === "manage") {
+        const r = await fetch(`/api/watches/${encodeURIComponent(id)}/open`, { method: "POST" });
+        const d = await r.json();
+        if (r.ok) location.href = d.url; else showToast(d.error || "couldn't open", "err");
+        return;
+      }
+      const r = await fetch(`/api/watches/${encodeURIComponent(id)}/${act}`, { method: "POST" });
+      if (!r.ok) showToast((await r.json().catch(() => ({}))).error || `${act} failed`, "err");
+      drawerWatches(body);   // re-render with fresh state
     }));
+    $("watch-new").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const txt = e.target.querySelector("input").value.trim();
+      if (!txt) return;
+      createMindframe(`Set up a new watch: ${txt}. Survey my event sources, existing routes (~/.dispatcher/channels.yaml) and recipes; draft the recipe + route; show the full config as a pending action and wait for my approval before writing anything.`);
+    });
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>couldn't load watches: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function drawerAgents(body) {
+  try {
+    const j = await (await fetch("/api/runs")).json();
+    const runs = j.runs || [];
+    const live = runs.filter(r => r.alive), past = runs.filter(r => !r.alive);
+    const row = (r) => `
+      <div class="mgmt-line mgmt-run" data-t="${escapeHtml(r.task_id)}">
+        <span class="mgmt-dot ${r.alive ? "st-live" : "st-" + escapeHtml(r.status)}"></span>
+        <span class="mgmt-runname">${escapeHtml(r.name)}</span>
+        <span class="pill pill-kind">${escapeHtml(r.kind)}</span>
+        <span class="mgmt-dim">${agoM(r.updated)}</span>
+        ${r.frame_id ? `<a class="btn-mini btn-go" href="/m/${encodeURIComponent(r.frame_id)}">open</a>` : ""}
+        ${r.alive ? `<button class="btn-mini btn-danger" data-kill>kill</button>` : ""}
+      </div>`;
+    body.innerHTML =
+      (live.length ? `<div class="mgmt-sec">running now (${live.length})</div>` + live.map(row).join("") : `<div class="empty"><p>nothing running right now</p></div>`) +
+      (past.length ? `<div class="mgmt-sec">recent (48h)</div>` + past.slice(0, 12).map(row).join("") : "");
+    body.querySelectorAll("[data-kill]").forEach(b => b.addEventListener("click", async (e) => {
+      const id = e.target.closest(".mgmt-run").dataset.t;
+      if (!confirm(`Kill ${id}? Its tmux session ends now; a frame agent revives on the next message.`)) return;
+      const r = await fetch(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST" });
+      if (!r.ok) showToast((await r.json().catch(() => ({}))).error || "kill failed", "err");
+      drawerAgents(body);
+    }));
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load runs: ${escapeHtml(String(e))}</p></div>`;
   }
 }
 
@@ -137,18 +201,22 @@ async function drawerConnections(body) {
   try {
     const j = await (await fetch("/api/connections")).json();
     const cs = j.connections || [];
-    if (!cs.length) {
-      body.innerHTML = `<div class="empty"><p>No connections discovered yet.</p></div>`;
-      return;
-    }
-    body.innerHTML = `<div class="frame-list">` + cs.map(c => `
-      <div class="frame-row">
-        <span class="frame-marker frame-marker-active"></span>
-        <span class="frame-title-wrap">
-          <span class="frame-title">${escapeHtml(c.name)}</span>
-          <span class="frame-sub">${escapeHtml(c.kind)}</span>
-        </span>
-      </div>`).join("") + `</div>`;
+    body.innerHTML = (cs.map(c => `
+      <div class="mgmt-line">
+        <span class="mgmt-dot st-${escapeHtml(c.state || "unprobed")}"></span>
+        <span class="mgmt-runname">${escapeHtml(c.name)}</span>
+        <span class="pill pill-kind">${escapeHtml(c.kind)}</span>
+        <span class="mgmt-dim">${escapeHtml(c.state || "")}</span>
+      </div>`).join("") || `<div class="empty"><p>No connections discovered yet.</p></div>`) + `
+      <form class="mgmt-new" id="conn-new">
+        <input placeholder="connect a tool — name it and I'll find the best way in…">
+      </form>`;
+    $("conn-new").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const txt = e.target.querySelector("input").value.trim();
+      if (!txt) return;
+      createMindframe(`Connect ${txt} so my mindframes and watches can reach it. Research the best door (an MCP, an authed CLI, an API, or the browser), draft the connector, and show me anything requiring credentials or irreversible setup as a pending action before doing it.`);
+    });
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>couldn't load connections: ${escapeHtml(String(e))}</p></div>`;
   }
@@ -506,6 +574,7 @@ function renderHome() {
   const FOOT = [
     { key: "mindframes",  word: "frames",      label: "Mindframes",     render: drawerMindframes },
     { key: "watches",     word: "watches",     label: "Watches",        render: drawerWatches },
+    { key: "agents",      word: "agents",      label: "Agents",         render: drawerAgents },
     { key: "knowledge",   word: "knowledge",   label: "Knowledge base", render: drawerKnowledge },
     { key: "connections", word: "connections", label: "Connections",    render: drawerConnections },
   ];
