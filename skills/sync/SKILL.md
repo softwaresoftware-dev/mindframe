@@ -57,22 +57,17 @@ Read `~/.mindframe/vault/CATALOG.md`. Add rows for new entities; update rows whe
 **g. Commit**
 If the vault is a git repo, commit: `sync: pull from <source> (<N> entities, <M> new)`.
 
-## Step 3 — Schedule (optional)
+## Step 3 — Schedule
 
-If the operator asks to run this on a schedule, wire it using the available scheduling tool:
+Dispatcher wiring and cron scheduling are set up automatically when a connection is made via `/mindframe:connect`. The operator should not need to wire this manually.
 
-- **Cron**: a daily or hourly job runs `/mindframe:sync`
-- **Dispatcher**: add a `channels.yaml` route that fires on events from this source:
+**How automatic sync triggers work:**
+- **Event-driven sources (GitHub):** the dispatcher polls via an event-source YAML; push/repository events route to `spawn:vault-sync` with `brief: { source: github }`.
+- **Schedule-based sources (Confluence, REST APIs):** a cron job posts a synthetic event (`source: vault-sync-schedule, event_type: <source>`) to the dispatcher, which routes it to `spawn:vault-sync`.
 
-```yaml
-# ~/.dispatcher/channels.yaml
-- match: {source: github, type: push}
-  action: run:/mindframe:sync github
-- match: {source: confluence}
-  action: run:/mindframe:sync confluence
-```
+Both paths spawn the `vault-sync` recipe, which runs this skill. The cron fires at the schedule declared in the connector's `sync.schedule` field.
 
-If neither scheduling tool is available, tell the operator to run `/mindframe:sync` manually when they want a refresh.
+If the operator asks about a wiring issue or sync is not triggering, run `/mindframe:doctor` — it checks the recipe, channels.yaml routes, event-source YAMLs, and cron entries and reports what's broken.
 
 ## Step 4 — Report
 

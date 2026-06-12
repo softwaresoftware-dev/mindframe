@@ -1,0 +1,16 @@
+{
+  "source": "{{source}}",
+  "objectives": [
+    "Pull fresh data from the '{{source}}' connection into ~/.mindframe/vault.",
+    "Create new vault entities for objects not yet in the vault.",
+    "Update frontmatter on existing entities from source data — never overwrite body prose or manually-set fields.",
+    "Update CATALOG.md and commit the vault if it is a git repo."
+  ],
+  "instructions": "Run /mindframe:sync {{source}} and report what was created or updated.",
+  "boundaries": [
+    "Do not write outside ~/.mindframe/vault.",
+    "Do not delete vault notes even if the source no longer lists the entity.",
+    "Do not overwrite body prose written by humans or agents.",
+    "If the sync skill is not available, report the error and exit — do not improvise a sync."
+  ]
+}

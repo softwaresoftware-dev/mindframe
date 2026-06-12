@@ -103,9 +103,127 @@ Once the operator approves the draft and the credential is in place:
 1. Create the directory and write the SKILL.md with the Write tool.
 2. Run the `check` command yourself. Exit 0 → connected. Non-zero → report what failed (usually the credential isn't where the `auth` pointer says), help fix it, then re-check.
 3. `~/.claude/skills/` is watched, so the connector loads immediately — no restart.
-4. If the connector has a `sync:` block, run `/mindframe:sync <source>` immediately to do the initial vault population.
 
 Never report a connection working you didn't actually run the `check` against.
+
+## Step 5b — Wire the sync (only if connector has a `sync:` block)
+
+Do this immediately after Step 5, without asking. The dispatcher is the routing backbone; everything below writes to it or schedules against it.
+
+### 1. Deploy the vault-sync recipe (once per install)
+
+Check if `~/.dispatcher/recipes/vault-sync/` exists. If not:
+- Copy from `$(dirname $CLAUDE_PLUGIN_ROOT)/setup/recipes/vault-sync/` if present
+- Otherwise write it inline:
+
+`~/.dispatcher/recipes/vault-sync/recipe.yaml`:
+```yaml
+task_id_pattern: "vault-sync-{event_id}"
+task_name: vault-sync
+model: sonnet
+when_to_use:
+  - a connected source has new data to pull into the mindframe vault
+  - a scheduled sync fires for a connected source
+brief_schema:
+  required: []
+  optional: [source]
+starter_prompt: |
+  You are a vault-sync agent. Pull fresh data from a connected source into
+  ~/.mindframe/vault, conforming to the vault's schema.yaml.
+
+  {brief}
+
+  Follow the instructions above. Background task only — no surface frame.
+  Report a one-line summary and exit.
+```
+
+`~/.dispatcher/recipes/vault-sync/brief.json`:
+```json
+{
+  "source": "{{source}}",
+  "objectives": [
+    "Pull fresh data from the '{{source}}' connection into ~/.mindframe/vault.",
+    "Create new vault entities; update frontmatter on existing ones — never overwrite body prose.",
+    "Update CATALOG.md and commit the vault."
+  ],
+  "instructions": "Run /mindframe:sync {{source}} and report what was created or updated.",
+  "boundaries": [
+    "Do not delete vault notes even if the source no longer lists the entity.",
+    "Do not overwrite body prose written by humans or agents."
+  ]
+}
+```
+
+### 2. Wire event-driven triggers (`sync.triggers` is set)
+
+For each trigger in `sync.triggers`, add a route to `~/.dispatcher/channels.yaml`. Use `/dispatcher:route` — it edits channels.yaml safely and restarts the daemon:
+
+```yaml
+- source: <connection-name>      # e.g. github
+  event_type: <trigger>          # e.g. push
+  target: spawn:vault-sync
+  brief:
+    source: <connection-name>
+```
+
+Add one route per trigger. If a matching route already exists, skip it.
+
+**GitHub only** — also write an event-source YAML so the dispatcher polls the right events:
+
+```bash
+GH_LOGIN=$(gh api user -q .login)
+GH_ORG=$(gh api user/orgs -q '.[0].login' 2>/dev/null || echo "$GH_LOGIN")
+```
+
+Write `~/.dispatcher/event-sources/vault-sync-github.yaml`:
+```yaml
+name: vault-sync-github
+system: github
+scope:
+  orgs: [<GH_ORG>]
+watching:
+  - push
+  - repository
+credentials_ref: github
+transport: auto
+```
+
+If this file already exists, do not overwrite — the operator may have customized it. Check and skip.
+
+For non-GitHub sources (Confluence, REST APIs), there is no dispatcher adapter. Route via the schedule path below instead.
+
+### 3. Wire schedule-based sync (`sync.schedule` is set)
+
+The schedule path works by posting a synthetic event to the dispatcher on a cron timer. The dispatcher spawns the vault-sync agent via the normal route mechanism — no new adapters needed.
+
+**Add the channels.yaml route for the synthetic event:**
+```yaml
+- source: vault-sync-schedule
+  event_type: <connection-name>    # e.g. confluence
+  target: spawn:vault-sync
+  brief:
+    source: <connection-name>
+```
+
+**Map the schedule to a cron expression:**
+- `hourly` → `0 * * * *`
+- `daily` → `0 7 * * *`
+- `weekly` → `0 7 * * 1`
+- `manual` → skip (no cron, only `/mindframe:sync <source>` by hand)
+
+**Install the cron entry:**
+```bash
+DISPATCHER_TOKEN_FILE=~/.mindframe/secrets/dispatcher-bearer.token
+CRON_CMD="bash -lc \"curl -sf -m 30 -H 'Authorization: Bearer \$(cat $DISPATCHER_TOKEN_FILE)' -d '{\\\"source\\\":\\\"vault-sync-schedule\\\",\\\"event_type\\\":\\\"<source>\\\",\\\"data\\\":{}}' http://127.0.0.1:8911/api/event\""
+CRON_ENTRY="<cron-expression> $CRON_CMD # vault-sync-<source>"
+(crontab -l 2>/dev/null | grep -v "# vault-sync-<source>"; echo "$CRON_ENTRY") | crontab -
+```
+
+The `bash -l` loads the user's profile (env vars available). The token is read at runtime from the secrets file. If the dispatcher is down when the cron fires, the curl fails silently — the next tick retries. If sources have BOTH triggers AND a schedule, wire both; they are complementary.
+
+### 4. Run the initial sync
+
+Run `/mindframe:sync <source>` now to seed the vault with the connection's first pull. This is the initial population pass — subsequent runs will be triggered automatically.
 
 ## Step 6 — Confirm
 
