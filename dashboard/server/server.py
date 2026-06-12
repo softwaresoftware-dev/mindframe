@@ -997,18 +997,13 @@ async def frame_data_put(mid: str, key: str, request: Request) -> Response:
 # unguessable slug. The stylesheets are inlined, the data plane is baked in
 # (a fetch shim answers /data/<key> GETs from the embedded values), and
 # anything that would reach the agent (/message, data PUTs) is politely
-# blocked — a shared page never wakes or writes anything. Served locally at
-# /share/<slug>; optionally also copied to a public static-site dir:
-#
-#   MINDFRAME_SHARE_PUBLISH_DIR  — a deployed static dir to copy snapshots into
-#   MINDFRAME_SHARE_PUBLIC_BASE  — the public URL base for that dir
-#
-# Publishing uses `sudo -n cp` as a fallback when the dir isn't writable
-# (matches the operator's static-deploy convention); both are best-effort.
+# blocked — a shared page never wakes or writes anything. Two doors:
+#   GET  /api/frame/<id>/export — download the snapshot as an .html file
+#                                 (host it anywhere, mail it, slack it)
+#   POST /api/frame/<id>/share  — keep a copy served at /share/<slug>
+#                                 for same-machine / tailnet links
 
 SHARES_DIR = Path(os.environ.get("MINDFRAME_SHARES_DIR", str(Path.home() / ".mindframe" / "shares")))
-SHARE_PUBLISH_DIR = os.environ.get("MINDFRAME_SHARE_PUBLISH_DIR") or None
-SHARE_PUBLIC_BASE = (os.environ.get("MINDFRAME_SHARE_PUBLIC_BASE") or "").rstrip("/") or None
 
 _SHARE_SHIM = """<script>/* mindframe share shim — this is a frozen snapshot */
 (function(){
@@ -1079,23 +1074,6 @@ def _build_snapshot(fdir: Path) -> str:
     return html
 
 
-def _publish_snapshot(filename: str, src: Path) -> str | None:
-    """Best-effort copy into the configured public static dir. Returns the
-    public URL or None."""
-    if not (SHARE_PUBLISH_DIR and SHARE_PUBLIC_BASE):
-        return None
-    dst = Path(SHARE_PUBLISH_DIR) / filename
-    try:
-        shutil.copyfile(src, dst)
-    except (OSError, PermissionError):
-        # Match the operator's static-deploy sudoers shape exactly:
-        # /usr/bin/cp -r <src> /var/www/<...>
-        r = _conn_run(["sudo", "-n", "/usr/bin/cp", "-r", str(src), str(dst)], timeout=10)
-        if not r or r.returncode != 0:
-            return None
-    return f"{SHARE_PUBLIC_BASE}/{filename}"
-
-
 @app.post("/api/frame/{mid}/share")
 def share_frame(mid: str) -> Response:
     """Freeze this frame's page into an immutable snapshot at a new
@@ -1117,9 +1095,28 @@ def share_frame(mid: str) -> Response:
         out.write_text(snapshot, "utf-8")
     except OSError as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-    public_url = _publish_snapshot(f"{slug}.html", out)
-    return JSONResponse({"ok": True, "slug": slug, "url": f"/share/{slug}",
-                         "public_url": public_url})
+    return JSONResponse({"ok": True, "slug": slug, "url": f"/share/{slug}"})
+
+
+@app.get("/api/frame/{mid}/export")
+def export_frame(mid: str) -> Response:
+    """Download this frame's page as one self-contained .html file — the
+    simple export. Same snapshot as sharing, delivered as an attachment."""
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    if not (fdir / "index.html").is_file():
+        return JSONResponse({"error": "nothing to export yet"}, status_code=409)
+    try:
+        snapshot = _build_snapshot(fdir)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    title = _page_title(fdir / "index.html") or _read_meta(fdir).get("title") or mid
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-")[:60] or mid
+    return Response(snapshot, media_type="text/html", headers={
+        "Content-Disposition": f'attachment; filename="{fname}.html"',
+        "Cache-Control": "no-store",
+    })
 
 
 @app.get("/share/{slug}")

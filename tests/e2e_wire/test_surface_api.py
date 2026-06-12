@@ -571,7 +571,7 @@ def test_share_freezes_a_self_contained_snapshot(frames_root, tmp_path, monkeypa
     r = client.post("/api/frame/frame1/share")
     assert r.status_code == 200
     j = r.json()
-    assert len(j["slug"]) == 14 and j["public_url"] is None
+    assert len(j["slug"]) == 14
 
     page = client.get(j["url"])
     assert page.status_code == 200
@@ -583,6 +583,19 @@ def test_share_freezes_a_self_contained_snapshot(frames_root, tmp_path, monkeypa
     # re-share mints a new immutable slug
     j2 = client.post("/api/frame/frame1/share").json()
     assert j2["slug"] != j["slug"]
+
+
+def test_export_downloads_one_file(frames_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "SHARES_DIR", tmp_path / "shares")
+    fdir = _make_frame(frames_root, "frame1")
+    (fdir / "index.html").write_text(
+        '<!doctype html><html><head><link rel="stylesheet" href="/frame.css">'
+        '<title>My Board</title></head><body>hello</body></html>', "utf-8")
+    r = client.get("/api/frame/frame1/export")
+    assert r.status_code == 200
+    assert r.headers["content-disposition"] == 'attachment; filename="My-Board.html"'
+    assert "<link" not in r.text and "--color-bg" in r.text   # self-contained
+    assert client.get("/api/frame/nope/export").status_code == 404
 
 
 def test_share_unknown_frame_and_bad_slug_404(frames_root, tmp_path, monkeypatch):

@@ -216,14 +216,14 @@
   <div id="appbar" aria-label="app controls">
     <span class="apptitle" id="apptitle"></span>
     <a href="/" class="apphome" title="home">home</a>
-    <button id="share-app" type="button" title="freeze this app into a shareable snapshot">share</button>
+    <button id="share-app" type="button" title="download this app as one self-contained html file">export</button>
     <button class="gear" id="maintain-toggle" type="button" title="maintain this app — talk to its agent">⚙ maintain</button>
   </div>
   <div id="topbar">
     <a href="/">← home</a>
     <span class="sep">/</span>
     <span class="id" id="frame-id"></span>
-    <button id="share" type="button" title="freeze this page into a shareable snapshot">share</button>
+    <button id="share" type="button" title="download this page as one self-contained html file">export</button>
   </div>
   <div id="main">
     <nav id="dock" aria-label="mindframes"><div id="docklist"></div></nav>
@@ -348,26 +348,17 @@
     if (open) logbody.scrollTop = logbody.scrollHeight;
   }
   toggle.addEventListener('click', () => openLogs(!logs.classList.contains('open')));
-  // ----- share: freeze the page into a snapshot, put the link on the clipboard -----
-  async function doShare(btn){
+  // ----- export: download the page as ONE self-contained .html file
+  // (styles inlined, data baked in, agent buttons defanged). Host it
+  // anywhere, mail it, slack it.
+  function doExport(btn){
     const was = btn.textContent;
-    btn.textContent = 'freezing…';
-    try {
-      const r = await fetch(API('share'), { method: 'POST' });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || r.statusText);
-      const link = j.public_url || (location.origin + j.url);
-      try { await navigator.clipboard.writeText(link); } catch (e) {}
-      btn.textContent = 'link copied ✓';
-      appendLog({ kind: 'info', label: 'shared: ' + link + (j.public_url ? '' : ' (local — configure publishing for a public link)') });
-    } catch (e) {
-      btn.textContent = 'share failed';
-      appendLog({ kind: 'warn', label: 'share failed: ' + e.message });
-    }
-    setTimeout(() => { btn.textContent = was; }, 2200);
+    btn.textContent = 'exported ↓';
+    location.href = API('export');           // attachment header = download, no navigation
+    setTimeout(() => { btn.textContent = was; }, 2000);
   }
-  document.getElementById('share').addEventListener('click', (e) => doShare(e.target));
-  document.getElementById('share-app').addEventListener('click', (e) => doShare(e.target));
+  document.getElementById('share').addEventListener('click', (e) => doExport(e.target));
+  document.getElementById('share-app').addEventListener('click', (e) => doExport(e.target));
 
   const maintainBtn = document.getElementById('maintain-toggle');
   function setMaintain(on){
