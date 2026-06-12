@@ -60,6 +60,20 @@
   }
   #dock .dk:hover .dkdel { opacity: 1; }
   #dock .dk .dkdel:hover { background: #3a1f24; color: #ff8a8a; }
+  /* inbox rows: provenance sub-line + a "done" (archive) affordance */
+  #dock .dk .dkbody { flex: 1; min-width: 0; }
+  #dock .dk .dkbody .dktitle { display: block; }
+  #dock .dk .dksub {
+    display: block; font-size: 10px; color: #5a5a63;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #dock .dk .dkdone {
+    flex: 0 0 auto; width: 18px; height: 18px; line-height: 15px; padding: 0;
+    text-align: center; border: 0; border-radius: 4px; background: transparent;
+    color: #6b6b73; cursor: pointer; font-size: 12px; opacity: 0; transition: opacity .12s;
+  }
+  #dock .dk:hover .dkdone { opacity: 1; }
+  #dock .dk .dkdone:hover { background: #1f3a28; color: #8aff9a; }
   #dock .dknew {
     margin-top: auto; color: #6b6b73; border: 1px dashed #2a2a30;
     border-radius: 8px; padding: .5rem; text-align: center; cursor: pointer;
@@ -170,7 +184,7 @@
     <span class="id" id="frame-id"></span>
   </div>
   <div id="main">
-    <nav id="dock" aria-label="mindframes"><div class="dkhdr">mindframes</div><div id="docklist"></div></nav>
+    <nav id="dock" aria-label="mindframes"><div id="docklist"></div></nav>
     <iframe id="surface" title="mindframe surface"></iframe>
   </div>
   <div id="ribbon" title="open full log"><div id="ribbonrow"><span class="rspin"></span></div></div>
@@ -309,27 +323,85 @@
       }
     } catch (e) {}
   }
+  function timeAgo(ms){
+    const m = Math.round((Date.now() - ms) / 60000);
+    if (m < 1) return 'now';
+    if (m < 60) return m + 'm';
+    if (m < 1440) return Math.round(m / 60) + 'h';
+    return Math.round(m / 1440) + 'd';
+  }
+
+  function dockRow(f){
+    const active = f.id === MF_ID;
+    const row = document.createElement('div');   // div, not <a>, so buttons can live inside
+    row.className = 'dk' + (active ? ' active' : '');
+    row.dataset.id = f.id;
+    row.dataset.title = f.title || f.id;
+    row.title = f.title || f.id;
+    const mark = document.createElement('span'); mark.className = 'dkmark';
+    const body = document.createElement('span'); body.className = 'dkbody';
+    const t = document.createElement('span'); t.className = 'dktitle'; t.textContent = f.title || f.id;
+    body.appendChild(t);
+    if (f.kind === 'delivered'){
+      const sub = document.createElement('span'); sub.className = 'dksub';
+      sub.textContent = (f.origin?.watch || 'delivered') + ' · ' + timeAgo(f.modified);
+      body.appendChild(sub);
+      const done = document.createElement('button');
+      done.type = 'button'; done.className = 'dkdone'; done.textContent = '✓';
+      done.title = 'done — archive this deliverable';
+      done.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try { await fetch('/api/frame/' + encodeURIComponent(f.id) + '/archive', { method: 'POST' }); } catch (err) {}
+        if (f.id === MF_ID) { location.href = '/'; return; }
+        loadDock();
+      });
+      row.appendChild(mark); row.appendChild(body); row.appendChild(done);
+    } else {
+      row.appendChild(mark); row.appendChild(body);
+    }
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'dkdel'; del.textContent = '✕'; del.title = 'delete this mindframe';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteDockFrame(f); });
+    row.appendChild(del);
+    if (!active) row.addEventListener('click', () => { location.href = '/m/' + encodeURIComponent(f.id); });  // one tab
+    return row;
+  }
+
   function renderDock(){
     docklist.innerHTML = '';
-    for (const f of dockFrames){
-      const active = f.id === MF_ID;
-      const row = document.createElement('div');   // div, not <a>, so the ✕ button can live inside
-      row.className = 'dk' + (active ? ' active' : '');
-      row.dataset.id = f.id;
-      row.dataset.title = f.title || f.id;
-      row.title = f.title || f.id;
-      const mark = document.createElement('span'); mark.className = 'dkmark';
-      const t = document.createElement('span'); t.className = 'dktitle'; t.textContent = f.title || f.id;
-      const del = document.createElement('button');
-      del.type = 'button'; del.className = 'dkdel'; del.textContent = '✕'; del.title = 'delete this mindframe';
-      del.addEventListener('click', (e) => { e.stopPropagation(); deleteDockFrame(f); });
-      row.appendChild(mark); row.appendChild(t); row.appendChild(del);
-      if (!active) row.addEventListener('click', () => { location.href = '/m/' + encodeURIComponent(f.id); });  // one tab
-      docklist.appendChild(row);
+    // Three kinds, three sections: watches (pinned automations), inbox
+    // (deliveries awaiting handling), desk (frames you created).
+    const groups = [
+      ['inbox',   dockFrames.filter(f => f.kind === 'delivered')],
+      ['desk',    dockFrames.filter(f => f.kind === 'created')],
+      ['watches', dockFrames.filter(f => f.kind === 'watch')],
+    ];
+    for (const [label, frames] of groups){
+      if (!frames.length) continue;
+      const hdr = document.createElement('div');
+      hdr.className = 'dkhdr';
+      hdr.textContent = label + (label === 'inbox' ? ' (' + frames.length + ')' : '');
+      docklist.appendChild(hdr);
+      frames.forEach(f => docklist.appendChild(dockRow(f)));
     }
     const nw = document.createElement('a');
     nw.className = 'dknew'; nw.href = '/'; nw.textContent = '+ new';
     docklist.appendChild(nw);
+    renderProvenance();
+  }
+
+  // Viewing a delivered frame: say where it came from, in the topbar.
+  function renderProvenance(){
+    const me = dockFrames.find(f => f.id === MF_ID);
+    let el = document.getElementById('provenance');
+    if (!me || me.kind !== 'delivered'){ if (el) el.remove(); return; }
+    if (!el){
+      el = document.createElement('span');
+      el.id = 'provenance';
+      el.style.cssText = 'color:#5a5a63;font-size:11px;margin-left:.4rem';
+      document.getElementById('topbar').appendChild(el);
+    }
+    el.textContent = '· delivered by ' + (me.origin?.watch || 'a watch') + ' · ' + timeAgo(me.modified);
   }
 
   async function deleteDockFrame(f){

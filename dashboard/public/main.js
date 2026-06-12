@@ -102,6 +102,58 @@ async function drawerMindframes(body) {
   }
 }
 
+// One automation per row: when it fires, what it does, and its manager
+// frame. Opening is instant (singleton; create-if-missing, spawn in bg).
+async function drawerWatches(body) {
+  try {
+    const j = await (await fetch("/api/watches")).json();
+    const ws = j.watches || [];
+    if (!ws.length) {
+      body.innerHTML = `<div class="empty"><p>No watches yet. A watch runs for you on a trigger — wire one from a launchpad, or ask any mindframe to set one up.</p></div>`;
+      return;
+    }
+    body.innerHTML = `<div class="frame-list">` + ws.map(w => `
+      <a class="frame-row" href="#" data-watch="${escapeHtml(w.id)}">
+        <span class="frame-marker frame-marker-${w.wired ? "active" : "idle"}"></span>
+        <span class="frame-title-wrap">
+          <span class="frame-title">${escapeHtml(w.name)}</span>
+          <span class="frame-sub">${w.wired ? escapeHtml(w.triggered_by.join(", ")) : "not wired to any event"}</span>
+        </span>
+        <span class="frame-open">${w.frame_id ? "→" : "open"}</span>
+      </a>`).join("") + `</div>`;
+    body.querySelectorAll("[data-watch]").forEach(row => row.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const r = await fetch(`/api/watches/${encodeURIComponent(row.dataset.watch)}/open`, { method: "POST" });
+      const d = await r.json();
+      if (r.ok) location.href = d.url;
+      else showToast(`couldn't open watch: ${d.error || r.statusText}`, "err");
+    }));
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load watches: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
+async function drawerConnections(body) {
+  try {
+    const j = await (await fetch("/api/connections")).json();
+    const cs = j.connections || [];
+    if (!cs.length) {
+      body.innerHTML = `<div class="empty"><p>No connections discovered yet.</p></div>`;
+      return;
+    }
+    body.innerHTML = `<div class="frame-list">` + cs.map(c => `
+      <div class="frame-row">
+        <span class="frame-marker frame-marker-active"></span>
+        <span class="frame-title-wrap">
+          <span class="frame-title">${escapeHtml(c.name)}</span>
+          <span class="frame-sub">${escapeHtml(c.kind)}</span>
+        </span>
+      </div>`).join("") + `</div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="empty"><p>couldn't load connections: ${escapeHtml(String(e))}</p></div>`;
+  }
+}
+
 async function drawerKnowledge(body) {
   try {
     const r = await fetch("/api/vault");
@@ -412,14 +464,13 @@ async function openBrowseDialog() {
 // the nodes; layout is recomputed on resize.
 
 const HUB_NODES = [
-  { key: "mindframes",  label: "Mindframes",     hint: "live agent surfaces", render: drawerMindframes },
+  { key: "mindframes",  label: "Mindframes",     hint: "desk & inbox",        render: drawerMindframes },
   { key: "knowledge",   label: "Knowledge base", hint: "what you know",       render: drawerKnowledge },
-  // Agents / Connections / Events each spawn a fresh mindframe with a
-  // domain-focused prompt (DOMAIN_PROMPTS) — you watch it compose, then talk
-  // to it. Same primitive as "New", just a narrower brief.
-  { key: "agents",      label: "Agents",         hint: "what can run",        domain: "agents" },
-  { key: "connections", label: "Connections",    hint: "mcps & connectors",   domain: "connections" },
-  { key: "events",      label: "Events",         hint: "wired routes",        domain: "events" },
+  // Watches replaces the old Agents/Events spawn-per-click nodes: one drawer
+  // listing every automation (recipe + route + runs), each opening its own
+  // SINGLETON manager frame — never a fresh disposable agent per click.
+  { key: "watches",     label: "Watches",        hint: "what runs for you",   render: drawerWatches },
+  { key: "connections", label: "Connections",    hint: "what you can reach",  render: drawerConnections },
 ];
 
 function renderHome() {
@@ -428,6 +479,7 @@ function renderHome() {
       <svg class="hub-edges" id="hub-edges" aria-hidden="true"></svg>
       <div class="hub-nodes" id="hub-nodes"></div>
       <p class="hub-tagline">Open a node, or start something new.</p>
+      <div class="feed" id="feed" aria-label="recent activity"></div>
     </div>
     <aside class="drawer" id="drawer" aria-hidden="true">
       <div class="drawer-head">
@@ -444,6 +496,7 @@ function renderHome() {
   window.addEventListener("resize", layoutHub);
   setConn("ok", "ready");
   loadHubCounts();
+  loadFeed();
 
   $("drawer-close").addEventListener("click", closeDrawer);
   $("drawer-scrim").addEventListener("click", closeDrawer);
@@ -509,9 +562,8 @@ async function loadHubCounts() {
   const j = (r) => r.ok ? r.json() : Promise.reject(r.status);
   fetch("/api/frames").then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
   fetch("/api/vault").then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
-  fetch("/api/agents").then(j).then(d => set("agents", `${d.running_count || 0}/${d.definition_count || 0}`)).catch(() => {});
+  fetch("/api/watches").then(j).then(d => set("watches", (d.watches || []).length)).catch(() => {});
   fetch("/api/connections").then(j).then(d => set("connections", `${(d.connections || []).length}`)).catch(() => {});
-  fetch("/api/events").then(j).then(d => set("events", d.route_count || 0)).catch(() => {});
 }
 
 // ----- Drawer open / close -----
@@ -678,6 +730,23 @@ async function createMindframe(text) {
     showToast(`network error: ${e.message}`, "err");
     if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
   }
+}
+
+
+// ----- Activity feed: what happened while you were away -----
+async function loadFeed() {
+  const box = $("feed");
+  if (!box) return;
+  try {
+    const j = await (await fetch("/api/activity")).json();
+    const items = (j.items || []).slice(0, 8);
+    if (!items.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<div class="feed-hdr">recent activity</div>` + items.map(i => `
+      <a class="feed-item feed-${escapeHtml(i.kind)}" ${i.frame_id ? `href="/m/${encodeURIComponent(i.frame_id)}"` : 'href="#" onclick="return false"'}>
+        <span class="feed-time">${relativeTime(i.at)}</span>
+        <span class="feed-text">${escapeHtml(i.text)}</span>
+      </a>`).join("");
+  } catch (e) { box.innerHTML = ""; }
 }
 
 // ----- Health probe -----

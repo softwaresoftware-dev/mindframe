@@ -1523,3 +1523,22 @@ a:hover { color: var(--color-accent-hover); }
   font-size: 0.82rem;
   color: var(--color-text-faint);
 }
+
+/* ----- activity feed (home, under the hub) ----- */
+.feed {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+  width: min(560px, 92vw); display: flex; flex-direction: column; gap: 2px;
+}
+.feed-hdr {
+  font-size: .58rem; letter-spacing: .16em; text-transform: uppercase;
+  color: #5a5a63; padding: 0 .4rem .25rem;
+}
+.feed-item {
+  display: flex; gap: .7rem; align-items: baseline; text-decoration: none;
+  padding: .22rem .45rem; border-radius: 6px; font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+.feed-item:hover { background: #141416; }
+.feed-time { color: #5a5a63; flex: 0 0 3.2em; text-align: right; }
+.feed-text { color: #9a9aa2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed-delivery .feed-text { color: #cfe0ff; }

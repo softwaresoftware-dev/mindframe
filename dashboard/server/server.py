@@ -198,10 +198,51 @@ def _page_title(index: Path) -> str | None:
     return t if t.lower() not in _PLACEHOLDER_TITLES else None
 
 
+# Frame kinds — the operator-facing ontology:
+#   created   — a place the operator works (default; launchpads, ad-hoc frames)
+#   delivered — a watch's deliverable; arrives unprompted, lives in the Inbox
+#               until handled, carries origin {watch, event, at}
+#   watch     — a singleton frame that manages one watch (recipe + route)
+_FRAME_KINDS = {"created", "delivered", "watch"}
+
+
+def _write_meta(fdir: Path, meta: dict[str, Any]) -> None:
+    (fdir / "meta.json").write_text(json.dumps(meta, indent=2), "utf-8")
+
+
+def _supersede_deliveries(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Within one watch, a newer unhandled delivery supersedes older ones —
+    the old frames are auto-archived (page stays on disk; history lives in
+    the watch's frame). Mutates meta on disk for the superseded; returns the
+    list minus them."""
+    newest_per_watch: dict[str, int] = {}
+    for f in frames:
+        if f["kind"] == "delivered" and not f["archived"] and f.get("watch"):
+            newest_per_watch[f["watch"]] = max(
+                newest_per_watch.get(f["watch"], 0), f["modified"])
+    keep: list[dict[str, Any]] = []
+    for f in frames:
+        if (f["kind"] == "delivered" and not f["archived"] and f.get("watch")
+                and f["modified"] < newest_per_watch.get(f["watch"], 0)):
+            fdir = FRAMES_ROOT / f["id"]
+            meta = _read_meta(fdir)
+            meta["archived"] = True
+            meta["superseded"] = True
+            try:
+                _write_meta(fdir, meta)
+            except OSError:
+                pass
+            continue
+        keep.append(f)
+    return keep
+
+
 @app.get("/api/frames")
-async def api_frames() -> dict[str, Any]:
+async def api_frames(archived: int = 0) -> dict[str, Any]:
     """List surface mindframes — frame dirs under FRAMES_ROOT holding an
-    index.html — newest-activity first."""
+    index.html — newest-activity first, with the operator-facing kind
+    (created / delivered / watch) and delivery provenance. Archived frames
+    are hidden unless ?archived=1; superseded deliveries auto-archive."""
     out: list[dict[str, Any]] = []
     if not FRAMES_ROOT.is_dir():
         return {"frames": []}
@@ -236,15 +277,50 @@ async def api_frames() -> dict[str, Any]:
                 modified = max(modified, int(ddir.stat().st_mtime * 1000))
         except OSError:
             pass
+        kind = meta.get("kind")
+        if kind not in _FRAME_KINDS:
+            kind = "created"
+        origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
         out.append({
             "id": fdir.name,
             "title": _page_title(index) or meta.get("title") or fdir.name,
             "status": meta.get("status") or "active",
+            "kind": kind,
+            "archived": bool(meta.get("archived")),
+            "watch": origin.get("watch") or (meta.get("watch") if kind == "watch" else None),
+            "origin": origin or None,
             "modified": modified,
             "tags": meta.get("tags") or [],
         })
+    out = _supersede_deliveries(out)
+    if not archived:
+        out = [f for f in out if not f["archived"]]
     out.sort(key=lambda f: f["modified"], reverse=True)
     return {"frames": out}
+
+
+@app.post("/api/frame/{mid}/archive")
+def archive_frame(mid: str) -> Response:
+    """Mark a frame handled — hidden from the dock, page kept on disk."""
+    return _set_archived(mid, True)
+
+
+@app.post("/api/frame/{mid}/unarchive")
+def unarchive_frame(mid: str) -> Response:
+    return _set_archived(mid, False)
+
+
+def _set_archived(mid: str, value: bool) -> Response:
+    fdir = _frame_dir(mid)
+    if fdir is None:
+        return JSONResponse({"error": "mindframe not found"}, status_code=404)
+    meta = _read_meta(fdir)
+    meta["archived"] = value
+    try:
+        _write_meta(fdir, meta)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "id": mid, "archived": value})
 
 
 # Window (seconds) within which a transcript write counts as "the agent is
@@ -1695,6 +1771,181 @@ def _live_agents(limit: int = 40) -> list[dict[str, Any]]:
     # Live first, then by recency (already DESC), capped.
     out.sort(key=lambda a: not a["live"])
     return out[:limit]
+
+
+# --------------------------- watches ---------------------------
+#
+# A WATCH is the operator-facing bundle of: a dispatcher route (when), a
+# recipe (what), and the ephemeral runs it spawns (results, delivered as
+# frames). The operator never edits recipe.yaml or channels.yaml directly —
+# each watch has ONE singleton frame (id: watch-<recipe>) whose agent manages
+# it: shows trigger + behavior + recent runs, and edits the config on
+# instruction, drawing a pending action and waiting for approval.
+
+WATCH_BRIEF = """You are the manager of ONE watch — an automation the operator owns. The watch \
+is '{rid}': recipe at ~/.dispatcher/recipes/{rid}/ (recipe.yaml + brief.json) \
+plus any routes targeting spawn:{rid} in ~/.dispatcher/channels.yaml. You own \
+exactly ONE file, your page:
+
+    {index}
+
+YOUR JOB
+  1. READ the recipe, its brief, and the channels.yaml routes. Also look at \
+recent runs (task rows named like {rid}-* via `curl -s http://127.0.0.1:8912/tasks` \
+or ~/.taskpilot/) and recent deliverables (frames under ~/.mindframe/frames/ \
+whose meta.json origin.watch == "{rid}").
+  2. COMPOSE your page as the watch's home: what triggers it (in plain words), \
+what it does, whether it is currently wired (route present) or unwired, its \
+recent runs and deliverables (link deliverable frames as /m/<id>), and any \
+problems you can see.
+  3. The operator CHANGES the watch by talking to you. When asked to change \
+behavior (different trigger, different brief, pause, resume): draft the exact \
+config edit, show it on the page as a PENDING ACTION with the diff and an \
+explicit approval button, and only apply it to the files after the operator \
+approves (button click or message). Pausing = removing/commenting its route \
+in channels.yaml; the recipe stays.
+
+PAGE RULES
+  - One complete self-contained HTML document; inline CSS; viewport meta; \
+<meta name="mf-patch" content="safe">; calm, legible, no emoji. Prefer Edit \
+for updates; full Write only for recomposition.
+  - Buttons message you (swap /page for /message on your own URL):
+      <button onclick="fetch(location.pathname.replace('/page','/message'),\
+{{method:'POST',headers:{{'Content-Type':'application/json'}},\
+body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
+.then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
+  - NEVER declare yourself done; end with the watch's current state and a \
+forward question.
+
+Compose your watch home page now."""
+
+
+@app.get("/api/watches")
+def list_watches() -> Response:
+    """Watches = recipes joined with their routes and their singleton frame
+    (if opened). The operator-facing automation list."""
+    defs = _agent_definitions()
+    out = []
+    for d in defs:
+        wid = f"watch-{d['id']}"[:64]
+        out.append({
+            "id": d["id"],
+            "name": d["name"],
+            "triggered_by": d["triggered_by"],
+            "wired": bool(d["triggered_by"]),
+            "frame_id": wid if (FRAMES_ROOT / wid / "index.html").is_file() else None,
+        })
+    return JSONResponse({"watches": out})
+
+
+@app.post("/api/watches/{rid}/open")
+async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
+    """Open (create-if-missing) the singleton frame that manages this watch.
+    Instant, like create: mint + return; the agent spawns in the background.
+    Re-opening an existing watch frame just returns its URL — no new agent."""
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", rid):
+        return JSONResponse({"error": "bad watch id"}, status_code=422)
+    if not (DISPATCHER_HOME / "recipes" / rid / "recipe.yaml").is_file():
+        return JSONResponse({"error": f"no recipe '{rid}'"}, status_code=404)
+    wid = f"watch-{rid}"[:64]
+    fdir = FRAMES_ROOT / wid
+    if (fdir / "index.html").is_file():
+        return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
+    if not await _daemon_reachable():
+        return JSONResponse({"error": "taskpilot daemon not reachable"}, status_code=503)
+    prompt = WATCH_BRIEF.format(rid=rid, index=str(fdir / "index.html"))
+    try:
+        fdir = _mint_frame(wid, f"Watch: {rid}", prompt, {"kind": "watch-open"})
+    except FileExistsError:
+        return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
+    except OSError as e:
+        return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
+    meta = _read_meta(fdir)
+    meta["kind"] = "watch"
+    meta["watch"] = rid
+    _write_meta(fdir, meta)
+    background_tasks.add_task(_spawn_frame_bg, wid, fdir, prompt)
+    return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "starting"})
+
+
+_FEED_WINDOW_S = 48 * 3600.0
+
+
+@app.get("/api/activity")
+def activity_feed(limit: int = 30) -> Response:
+    """The home feed: what happened while you were away, newest first.
+    One narrative over three stores that already exist —
+      deliveries  (frames with kind=delivered; provenance from meta.origin)
+      frame work  (a frame's transcript moved recently = its agent worked)
+      runs        (taskpilot rows that are NOT frame agents = watch runs)
+    Read-only; window capped at 48h so the feed is news, not archaeology."""
+    now = time.time()
+    items: list[dict[str, Any]] = []
+    frame_ids: set[str] = set()
+
+    if FRAMES_ROOT.is_dir():
+        for fdir in FRAMES_ROOT.iterdir():
+            if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
+                continue
+            if not (fdir / "index.html").is_file():
+                continue
+            frame_ids.add(fdir.name)
+            meta = _read_meta(fdir)
+            title = _page_title(fdir / "index.html") or meta.get("title") or fdir.name
+            origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
+            if meta.get("kind") == "delivered":
+                try:
+                    at = float(origin.get("at_epoch") or (fdir / "index.html").stat().st_mtime)
+                except (OSError, ValueError):
+                    at = 0.0
+                if now - at < _FEED_WINDOW_S:
+                    items.append({
+                        "at": int(at * 1000), "kind": "delivery",
+                        "text": f"{origin.get('watch') or 'a watch'} delivered: {title}",
+                        "frame_id": fdir.name,
+                    })
+            try:
+                tp = _agent_transcript(fdir, _frame_task_id(fdir.name, fdir))
+                if tp is not None:
+                    mt = tp.stat().st_mtime
+                    if now - mt < _FEED_WINDOW_S:
+                        items.append({
+                            "at": int(mt * 1000), "kind": "frame",
+                            "text": f"worked: {title}",
+                            "frame_id": fdir.name,
+                        })
+            except OSError:
+                pass
+
+    # Watch runs: taskpilot tasks that aren't frame agents.
+    if TASKPILOT_DB.is_file():
+        import sqlite3
+        try:
+            con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
+            rows = con.execute(
+                "SELECT task_id, name, status, updated_at FROM tasks "
+                "ORDER BY updated_at DESC LIMIT 100").fetchall()
+            con.close()
+        except sqlite3.Error:
+            rows = []
+        for task_id, name, status, updated_at in rows:
+            if task_id in frame_ids:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
+                at = dt.replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
+            if now - at >= _FEED_WINDOW_S:
+                continue
+            items.append({
+                "at": int(at * 1000), "kind": "run",
+                "text": f"run: {name or task_id} · {status}",
+                "task_id": task_id,
+            })
+
+    items.sort(key=lambda i: i["at"], reverse=True)
+    return JSONResponse({"items": items[:limit]})
 
 
 @app.get("/api/agents")

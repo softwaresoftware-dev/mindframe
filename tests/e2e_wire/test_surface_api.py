@@ -123,12 +123,13 @@ def frames_root(tmp_path, monkeypatch):
     return root
 
 
-def _make_frame(root: pathlib.Path, mid: str, task_id: str | None = None) -> pathlib.Path:
+def _make_frame(root: pathlib.Path, mid: str, task_id: str | None = None,
+                **meta_extra) -> pathlib.Path:
     fdir = root / mid
     fdir.mkdir()
     (fdir / "index.html").write_text("<!doctype html><title>t</title>ok", "utf-8")
     (fdir / "meta.json").write_text(
-        json.dumps({"id": mid, "title": mid, "task_id": task_id or mid}), "utf-8")
+        json.dumps({"id": mid, "title": mid, "task_id": task_id or mid, **meta_extra}), "utf-8")
     return fdir
 
 
@@ -328,6 +329,76 @@ def test_artifact_symlink_escape_is_rejected(frames_root, tmp_path):
     except OSError:
         pytest.skip("symlinks unavailable (Windows without dev mode)")
     assert client.get("/artifacts/frame1/link.txt").status_code == 404
+
+
+# --------------------------- kinds / inbox / archive ---------------------------
+
+
+def test_frames_report_kind_and_provenance(frames_root):
+    _make_frame(frames_root, "deskf")
+    _make_frame(frames_root, "deliv", kind="delivered",
+                origin={"watch": "pr-prep", "event": "PR #14"})
+    by_id = {f["id"]: f for f in client.get("/api/frames").json()["frames"]}
+    assert by_id["deskf"]["kind"] == "created" and by_id["deskf"]["origin"] is None
+    assert by_id["deliv"]["kind"] == "delivered"
+    assert by_id["deliv"]["origin"]["watch"] == "pr-prep"
+    assert by_id["deliv"]["watch"] == "pr-prep"
+
+
+def test_archive_hides_frame_until_unarchive(frames_root):
+    _make_frame(frames_root, "deliv", kind="delivered")
+    assert client.post("/api/frame/deliv/archive").json()["archived"] is True
+    assert [f["id"] for f in client.get("/api/frames").json()["frames"]] == []
+    assert "deliv" in [f["id"] for f in client.get("/api/frames?archived=1").json()["frames"]]
+    client.post("/api/frame/deliv/unarchive")
+    assert [f["id"] for f in client.get("/api/frames").json()["frames"]] == ["deliv"]
+
+
+def test_newer_delivery_supersedes_older_same_watch(frames_root):
+    import os, time
+    old = _make_frame(frames_root, "deliv1", kind="delivered", origin={"watch": "pr-prep"})
+    new = _make_frame(frames_root, "deliv2", kind="delivered", origin={"watch": "pr-prep"})
+    other = _make_frame(frames_root, "deliv3", kind="delivered", origin={"watch": "email-triage"})
+    past = time.time() - 3600
+    os.utime(old / "index.html", (past, past))
+    ids = {f["id"] for f in client.get("/api/frames").json()["frames"]}
+    assert ids == {"deliv2", "deliv3"}          # older pr-prep delivery archived
+    assert json.loads((old / "meta.json").read_text())["superseded"] is True
+
+
+# --------------------------- watches ---------------------------
+
+
+def test_watch_open_is_a_singleton(frames_root, stub_daemon, tmp_path, monkeypatch):
+    rdir = tmp_path / "dispatcher" / "recipes" / "pr-prep"
+    rdir.mkdir(parents=True)
+    (rdir / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
+    monkeypatch.setattr(srv, "DISPATCHER_HOME", tmp_path / "dispatcher")
+    r1 = client.post("/api/watches/pr-prep/open")
+    assert r1.status_code == 200 and r1.json()["spawn"] == "starting"
+    wid = r1.json()["id"]
+    assert wid == "watch-pr-prep"
+    meta = json.loads((frames_root / wid / "meta.json").read_text())
+    assert meta["kind"] == "watch" and meta["watch"] == "pr-prep"
+    # second open: same frame, no new spawn
+    spawn_calls_before = len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")])
+    r2 = client.post("/api/watches/pr-prep/open")
+    assert r2.json()["spawn"] == "existing" and r2.json()["id"] == wid
+    assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")]) == spawn_calls_before
+    assert client.post("/api/watches/nope/open").status_code == 404
+
+
+# --------------------------- activity feed ---------------------------
+
+
+def test_activity_feed_narrates_deliveries(frames_root, monkeypatch):
+    monkeypatch.setattr(srv, "TASKPILOT_DB", frames_root / "no-such.db")
+    _make_frame(frames_root, "deliv", kind="delivered",
+                origin={"watch": "pr-prep", "event": "PR #14"})
+    items = client.get("/api/activity").json()["items"]
+    deliveries = [i for i in items if i["kind"] == "delivery"]
+    assert deliveries and deliveries[0]["frame_id"] == "deliv"
+    assert "pr-prep delivered" in deliveries[0]["text"]
 
 
 # --------------------------- data plane ---------------------------
