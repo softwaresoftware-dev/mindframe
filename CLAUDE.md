@@ -104,7 +104,7 @@ These act *on* the stack rather than being part of it:
   evidence.
 - **Open** — `/mindframe:open`. The "open up mindframe" entry point: discovers
   the dashboard's port, brings the `mindframe-dashboard` daemon up if it is
-  down, then opens the operator's browser to the home (the hub graph). Skill in
+  down, then opens the operator's browser to the home (the calm launcher). Skill in
   `skills/open/`.
 - **The work** — what a mindframe agent produces (a triage, a review, a report,
   an answer). The agent does it directly: interactively in its surface, or as an
