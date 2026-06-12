@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mindframe — V2 The Briefing</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b0b0c; color: #ececf0;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  #bar {
+    display: flex; align-items: center; gap: 1rem; padding: .7rem 1.3rem;
+    border-bottom: 1px solid #1a1a1f;
+  }
+  #brand { font-size: .66rem; letter-spacing: .2em; color: #6b6b73; font-weight: 700; }
+  #newbtn {
+    margin-left: auto; padding: .5rem 1rem; border: 0; border-radius: 9px;
+    background: #5b6cff; color: #fff; font-size: 13.5px; cursor: pointer;
+  }
+  #cols { display: flex; max-width: 1080px; margin: 0 auto; gap: 3rem; padding: 2rem 1.4rem; }
+  #left { flex: 1.5; min-width: 0; }
+  #right { flex: 1; min-width: 0; }
+
+  h2 { font-size: .62rem; letter-spacing: .18em; text-transform: uppercase; color: #5a5a63; font-weight: 600; margin: 0 0 .8rem; }
+  .day { color: #6b6b73; font-size: 11px; font-family: ui-monospace, monospace; margin: 1.1rem 0 .35rem; }
+
+  /* the briefing: activity is the hero; deliveries are rich cards inline */
+  .ev { display: flex; gap: .8rem; padding: .34rem .2rem; align-items: baseline; text-decoration: none; }
+  .ev .t { color: #50505a; font-size: 11.5px; font-family: ui-monospace, monospace; flex: 0 0 3.4em; text-align: right; }
+  .ev .x { color: #8a8a93; font-size: 13px; }
+  .ev:hover .x { color: #cfe0ff; }
+  .card {
+    display: block; margin: .45rem 0; padding: .85rem 1rem; border-radius: 12px;
+    background: #131318; border: 1px solid #252533; text-decoration: none;
+  }
+  .card .from { color: #c9a86a; font-size: 11px; font-family: ui-monospace, monospace; letter-spacing: .06em; }
+  .card .ttl { color: #ececf0; font-size: 15px; margin: .25rem 0 .35rem; }
+  .card .act { display: flex; gap: .5rem; }
+  .card .act span {
+    font-size: 11.5px; color: #9aa6ff; border: 1px solid #2c2c44;
+    padding: .25rem .6rem; border-radius: 999px;
+  }
+
+  .row { display: flex; gap: .7rem; align-items: center; padding: .42rem .3rem; text-decoration: none; }
+  .row .mark { width: 6px; height: 6px; border-radius: 50%; border: 1px solid #3f3f48; flex: 0 0 auto; }
+  .row .mark.on { background: #3f8f5f; border-color: transparent; }
+  .row .ttl { flex: 1; min-width: 0; color: #b9b9c2; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { color: #50505a; font-size: 11px; font-family: ui-monospace, monospace; }
+  .row:hover .ttl { color: #cfe0ff; }
+  .watchrow .ttl { color: #c9c9d0; }
+  .wired { color: #3f8f5f; font-size: 10.5px; letter-spacing: .08em; }
+  .quiet { color: #50505a; font-size: 12.5px; padding: .3rem .2rem; }
+  .stats { display: flex; gap: 1.6rem; margin-top: .4rem; }
+  .stat .big { font-size: 22px; color: #c9a86a; font-weight: 600; }
+  .stat .lbl { font-size: 10.5px; color: #5a5a63; letter-spacing: .1em; text-transform: uppercase; }
+  #right section { margin-bottom: 2.2rem; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="brand">MINDFRAME</span>
+    <button id="newbtn">+ New mindframe</button>
+  </div>
+  <div id="cols">
+    <div id="left">
+      <h2>While you were away</h2>
+      <div id="brief"></div>
+    </div>
+    <div id="right">
+      <section><h2>Desk</h2><div id="desk"></div></section>
+      <section><h2>Watches</h2><div id="watches"></div></section>
+      <section><h2>You</h2><div class="stats" id="stats"></div></section>
+    </div>
+  </div>
+<script>
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const ago = ms => { const m = Math.round((Date.now()-ms)/60000);
+    return m<1?'now':m<60?m+'m':m<1440?Math.round(m/60)+'h':Math.round(m/1440)+'d'; };
+
+  (async () => {
+    const frames = (await (await fetch('/api/frames')).json()).frames || [];
+    const inbox = new Map(frames.filter(f => f.kind === 'delivered').map(f => [f.id, f]));
+    const items = ((await (await fetch('/api/activity')).json()).items || []).slice(0, 12);
+
+    // The briefing: chronological narrative; deliveries still in the inbox
+    // render as actionable cards in place, everything else as quiet lines.
+    document.getElementById('brief').innerHTML = items.map(i => {
+      const f = i.frame_id && inbox.get(i.frame_id);
+      if (i.kind === 'delivery' && f) return `
+        <a class="card" href="/m/${encodeURIComponent(f.id)}">
+          <div class="from">${esc(f.origin?.watch || 'watch')} · ${ago(i.at)} ago</div>
+          <div class="ttl">${esc(f.title)}</div>
+          <div class="act"><span>open</span><span>mark done</span></div>
+        </a>`;
+      return `
+        <a class="ev" href="${i.frame_id ? '/m/'+encodeURIComponent(i.frame_id) : '#'}">
+          <span class="t">${ago(i.at)}</span><span class="x">${esc(i.text)}</span>
+        </a>`;
+    }).join('') || '<div class="quiet">nothing yet — quiet machine</div>';
+
+    const desk = frames.filter(f => f.kind === 'created').slice(0, 6);
+    document.getElementById('desk').innerHTML = desk.map(f => `
+      <a class="row" href="/m/${encodeURIComponent(f.id)}">
+        <span class="mark"></span><span class="ttl">${esc(f.title)}</span>
+        <span class="sub">${ago(f.modified)}</span>
+      </a>`).join('') || '<div class="quiet">no frames yet</div>';
+
+    const ws = (await (await fetch('/api/watches')).json()).watches || [];
+    document.getElementById('watches').innerHTML = ws.map(w => `
+      <a class="row watchrow" href="#" data-w="${esc(w.id)}">
+        <span class="mark ${w.wired ? 'on' : ''}"></span>
+        <span class="ttl">${esc(w.name)}</span>
+        <span class="${w.wired ? 'wired' : 'sub'}">${w.wired ? 'WIRED' : 'unwired'}</span>
+      </a>`).join('') || '<div class="quiet">none yet — ask any frame to set one up</div>';
+
+    const v = await (await fetch('/api/vault')).json();
+    const c = await (await fetch('/api/connections')).json();
+    document.getElementById('stats').innerHTML = `
+      <div class="stat"><div class="big">${v.total_entries || 0}</div><div class="lbl">things known</div></div>
+      <div class="stat"><div class="big">${(c.connections||[]).length}</div><div class="lbl">connections</div></div>
+      <div class="stat"><div class="big">${inbox.size}</div><div class="lbl">in inbox</div></div>`;
+  })();
+</script>
+</body>
+</html>
