@@ -475,11 +475,15 @@ const HUB_NODES = [
 
 function renderHome() {
   root().innerHTML = `
-    <div class="hub" id="hub">
-      <svg class="hub-edges" id="hub-edges" aria-hidden="true"></svg>
-      <div class="hub-nodes" id="hub-nodes"></div>
-      <p class="hub-tagline">Open a node, or start something new.</p>
-      <div class="feed" id="feed" aria-label="recent activity"></div>
+    <div class="calm">
+      <div class="calm-stage">
+        <form id="calm-form" autocomplete="off">
+          <input id="calm-start" placeholder="What should we work on?" autofocus>
+        </form>
+        <div class="calm-hint">enter to begin &middot; empty for suggestions</div>
+        <div id="calm-lines" aria-label="attention"></div>
+        <div class="calm-more" id="calm-more"></div>
+      </div>
     </div>
     <aside class="drawer" id="drawer" aria-hidden="true">
       <div class="drawer-head">
@@ -491,18 +495,77 @@ function renderHome() {
     <div class="drawer-scrim" id="drawer-scrim" hidden></div>
   `;
 
-  buildHubNodes();
-  layoutHub();
-  window.addEventListener("resize", layoutHub);
-  setConn("ok", "ready");
-  loadHubCounts();
-  loadFeed();
+  $("calm-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = $("calm-start").value.trim();
+    if (text) createMindframe(text);   // decided: straight to a purposeful frame
+    else startLaunchpad();             // undecided: the launchpad surveys + suggests
+  });
 
+  // everything — frames · watches · knowledge · connections
+  const FOOT = [
+    { key: "mindframes",  word: "frames",      label: "Mindframes",     render: drawerMindframes },
+    { key: "watches",     word: "watches",     label: "Watches",        render: drawerWatches },
+    { key: "knowledge",   word: "knowledge",   label: "Knowledge base", render: drawerKnowledge },
+    { key: "connections", word: "connections", label: "Connections",    render: drawerConnections },
+  ];
+  const more = $("calm-more");
+  more.appendChild(document.createTextNode("everything — "));
+  FOOT.forEach((d, i) => {
+    if (i) more.appendChild(document.createTextNode(" · "));
+    const a = el("a", { href: "#" }, d.word);
+    a.addEventListener("click", (e) => { e.preventDefault(); openDrawer(d); });
+    more.appendChild(a);
+  });
+
+  loadCalmLines();
+  setConn("ok", "ready");
   $("drawer-close").addEventListener("click", closeDrawer);
   $("drawer-scrim").addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeDrawer(); closeCreateOverlay(); }
   });
+}
+
+// At most five lines, in attention order: inbox first (with a hover ✓ to
+// archive), then resume-where-you-left-off, then the last activity beats.
+async function loadCalmLines() {
+  const box = $("calm-lines");
+  if (!box) return;
+  const lines = [];
+  try {
+    const frames = ((await (await fetch("/api/frames")).json()).frames) || [];
+    const inbox = frames.filter(f => f.kind === "delivered");
+    const desk  = frames.filter(f => f.kind === "created");
+    for (const f of inbox.slice(0, 2)) lines.push({ k: "inbox", f,
+      sub: `${f.origin?.watch || "delivered"} · ${relativeTime(f.modified)}`, done: true });
+    if (desk[0]) lines.push({ k: "resume", f: desk[0], sub: relativeTime(desk[0].modified) });
+    const items = (((await (await fetch("/api/activity")).json()).items) || [])
+      .filter(i => i.kind !== "delivery").slice(0, 2);
+    const agoShort = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
+      return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d"; };
+    for (const i of items) lines.push({ k: agoShort(i.at), text: i.text, frame_id: i.frame_id, quiet: true });
+  } catch (e) { /* a bare launcher is still a working launcher */ }
+  box.innerHTML = "";
+  for (const l of lines) {
+    const a = el("a", { class: "calm-line" + (l.quiet ? " quiet" : ""),
+                        href: l.f ? `/m/${encodeURIComponent(l.f.id)}`
+                            : l.frame_id ? `/m/${encodeURIComponent(l.frame_id)}` : "#" }, [
+      el("span", { class: "calm-k" }, l.k),
+      el("span", { class: "calm-x" }, l.f ? l.f.title : l.text),
+      l.sub ? el("span", { class: "calm-t" }, l.sub) : null,
+    ].filter(Boolean));
+    if (l.done) {
+      const d = el("button", { class: "calm-done", type: "button", title: "done — archive" }, "✓");
+      d.addEventListener("click", async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        try { await fetch(`/api/frame/${encodeURIComponent(l.f.id)}/archive`, { method: "POST" }); } catch (err) {}
+        loadCalmLines();
+      });
+      a.appendChild(d);
+    }
+    box.appendChild(a);
+  }
 }
 
 function buildHubNodes() {
