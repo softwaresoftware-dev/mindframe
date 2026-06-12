@@ -4,20 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mindframe</title>
+<link rel="stylesheet" href="/tokens.css">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
     display: flex; flex-direction: column; height: 100vh;
-    font-family: system-ui, -apple-system, sans-serif; background: #0b0b0c;
+    font-family: system-ui, -apple-system, sans-serif; background: var(--color-bg);
   }
   #topbar {
     display: flex; align-items: center; gap: .8rem;
-    padding: .5rem .9rem; background: #0d0d0f; border-bottom: 1px solid #1d1d22;
+    padding: .5rem .9rem; background: var(--color-bg-raised); border-bottom: 1px solid #1d1d22;
     font-family: ui-monospace, monospace; font-size: 12px;
   }
-  #topbar a { color: #8a8a93; text-decoration: none; }
-  #topbar a:hover { color: #cfe0ff; }
+  #topbar a { color: var(--color-text-muted); text-decoration: none; }
+  #topbar a:hover { color: var(--color-accent-wash); }
   #topbar .sep { color: #3a3a42; }
   #topbar .id { color: #5a5a63; }
 
@@ -38,10 +39,10 @@
     display: flex; align-items: center; gap: .5rem; width: 100%;
     text-align: left; background: transparent; border: 1px solid transparent;
     border-radius: 8px; padding: .5rem .55rem; cursor: pointer;
-    color: #9a9aa2; font: inherit; font-size: 12.5px; line-height: 1.2;
+    color: var(--color-text-dim); font: inherit; font-size: 12.5px; line-height: 1.2;
   }
-  #dock .dk:hover { background: #141416; border-color: #26262a; color: #cfe0ff; }
-  #dock .dk.active { background: #16161a; border-color: #2f3a6a; color: #cfe0ff; cursor: default; }
+  #dock .dk:hover { background: #141416; border-color: #26262a; color: var(--color-accent-wash); }
+  #dock .dk.active { background: #16161a; border-color: var(--color-accent-soft); color: var(--color-accent-wash); cursor: default; }
   /* dock marks, three states:
        asleep  — hollow ring (agent not running; wakes on message)
        awake   — steady soft green (agent process alive, idle)
@@ -50,8 +51,8 @@
     width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
     background: transparent; border: 1px solid #3f3f48;
   }
-  #dock .dk.awake .dkmark { background: #3f8f5f; border-color: transparent; }
-  #dock .dk.working .dkmark { background: #5b6cff; border-color: transparent; animation: pulse 1.1s ease-in-out infinite; }
+  #dock .dk.awake .dkmark { background: var(--color-success); border-color: transparent; }
+  #dock .dk.working .dkmark { background: var(--color-accent); border-color: transparent; animation: pulse 1.1s ease-in-out infinite; }
   #dock .dk .dktitle { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #dock .dk .dkdel {
     flex: 0 0 auto; width: 18px; height: 18px; line-height: 15px; padding: 0;
@@ -59,7 +60,7 @@
     color: #6b6b73; cursor: pointer; font-size: 13px; opacity: 0; transition: opacity .12s;
   }
   #dock .dk:hover .dkdel { opacity: 1; }
-  #dock .dk .dkdel:hover { background: #3a1f24; color: #ff8a8a; }
+  #dock .dk .dkdel:hover { background: #3a1f24; color: var(--color-err-bright); }
   /* inbox rows: provenance sub-line + a "done" (archive) affordance */
   #dock .dk .dkbody { flex: 1; min-width: 0; }
   #dock .dk .dkbody .dktitle { display: block; }
@@ -79,9 +80,9 @@
     border-radius: 8px; padding: .5rem; text-align: center; cursor: pointer;
     background: transparent; font: inherit; font-size: 12px;
   }
-  #dock .dknew:hover { color: #cfe0ff; border-color: #3a4a8a; }
+  #dock .dknew:hover { color: var(--color-accent-wash); border-color: #3a4a8a; }
 
-  #surface { flex: 1; border: 0; min-width: 0; background: #0d0d0f; }
+  #surface { flex: 1; border: 0; min-width: 0; background: var(--color-bg-raised); }
 
   /* full-bleed working edge — glows while the agent is busy, so the page
      never reads as dead during latency. Bound to setActive(); fires the
@@ -115,18 +116,18 @@
   }
   #ribbonrow .rspin {
     width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-    background: #5b6cff; animation: pulse 1.1s ease-in-out infinite;
+    background: var(--color-accent); animation: pulse 1.1s ease-in-out infinite;
   }
   #ribbonrow .rchip {
     flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;
     padding: .18rem .55rem; border-radius: 999px; border: 1px solid #26262e;
-    background: #15151a; color: #9a9aa2; max-width: 34ch;
+    background: #15151a; color: var(--color-text-dim); max-width: 34ch;
   }
-  #ribbonrow .rchip.you   { color: #a8b0ff; border-color: #2f3a6a; max-width: 44ch; }
-  #ribbonrow .rchip.tool  { color: #7fb0ff; }
-  #ribbonrow .rchip.think { color: #8a8a93; font-style: italic; }
+  #ribbonrow .rchip.you   { color: #a8b0ff; border-color: var(--color-accent-soft); max-width: 44ch; }
+  #ribbonrow .rchip.tool  { color: var(--color-code); }
+  #ribbonrow .rchip.think { color: var(--color-text-muted); font-style: italic; }
   #ribbonrow .rchip.text  { color: #d7dae0; }
-  #ribbonrow .rchip.warn  { color: #d9a441; border-color: #5a4520; }
+  #ribbonrow .rchip.warn  { color: var(--color-warn); border-color: #5a4520; }
   #ribbonrow .rchip:nth-last-child(n+4) { opacity: .45; }
 
   /* collapsible cognition log — docked above the message bar, outside the surface */
@@ -142,11 +143,11 @@
   }
   #logbody .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #logbody .ln .ic { display: inline-block; width: 1.6em; opacity: .9; }
-  #logbody .think { color: #8a8a93; font-style: italic; }
-  #logbody .tool  { color: #7fb0ff; }
+  #logbody .think { color: var(--color-text-muted); font-style: italic; }
+  #logbody .tool  { color: var(--color-code); }
   #logbody .text  { color: #d7dae0; }
   #logbody .you   { color: #a8b0ff; }
-  #logbody .warn  { color: #d9a441; }
+  #logbody .warn  { color: var(--color-warn); }
   #logbody .empty { color: #5a5a63; }
 
   #rail {
@@ -155,24 +156,24 @@
   }
   #brand { font-size: .62rem; letter-spacing: .18em; color: #6b6b73; font-weight: 700; padding-right: .2rem; user-select: none; }
   #stat { font-size: .62rem; letter-spacing: .04em; color: #6b6b73; font-family: ui-monospace, monospace; white-space: nowrap; user-select: none; }
-  #stat .ctx { color: #8a8a93; }
+  #stat .ctx { color: var(--color-text-muted); }
   #logtoggle {
     display: flex; align-items: center; gap: 6px; cursor: pointer;
-    background: #1c1c20; border: 1px solid #303036; color: #9a9aa2;
+    background: #1c1c20; border: 1px solid #303036; color: var(--color-text-dim);
     border-radius: 8px; padding: .5rem .7rem; font-size: 12px; font-family: ui-monospace, monospace;
   }
   #logtoggle .dot { width: 7px; height: 7px; border-radius: 50%; background: #4a4a52; }
   #logtoggle .chev { font-size: 10px; opacity: .6; transition: transform .15s; }
-  #logtoggle.active { color: #cfe0ff; border-color: #3a4a8a; }
-  #logtoggle.active .dot { background: #5b6cff; animation: pulse 1.1s ease-in-out infinite; }
+  #logtoggle.active { color: var(--color-accent-wash); border-color: #3a4a8a; }
+  #logtoggle.active .dot { background: var(--color-accent); animation: pulse 1.1s ease-in-out infinite; }
   #logtoggle.open .chev { transform: rotate(180deg); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
   #msg {
     flex: 1; padding: .65rem .85rem; border-radius: 8px;
-    border: 1px solid #303036; background: #1c1c20; color: #ececf0; font-size: 15px; outline: none;
+    border: 1px solid #303036; background: #1c1c20; color: var(--color-text); font-size: 15px; outline: none;
   }
-  #msg:focus { border-color: #5b6cff; }
-  #send { padding: .65rem 1.15rem; border: 0; border-radius: 8px; background: #5b6cff; color: #fff; font-size: 15px; cursor: pointer; }
+  #msg:focus { border-color: var(--color-accent); }
+  #send { padding: .65rem 1.15rem; border: 0; border-radius: 8px; background: var(--color-accent); color: #fff; font-size: 15px; cursor: pointer; }
   #send:disabled { opacity: .45; cursor: default; }
 
   /* ----- app mode: the frame is an ARTIFACT the operator uses, not a
@@ -186,11 +187,11 @@
     padding: .3rem .45rem .3rem .85rem; font-family: ui-monospace, monospace; font-size: 11.5px;
   }
   #appbar a, #appbar button {
-    color: #8a8a93; text-decoration: none; background: transparent; border: 0;
+    color: var(--color-text-muted); text-decoration: none; background: transparent; border: 0;
     font: inherit; cursor: pointer; padding: .2rem .5rem; border-radius: 999px;
   }
-  #appbar a:hover, #appbar button:hover { color: #cfe0ff; background: #1c1c21; }
-  #appbar .apptitle { color: #c9a86a; letter-spacing: .06em; }
+  #appbar a:hover, #appbar button:hover { color: var(--color-accent-wash); background: #1c1c21; }
+  #appbar .apptitle { color: var(--color-gold); letter-spacing: .06em; }
   body.app-mode #appbar { display: flex; }
   body.app-mode #topbar, body.app-mode #dock, body.app-mode #rail,
   body.app-mode #ribbon, body.app-mode #logs { display: none; }
@@ -201,7 +202,7 @@
   body.app-mode.maintain #appbar .apptitle,
   body.app-mode.maintain #appbar .apphome { display: none; }
   body.app-mode.maintain #appbar { top: auto; bottom: 74px; }
-  body.app-mode.maintain #appbar .gear { color: #9aa6ff; }
+  body.app-mode.maintain #appbar .gear { color: var(--color-accent-hover); }
 </style>
 </head>
 <body>
