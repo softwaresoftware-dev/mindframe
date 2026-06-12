@@ -401,7 +401,9 @@
       done.addEventListener('click', async (e) => {
         e.stopPropagation();
         try { await fetch('/api/frame/' + encodeURIComponent(f.id) + '/archive', { method: 'POST' }); } catch (err) {}
-        if (f.id === MF_ID) { location.href = '/'; return; }
+        // Archiving is not deleting — the page stays right here; it just
+        // leaves the inbox. No navigation.
+        if (f.id === MF_ID) appendLog({ kind: 'info', label: 'archived — out of the inbox; this page stays open' });
         loadDock();
       });
       row.appendChild(mark); row.appendChild(body); row.appendChild(done);
