@@ -1679,14 +1679,35 @@ def _conn_run(cmd: list[str], timeout: float = 20.0):
 
 
 def _parse_mcp_list() -> list[dict[str, Any]]:
-    """Run `claude mcp list` and normalize each line to {id, name, state, bundle}.
+    """Return MCPs for the connections panel.
 
-    Used by /api/connections (live discovery). Lines look like
-    `name: <url-or-cmd> - <status>`, where status carries 'Connected' or an
-    auth hint; a `plugin:<pkg>:<name>` prefix is reduced to its base name.
+    In workspace mode (MINDFRAME_HOME has a .claude/settings.json), reads MCPs
+    from that file — so the panel shows only what this workspace has explicitly
+    configured, starting empty on a fresh workspace. In default mode (no
+    workspace settings file), falls back to `claude mcp list` for the full
+    global view.
     """
+    ws_settings = _MINDFRAME_HOME / ".claude" / "settings.json"
+    if ws_settings.is_file():
+        try:
+            data = json.loads(ws_settings.read_text("utf-8"))
+            mcp_servers = data.get("mcpServers", {})
+            out = []
+            for name in mcp_servers:
+                base = name.split(":")[-1] if name.startswith("plugin:") else name
+                out.append({
+                    "id": base,
+                    "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title()),
+                    "state": "configured",
+                    "bundle": base in _BUNDLE_RUNTIME,
+                })
+            return out
+        except (OSError, ValueError):
+            pass
+
+    # Default workspace: fall back to live `claude mcp list`.
     r = _conn_run(["claude", "mcp", "list"], timeout=45)
-    out: list[dict[str, Any]] = []
+    out = []
     for line in (r.stdout if r else "").splitlines():
         line = line.strip()
         if ": " not in line or " - " not in line:
@@ -1716,7 +1737,18 @@ def _parse_mcp_list() -> list[dict[str, Any]]:
 
 
 def _skill_dirs() -> list[Path]:
-    """Directories Claude Code loads skills from: user scope + installed plugins."""
+    """Directories Claude Code loads skills from.
+
+    In workspace mode (MINDFRAME_HOME has a .claude/settings.json), scans only
+    the workspace-local skills dir — connections start empty and grow as the
+    operator authors them via /mindframe:connect. In default mode, scans the
+    global user-scope skills dir plus installed-plugin skills.
+    """
+    ws_settings = _MINDFRAME_HOME / ".claude" / "settings.json"
+    if ws_settings.is_file():
+        # Workspace mode: only workspace-local connector skills
+        return [_MINDFRAME_HOME / ".claude" / "skills"]
+
     dirs = [Path.home() / ".claude" / "skills"]
     manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
     try:
