@@ -56,19 +56,20 @@ SERVER_DIR = Path(__file__).resolve().parent
 ROOT = SERVER_DIR.parent
 ARTIFACTS_ROOT = ROOT / "artifacts"
 WEB_ROOT = ROOT / "public"
-FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(Path.home() / ".mindframe" / "frames")))
+_MINDFRAME_HOME = Path(os.environ.get("MINDFRAME_HOME", str(Path.home() / ".mindframe")))
+FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(_MINDFRAME_HOME / "frames")))
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# The single, static knowledge-base vault. Not configurable — the dashboard and
-# the skills hardcode the same path. Mindframe owns this vault directly.
-VAULT_DIR = Path.home() / ".mindframe" / "vault"
+# Knowledge-base vault. Defaults to <MINDFRAME_HOME>/vault; override with
+# MINDFRAME_VAULT_DIR for named workspaces.
+VAULT_DIR = Path(os.environ.get("MINDFRAME_VAULT_DIR", str(_MINDFRAME_HOME / "vault")))
 
 
 PORT = int(os.environ.get("PORT", "5174"))
 
 DISPATCHER_URL = os.environ.get("MINDFRAME_DISPATCHER_URL", "http://127.0.0.1:8911")
 DISPATCHER_BEARER_FILE = Path(
-    os.environ.get("MINDFRAME_DISPATCHER_BEARER_FILE", str(Path.home() / ".mindframe/secrets/dispatcher-bearer.token"))
+    os.environ.get("MINDFRAME_DISPATCHER_BEARER_FILE", str(_MINDFRAME_HOME / "secrets" / "dispatcher-bearer.token"))
 )
 # Agent-runtime daemon (taskpilot) — message delivery + spawn. Mindframe agents
 # idle until messaged; /api/frame/<id>/message wakes one through this daemon.
@@ -546,6 +547,11 @@ def _mint_frame(mid: str, title: str, prompt: str,
     caller checked (caller decides what a lost race means)."""
     fdir = FRAMES_ROOT / mid
     fdir.mkdir(parents=True, mode=0o755)   # no exist_ok: surface a lost race to the caller
+    # If the workspace root has a .claude/ dir (named workspace), link it into
+    # the frame dir so the agent inherits workspace-scoped MCPs via project settings.
+    workspace_claude = FRAMES_ROOT.parent / ".claude"
+    if workspace_claude.is_dir():
+        (fdir / ".claude").symlink_to(workspace_claude)
     index = fdir / "index.html"
     safe_title = title.replace("&", "&amp;").replace("<", "&lt;")
     index.write_text(

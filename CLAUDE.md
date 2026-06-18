@@ -78,9 +78,7 @@ box; the Surface serves the page and proxies messages. There is no second
 - **The Mesh is the agent transport.** `taskpilot` does not type into the TUI;
   it POSTs the prompt and every message to `session-bridge :8910/sessions/<id>/message`.
   Agent runtime and Mesh are coupled by this.
-- **Single vault, single Surface.** One `~/.mindframe/vault`, one dashboard
-  server for every mindframe. No vault catalog, no sharing, no per-frame
-  server.
+- **Default workspace is single-instance.** The default deployment (`~/.mindframe/`) uses one vault and one dashboard. Named workspaces (`~/.mindframe/workspaces/<name>/`) are fully isolated with their own vault, frames, daemon stack, and MCPs — create them with `/mindframe:workspace create <name>`.
 - **Agents recommend; humans act.** Anything irreversible or outward-facing is
   drawn on the mindframe's page as a pending action and waits for the operator
   to confirm in a message.
@@ -102,10 +100,14 @@ These act *on* the stack rather than being part of it:
 - **Doctor** — `/mindframe:doctor`. Walks the `requires` list capability by
   capability, probes each provider, heals safe issues, reports the rest with
   evidence.
-- **Open** — `/mindframe:open`. The "open up mindframe" entry point: discovers
-  the dashboard's port, brings the `mindframe-dashboard` daemon up if it is
-  down, then opens the operator's browser to the home (the calm launcher). Skill in
-  `skills/open/`.
+- **Open** — `/mindframe:open [workspace]`. The "open up mindframe" entry
+  point: discovers the dashboard's port, brings the dashboard daemon up if it is
+  down, then opens the operator's browser to the home (the calm launcher).
+  Accepts an optional workspace name. Skill in `skills/open/`.
+- **Workspace** — `/mindframe:workspace`. Create, list, open, and delete named
+  workspaces — fully isolated mindframe deployments each with their own vault,
+  daemon stack (taskpilot + dispatcher + dashboard on distinct ports), agents,
+  and MCP set. Skill in `skills/workspace/`.
 - **The work** — what a mindframe agent produces (a triage, a review, a report,
   an answer). The agent does it directly: interactively in its surface, or as an
   ephemeral agent the dispatcher spawns per event from an operator-wired recipe.
@@ -165,7 +167,7 @@ mindframe owns its knowledge layer directly now.)
 
 ## Next
 
-(updated 2026-06-12, post-1.3.0 "living frames" ship)
+(updated 2026-06-18, post-1.4.0 "named workspaces")
 
 - **Vault reader/search in the UI** — knowledge is still write-only from the
   dashboard (drawer shows counts; graph shows dots). Entry list + note viewer

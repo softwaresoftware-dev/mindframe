@@ -187,8 +187,7 @@ There is no separate interactive stack.
 - **Every composed layer is a plugin or an MCP**, bound by capability. Skills
   reference capabilities by intent, never by provider name.
 - **The Mesh is the agent transport.** No keystroke injection.
-- **Single vault, single Surface.** One `~/.mindframe/vault`; one dashboard
-  for every mindframe.
+- **Default workspace is single-instance.** The default deployment uses one vault and one dashboard. Named workspaces run isolated stacks; see `/mindframe:workspace`.
 - **Agents recommend; humans act.** Irreversible steps are gated on
   confirmation.
 - **No credentials in mindframe.** Identity inheritance; the only secrets

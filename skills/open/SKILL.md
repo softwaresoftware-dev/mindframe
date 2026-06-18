@@ -1,6 +1,6 @@
 ---
 name: open
-description: Open the mindframe home in the operator's browser. Brings up the dashboard daemon if it is not already running, then navigates the browser to the hub. Use when asked to "open up mindframe", "open mindframe", "open the mindframe home", "launch mindframe", "show me mindframe", "go to my mindframe", or "/mindframe:open".
+description: Open a mindframe workspace home in the operator's browser. Brings up the dashboard daemon if it is not already running, then navigates the browser to the hub. Use when asked to "open up mindframe", "open mindframe", "open the mindframe home", "launch mindframe", "show me mindframe", "go to my mindframe", or "/mindframe:open". Accepts an optional workspace name to open a named workspace (e.g. "/mindframe:open work"). For creating or listing workspaces use /mindframe:workspace.
 ---
 
 # Mindframe — Open
@@ -11,22 +11,57 @@ FastAPI server that also hosts every mindframe at `/m/<id>`. This skill makes
 "open up mindframe" a reliable one-liner: ensure the dashboard is up, then point
 the browser at it.
 
+If a workspace name was passed (e.g. `/mindframe:open work`), open that
+workspace instead of the default. Named workspaces run on different ports; the
+port is in the workspace registry at `~/.mindframe/workspaces.yaml` and in the
+daemon config `~/.claude/daemons/mindframe-dashboard-<name>.json`.
+
 Do the four steps in order. Each is small; do not skip the health probe.
 
 ## Step 1 — Find the dashboard port
 
-The dashboard runs under the `daemon` capability as the daemon named
-`mindframe-dashboard`. Its port lives in that daemon's saved config. Read it,
-defaulting to `5174`:
+If no workspace name was given (default workspace), the daemon is named
+`mindframe-dashboard`. If a name was given, the daemon is named
+`mindframe-dashboard-<name>`.
 
 ```bash
-CFG="$HOME/.claude/daemons/mindframe-dashboard.json"
-PORT=5174
+NAME="${1:-}"   # workspace name if provided, empty string for default
+if [ -z "$NAME" ]; then
+  DAEMON_NAME="mindframe-dashboard"
+  PORT=5174
+else
+  DAEMON_NAME="mindframe-dashboard-$NAME"
+  # Try the workspace registry first
+  PORT=$(python3 - <<'EOF'
+import os, sys
+name = os.environ.get("WS_NAME", "")
+try:
+    import yaml
+    path = os.path.expanduser("~/.mindframe/workspaces.yaml")
+    data = yaml.safe_load(open(path)) if os.path.exists(path) else {}
+    ws = (data or {}).get("workspaces", {})
+    cfg = ws.get(name)
+    if cfg:
+        print(cfg.get("dashboard_port", "NOT_FOUND"))
+    else:
+        print("NOT_FOUND")
+except Exception as e:
+    print("NOT_FOUND")
+EOF
+  )
+  if [ "$PORT" = "NOT_FOUND" ]; then
+    echo "Workspace '$NAME' not found. Run /mindframe:workspace list to see available workspaces."
+    exit 1
+  fi
+fi
+
+# Also try the daemon config as a fallback for the port
+CFG="$HOME/.claude/daemons/$DAEMON_NAME.json"
 if [ -f "$CFG" ]; then
   P=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('env',{}).get('PORT','') or '')" "$CFG" 2>/dev/null)
   [ -n "$P" ] && PORT="$P"
 fi
-echo "mindframe dashboard port: $PORT"
+echo "mindframe dashboard port: $PORT (workspace: ${NAME:-default})"
 ```
 
 Use `http://127.0.0.1:$PORT/` as the home URL for the rest of this skill.
@@ -46,15 +81,12 @@ Only if Step 2 failed.
 
 - **If the daemon is registered** (the config file from Step 1 exists): start it
   through an available daemon-management tool — start the daemon named
-  `mindframe-dashboard`. Starting an already-running daemon is a no-op, so this
+  `$DAEMON_NAME`. Starting an already-running daemon is a no-op, so this
   is always safe.
-- **If the daemon is *not* registered** (no config file — mindframe was never
-  set up on this machine): the home does not exist yet. Tell the operator to run
-  `/mindframe:setup` first, which installs the bundle and registers the
-  dashboard. Do **not** improvise a permanent daemon here. (If they only want a
-  quick look, you may start the server in the foreground from
-  `${CLAUDE_PLUGIN_ROOT}/dashboard/server/server.py` with `PORT` set, but say
-  plainly that it will not survive a reboot until setup registers it.)
+- **If the daemon is *not* registered** (no config file):
+  - Default workspace: tell the operator to run `/mindframe:setup`.
+  - Named workspace: tell the operator to run `/mindframe:workspace create <name>`.
+  Do **not** improvise a permanent daemon here.
 
 Then re-probe health until it answers (give it a few seconds to bind):
 
@@ -66,7 +98,7 @@ done
 ```
 
 If it never comes up, stop and report the last error plus the daemon's log
-(`~/.claude/daemons/mindframe-dashboard.stderr.log`) — do not open a dead URL.
+(`~/.claude/daemons/$DAEMON_NAME.stderr.log`) — do not open a dead URL.
 
 ## Step 4 — Open the browser
 
