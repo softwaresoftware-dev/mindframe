@@ -547,11 +547,11 @@ def _mint_frame(mid: str, title: str, prompt: str,
     caller checked (caller decides what a lost race means)."""
     fdir = FRAMES_ROOT / mid
     fdir.mkdir(parents=True, mode=0o755)   # no exist_ok: surface a lost race to the caller
-    # If the workspace root has a .claude/ dir (named workspace), link it into
-    # the frame dir so the agent inherits workspace-scoped MCPs via project settings.
-    workspace_claude = FRAMES_ROOT.parent / ".claude"
-    if workspace_claude.is_dir():
-        (fdir / ".claude").symlink_to(workspace_claude)
+    # Workspace MCP isolation is handled at the agent-runtime level: the
+    # workspace's taskpilot runs agents with HOME=<workspace root>, so the
+    # workspace's ~/.claude (settings.json mcpServers + skills) is the agent's
+    # user-scope config directly — no per-frame symlink needed. See the
+    # mindframe `workspace` skill ("The isolation model").
     index = fdir / "index.html"
     safe_title = title.replace("&", "&amp;").replace("<", "&lt;")
     index.write_text(
@@ -1114,13 +1114,22 @@ def _agent_transcript(fdir: Path, task_id: str) -> Path | None:
     ~/.claude/projects/<encoded-cwd>/ (each '/' and '.' becomes '-'); an
     ephemeral *deliverer* (an event agent that drops this frame as its
     deliverable) runs with cwd = its taskpilot task dir; an isolated spawn
-    (e.g. setup) keeps it under ~/.taskpilot/<task_id>/.claude/projects/."""
+    (e.g. setup) keeps it under ~/.taskpilot/<task_id>/.claude/projects/.
+
+    In a named workspace the agent's $HOME is MINDFRAME_HOME (not the operator's
+    real home), so the transcript lives under <MINDFRAME_HOME>/.claude/projects/.
+    We search both home roots so the cognition log works in either mode."""
     files: list[Path] = []
+    # Candidate $HOME roots the agent may have run under (deduped).
+    home_roots = [Path.home()]
+    if _MINDFRAME_HOME not in home_roots:
+        home_roots.append(_MINDFRAME_HOME)
     for cwd in (fdir.resolve(), TASKPILOT_HOME / task_id):
         enc = re.sub(r"[/.]", "-", str(cwd))
-        proj = Path.home() / ".claude" / "projects" / enc
-        if proj.is_dir():
-            files.extend(proj.glob("*.jsonl"))
+        for root in home_roots:
+            proj = root / ".claude" / "projects" / enc
+            if proj.is_dir():
+                files.extend(proj.glob("*.jsonl"))
     iso_proj = TASKPILOT_HOME / task_id / ".claude" / "projects"
     if iso_proj.is_dir():
         files.extend(iso_proj.glob("*/*.jsonl"))

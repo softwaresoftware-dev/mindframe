@@ -86,23 +86,75 @@ and stop.
 
 ### Step 3 — create directory structure
 
+The workspace root **is** the agent's `HOME` (see "The isolation model" below):
+its `.claude` and `.mindframe` subtrees mirror the operator's real `~/.claude`
+and `~/.mindframe`, but isolated. Everything an agent writes via a `~` path —
+connector skills (`~/.claude/skills`), connection tokens
+(`~/.mindframe/connections`), vault entries (`~/.mindframe/vault`) — lands here,
+and the dashboard reads the same paths. That alignment is the whole point.
+
 ```bash
 WS_DIR="$HOME/.mindframe/workspaces/$NAME"
-mkdir -p "$WS_DIR/vault"
-mkdir -p "$WS_DIR/frames"
-mkdir -p "$WS_DIR/secrets"
+
+# Agent-facing tree (mirrors ~/.mindframe). HOME=WS_DIR makes the agent's
+# ~/.mindframe/* resolve here.
+mkdir -p "$WS_DIR/.mindframe/vault"
+mkdir -p "$WS_DIR/.mindframe/frames"
+mkdir -p "$WS_DIR/.mindframe/connections"
+mkdir -p "$WS_DIR/.mindframe/secrets"
+chmod 700 "$WS_DIR/.mindframe/secrets"
+
+# Infra data dirs (not agent-facing)
 mkdir -p "$WS_DIR/taskpilot"
 mkdir -p "$WS_DIR/dispatcher/recipes"
-chmod 700 "$WS_DIR/secrets"
 
-# Workspace-scoped MCP config — agents running in this workspace pick this up
-# as project-scoped settings (frame dirs get a .claude symlink at spawn time).
-mkdir -p "$WS_DIR/.claude"
-cat > "$WS_DIR/.claude/settings.json" <<'SETTINGS'
-{
-  "mcpServers": {}
-}
-SETTINGS
+# Agent ~/.claude — composed for isolation. Shared: subscription auth + plugin
+# code (symlinks to the real home). Workspace-local: MCP config + connector
+# skills. This is also what the dashboard's connections panel reads.
+mkdir -p "$WS_DIR/.claude/skills"
+ln -sfn "$HOME/.claude/.credentials.json" "$WS_DIR/.claude/.credentials.json"
+ln -sfn "$HOME/.claude/plugins"           "$WS_DIR/.claude/plugins"
+
+# settings.json: copy the operator's global settings (so installed plugins,
+# skills, model, hooks all work) but strip mcpServers — the workspace starts
+# with NO connection MCPs. The operator/agent adds workspace MCPs here.
+python3 - "$HOME/.claude/settings.json" "$WS_DIR/.claude/settings.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(src))
+except Exception:
+    d = {}
+d["mcpServers"] = {}
+json.dump(d, open(dst, "w"), indent=2)
+PY
+# NOTE: settings.local.json is intentionally NOT copied — it holds the
+# operator's personal connection MCPs and would re-leak them.
+
+# .claude.json: identity + onboarding flags only; empty mcpServers + projects so
+# the agent authenticates (subscription oauth) but sees no global user MCPs.
+python3 - "$HOME/.claude.json" "$WS_DIR/.claude.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    s = json.load(open(src))
+except Exception:
+    s = {}
+keep_keys = ("oauthAccount", "userID", "anonymousId", "machineID",
+             "hasCompletedOnboarding", "firstStartTime", "installMethod",
+             "numStartups", "autoUpdates")
+d = {k: s[k] for k in keep_keys if k in s}
+d["mcpServers"] = {}
+d["projects"] = {}
+json.dump(d, open(dst, "w"), indent=2)
+PY
+
+# CLI identity — symlink the operator's auth/config dotfiles so gh / git / ssh /
+# gcloud / aws work as the operator (the "inherited identity" invariant). Only
+# the MCP + connection + vault layer is isolated, not OS-level CLI auth.
+for f in .gitconfig .gitignore_global .npmrc .ssh .config .aws .azure .gnupg; do
+  [ -e "$HOME/$f" ] && ln -sfn "$HOME/$f" "$WS_DIR/$f"
+done
 
 # Empty channels.yaml so the dispatcher starts cleanly
 cat > "$WS_DIR/dispatcher/channels.yaml" <<'YAML'
@@ -115,8 +167,8 @@ YAML
 
 ```bash
 TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-echo "$TOKEN" > "$WS_DIR/secrets/dispatcher-bearer.token"
-chmod 600 "$WS_DIR/secrets/dispatcher-bearer.token"
+echo "$TOKEN" > "$WS_DIR/.mindframe/secrets/dispatcher-bearer.token"
+chmod 600 "$WS_DIR/.mindframe/secrets/dispatcher-bearer.token"
 ```
 
 ### Step 5 — register and start daemons
@@ -129,7 +181,9 @@ DISP_ROOT="$(ls -d "$HOME/.claude/plugins/cache/softwaresoftware-plugins/dispatc
 MF_ROOT="$(ls -d "$HOME/.claude/plugins/cache/softwaresoftware-plugins/mindframe/"*"/" 2>/dev/null | sort -V | tail -1)"
 ```
 
-**Register `taskpilot-$NAME`** via an available daemon-management tool:
+**Register `taskpilot-$NAME`** via an available daemon-management tool. The
+`TASKPILOT_AGENT_HOME` is what makes spawned agents run with the isolated home —
+without it, agents inherit the operator's real `~` and connections leak globally.
 ```
 name:    taskpilot-$NAME
 command: uv
@@ -137,31 +191,39 @@ args:    ["run", "--directory", "<TP_ROOT>", "python", "daemon.py"]
 cwd:     <TP_ROOT>
 env:
   TASKPILOT_DAEMON_PORT: "<TASKPILOT_PORT>"
-  TASKPILOT_DATA_DIR: "<WS_DIR>/taskpilot"
-  SESSION_BRIDGE_URL: "http://127.0.0.1:8910"
+  TASKPILOT_DATA_DIR:    "<WS_DIR>/taskpilot"
+  TASKPILOT_AGENT_HOME:  "<WS_DIR>"
+  SESSION_BRIDGE_URL:    "http://127.0.0.1:8910"
 kill_mode: process
 after: ["session-bridge.service"]
 wants: ["session-bridge.service"]
 ```
 
-**Register `dispatcher-$NAME`** via an available daemon-management tool:
+**Register `dispatcher-$NAME`** via an available daemon-management tool.
+`TASKPILOT_DAEMON_URL` MUST point at this workspace's taskpilot — without it the
+dispatcher defaults to `:8912` (the default workspace) and event-spawned agents
+run un-isolated in the wrong runtime.
 ```
 name:    dispatcher-$NAME
 command: <DISP_ROOT>/.venv/bin/uvicorn  (or ~/.dispatcher/venv/bin/uvicorn if that exists)
 args:    ["app.main:app", "--host", "127.0.0.1", "--port", "<DISPATCHER_PORT>"]
 cwd:     <DISP_ROOT>
 env:
-  DISPATCHER_DATA_DIR:        "<WS_DIR>/dispatcher"
-  DISPATCHER_INGEST_TOKEN_FILE: "<WS_DIR>/secrets/dispatcher-bearer.token"
-  DISPATCHER_CHANNELS_FILE:   "<WS_DIR>/dispatcher/channels.yaml"
-  DISPATCHER_RECIPES_DIR:     "<WS_DIR>/dispatcher/recipes"
-  SESSION_BRIDGE_URL:         "http://127.0.0.1:8910"
+  DISPATCHER_DATA_DIR:          "<WS_DIR>/dispatcher"
+  DISPATCHER_INGEST_TOKEN_FILE: "<WS_DIR>/.mindframe/secrets/dispatcher-bearer.token"
+  DISPATCHER_CHANNELS_FILE:     "<WS_DIR>/dispatcher/channels.yaml"
+  DISPATCHER_RECIPES_DIR:       "<WS_DIR>/dispatcher/recipes"
+  TASKPILOT_DAEMON_URL:         "http://127.0.0.1:<TASKPILOT_PORT>"
+  SESSION_BRIDGE_URL:           "http://127.0.0.1:8910"
 ```
 
 To find the right venv for dispatcher, check `<DISP_ROOT>/.venv/bin/uvicorn`
 first, then `~/.dispatcher/venv/bin/uvicorn`.
 
-**Register `mindframe-dashboard-$NAME`** via an available daemon-management tool:
+**Register `mindframe-dashboard-$NAME`** via an available daemon-management tool.
+`MINDFRAME_HOME` must equal the agent's `HOME` (`<WS_DIR>`) so the connections
+panel reads the same `.claude` the agents write to; frames and vault live under
+`.mindframe/` to mirror the agent's `~/.mindframe`.
 ```
 name:    mindframe-dashboard-$NAME
 command: <dashboard_venv>/bin/python3
@@ -170,12 +232,19 @@ cwd:     <MF_ROOT>/dashboard
 env:
   PORT:                          "<DASHBOARD_PORT>"
   MINDFRAME_HOME:                "<WS_DIR>"
-  MINDFRAME_FRAMES_ROOT:         "<WS_DIR>/frames"
-  MINDFRAME_VAULT_DIR:           "<WS_DIR>/vault"
+  MINDFRAME_FRAMES_ROOT:         "<WS_DIR>/.mindframe/frames"
+  MINDFRAME_VAULT_DIR:           "<WS_DIR>/.mindframe/vault"
   MINDFRAME_TASKPILOT_DAEMON:    "http://127.0.0.1:<TASKPILOT_PORT>"
   MINDFRAME_DISPATCHER_URL:      "http://127.0.0.1:<DISPATCHER_PORT>"
-  MINDFRAME_DISPATCHER_BEARER_FILE: "<WS_DIR>/secrets/dispatcher-bearer.token"
+  MINDFRAME_DISPATCHER_BEARER_FILE: "<WS_DIR>/.mindframe/secrets/dispatcher-bearer.token"
+  MINDFRAME_TASKPILOT_DB:        "<WS_DIR>/taskpilot/taskpilot.db"
+  MINDFRAME_TASKPILOT_HOME:      "<WS_DIR>/taskpilot"
+  MINDFRAME_DISPATCHER_HOME:     "<WS_DIR>/dispatcher"
 ```
+
+(`MINDFRAME_TASKPILOT_DB` and `MINDFRAME_DISPATCHER_HOME` point the dashboard's
+read-only Agents/Events panels at *this* workspace's runtime — without them
+those panels would show the default workspace's tasks and events.)
 
 For the dashboard venv: check `~/.mindframe/dashboard-venv/bin/python3` —
 if the workspace needs its own venv (different Python version, etc.), create
@@ -220,18 +289,18 @@ EOF
 Optionally open a setup mindframe to guide knowledge-base initialization:
 
 ```bash
-FRAME_DIR="$WS_DIR/frames/mindframe-setup"
+FRAME_DIR="$WS_DIR/.mindframe/frames/mindframe-setup"
 mkdir -p "$FRAME_DIR"
 printf '{"id":"mindframe-setup","title":"Setup","task_id":"mindframe-setup","status":"active"}\n' \
   > "$FRAME_DIR/meta.json"
-
-# Link workspace .claude so the setup agent picks up workspace MCPs
-ln -sfn "$WS_DIR/.claude" "$FRAME_DIR/.claude"
 
 # Fill in the setup brief
 sed -e "s#__FRAME_DIR__#$FRAME_DIR#g" \
     "$MF_ROOT/setup/brief.md" > "$FRAME_DIR/brief.txt"
 ```
+
+(No `.claude` symlink is needed in the frame dir: the agent runs with
+`HOME=$WS_DIR`, so `$WS_DIR/.claude` is already its user-scope config.)
 
 Spawn a long-running agent via an available agent-spawning tool:
 ```
@@ -369,10 +438,47 @@ NAME="$1"
 
 ---
 
+## The isolation model
+
+A workspace is isolated by making the workspace root the agent's `HOME`. The
+taskpilot daemon for the workspace is started with
+`TASKPILOT_AGENT_HOME=<WS_DIR>`, so every agent it spawns runs with
+`HOME=<WS_DIR>`. That single override makes all of an agent's `~` conventions
+resolve inside the workspace:
+
+| Agent writes to | Resolves to | Read by |
+|---|---|---|
+| `~/.claude/skills/` | `<WS_DIR>/.claude/skills/` | dashboard connections panel |
+| `~/.claude/settings.json` `mcpServers` | `<WS_DIR>/.claude/settings.json` | dashboard connections panel |
+| `~/.mindframe/connections/` | `<WS_DIR>/.mindframe/connections/` | the connector skills |
+| `~/.mindframe/vault/` | `<WS_DIR>/.mindframe/vault/` | dashboard (`MINDFRAME_VAULT_DIR`) |
+
+The dashboard is started with `MINDFRAME_HOME=<WS_DIR>` so it reads the *same*
+`.claude` the agents write — that alignment is what keeps the connections panel
+honest and the vault consistent.
+
+**What is shared vs isolated:**
+
+- **Shared** (symlinks into the real home): subscription auth
+  (`~/.claude/.credentials.json`), plugin code (`~/.claude/plugins`), and
+  OS-level CLI identity (`.gitconfig`, `.ssh`, `.config`, `.aws`, …). The agent
+  acts as the operator via their existing `gh` / `gcloud` / `aws` logins — the
+  inherited-identity invariant.
+- **Isolated** (workspace-local): MCP/connection config
+  (`.claude/settings.json` `mcpServers`, `.claude.json`), connector skills
+  (`.claude/skills`), connection tokens (`.mindframe/connections`), and the
+  vault. A fresh workspace starts with **zero** connection MCPs.
+
+What this does NOT isolate: the **mesh** (one shared session-bridge on `:8910`
+across all workspaces — agents can see each other in `sessions`, but there is no
+durable state and messaging is keyed by unique task id), and **OS-level CLI
+auth** (a workspace can't use a different `gh` account without a separate login).
+
 ## Configuring workspace MCPs
 
-Each workspace has a `.claude/settings.json` at `<workspace_home>/.claude/settings.json`.
-This file follows the standard Claude Code settings format. Add MCPs here:
+Each workspace has a `.claude/settings.json` at `<WS_DIR>/.claude/settings.json`
+(`<WS_DIR>` = `~/.mindframe/workspaces/<name>`). It is a copy of the operator's
+global settings with `mcpServers` emptied. Add workspace MCPs here:
 
 ```json
 {
@@ -386,14 +492,14 @@ This file follows the standard Claude Code settings format. Add MCPs here:
 }
 ```
 
-Agents spawned in this workspace inherit these MCPs automatically (the frame
-dir gets a `.claude` symlink at spawn time). Existing agents pick up changes on
-their next restart.
-
-To edit the workspace MCP config directly:
+Because the agent's `HOME` is `<WS_DIR>`, this file is the agent's user-scope
+config *and* the dashboard's connections-panel source — one place, no drift.
+Agents pick up changes on their next restart.
 
 ```bash
 $EDITOR ~/.mindframe/workspaces/$NAME/.claude/settings.json
 ```
 
-Or instruct the operator to edit it and restart the affected agents.
+When `/mindframe:connect` runs inside a workspace agent, the connector skill and
+its tokens land under `<WS_DIR>/.claude/skills` and
+`<WS_DIR>/.mindframe/connections` automatically — no global leak.
