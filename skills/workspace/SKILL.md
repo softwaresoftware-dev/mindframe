@@ -449,7 +449,7 @@ resolve inside the workspace:
 | Agent writes to | Resolves to | Read by |
 |---|---|---|
 | `~/.claude/skills/` | `<WS_DIR>/.claude/skills/` | dashboard connections panel |
-| `~/.claude/settings.json` `mcpServers` | `<WS_DIR>/.claude/settings.json` | dashboard connections panel |
+| `~/.claude.json` `mcpServers` (via `claude mcp add`) | `<WS_DIR>/.claude.json` | the agent at launch + connections panel |
 | `~/.mindframe/connections/` | `<WS_DIR>/.mindframe/connections/` | the connector skills |
 | `~/.mindframe/vault/` | `<WS_DIR>/.mindframe/vault/` | dashboard (`MINDFRAME_VAULT_DIR`) |
 
@@ -476,30 +476,22 @@ auth** (a workspace can't use a different `gh` account without a separate login)
 
 ## Configuring workspace MCPs
 
-Each workspace has a `.claude/settings.json` at `<WS_DIR>/.claude/settings.json`
-(`<WS_DIR>` = `~/.mindframe/workspaces/<name>`). It is a copy of the operator's
-global settings with `mcpServers` emptied. Add workspace MCPs here:
-
-```json
-{
-  "mcpServers": {
-    "my-mcp": {
-      "command": "npx",
-      "args": ["-y", "@my/mcp-server"],
-      "env": {}
-    }
-  }
-}
-```
-
-Because the agent's `HOME` is `<WS_DIR>`, this file is the agent's user-scope
-config *and* the dashboard's connections-panel source — one place, no drift.
-Agents pick up changes on their next restart.
+Workspace MCPs live in the workspace's **`.claude.json`** (`<WS_DIR>/.claude.json`,
+`<WS_DIR>` = `~/.mindframe/workspaces/<name>`) — the user-scope registry Claude
+Code actually loads MCPs from. Because the agent's `HOME` is `<WS_DIR>`, the
+standard tools target it automatically:
 
 ```bash
-$EDITOR ~/.mindframe/workspaces/$NAME/.claude/settings.json
+# add an MCP to the workspace (HOME makes it land in <WS_DIR>/.claude.json)
+HOME="$WS_DIR" claude mcp add my-mcp -- npx -y @my/mcp-server
 ```
 
-When `/mindframe:connect` runs inside a workspace agent, the connector skill and
-its tokens land under `<WS_DIR>/.claude/skills` and
-`<WS_DIR>/.mindframe/connections` automatically — no global leak.
+`/mindframe:connect`, run inside a workspace agent, does the same: the MCP
+registration lands in `<WS_DIR>/.claude.json` and the connector skill + tokens
+land under `<WS_DIR>/.claude/skills` and `<WS_DIR>/.mindframe/connections` — all
+automatic, no global leak.
+
+The dashboard's connections panel reads the **union** of `<WS_DIR>/.claude.json`
+and `<WS_DIR>/.claude/settings.json` `mcpServers`, so an MCP added by either
+mechanism (or hand-edited into `settings.json`) shows up. A fresh workspace
+starts empty. Agents pick up changes on their next restart.

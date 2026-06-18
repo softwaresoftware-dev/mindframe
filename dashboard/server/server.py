@@ -1690,29 +1690,35 @@ def _conn_run(cmd: list[str], timeout: float = 20.0):
 def _parse_mcp_list() -> list[dict[str, Any]]:
     """Return MCPs for the connections panel.
 
-    In workspace mode (MINDFRAME_HOME has a .claude/settings.json), reads MCPs
-    from that file — so the panel shows only what this workspace has explicitly
-    configured, starting empty on a fresh workspace. In default mode (no
-    workspace settings file), falls back to `claude mcp list` for the full
-    global view.
+    In workspace mode (the workspace HOME = MINDFRAME_HOME), reads the workspace's
+    own MCP config — the union of `.claude.json` `mcpServers` (where `claude mcp
+    add` / connector authoring writes, and what the agent actually loads) and
+    `.claude/settings.json` `mcpServers`. This shows exactly what the workspace
+    has configured, starting empty on a fresh workspace, and never the operator's
+    global MCPs. In default mode (no workspace home), falls back to live
+    `claude mcp list` for the full global view.
     """
-    ws_settings = _MINDFRAME_HOME / ".claude" / "settings.json"
-    if ws_settings.is_file():
-        try:
-            data = json.loads(ws_settings.read_text("utf-8"))
-            mcp_servers = data.get("mcpServers", {})
-            out = []
-            for name in mcp_servers:
-                base = name.split(":")[-1] if name.startswith("plugin:") else name
-                out.append({
-                    "id": base,
-                    "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title()),
-                    "state": "configured",
-                    "bundle": base in _BUNDLE_RUNTIME,
-                })
-            return out
-        except (OSError, ValueError):
-            pass
+    ws_marker = _MINDFRAME_HOME / ".claude" / "settings.json"
+    if ws_marker.is_file():
+        names: dict[str, None] = {}  # ordered de-dupe
+        for cfg in (_MINDFRAME_HOME / ".claude.json",
+                    _MINDFRAME_HOME / ".claude" / "settings.json"):
+            try:
+                data = json.loads(cfg.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            for name in (data.get("mcpServers") or {}):
+                names[name] = None
+        out = []
+        for name in names:
+            base = name.split(":")[-1] if name.startswith("plugin:") else name
+            out.append({
+                "id": base,
+                "name": _CONN_DISPLAY.get(base, base.replace("-", " ").title()),
+                "state": "configured",
+                "bundle": base in _BUNDLE_RUNTIME,
+            })
+        return out
 
     # Default workspace: fall back to live `claude mcp list`.
     r = _conn_run(["claude", "mcp", "list"], timeout=45)
