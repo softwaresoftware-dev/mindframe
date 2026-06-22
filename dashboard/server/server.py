@@ -667,7 +667,10 @@ async def _define_and_start(mid: str, fdir: Path, prompt: str,
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.put(
                 f"{TASKPILOT_DAEMON}/tasks/{mid}",
-                json={"name": mid, "description": brief, "cwd": str(fdir)},
+                json={"name": mid, "description": brief, "cwd": str(fdir),
+                      # the workspace partition (workspaces/<ws>/) is the agent's
+                      # $HOME, so it loads only that workspace's MCPs/skills/vault
+                      "home": str(fdir.parents[2])},
             )
             if r.status_code < 300:
                 body = {"prompt": start_prompt} if start_prompt is not None else {}

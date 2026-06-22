@@ -198,13 +198,29 @@ def seed_workspace(ws_id):
     claude = ws / ".claude"
     (claude / "skills").mkdir(parents=True, exist_ok=True)
     real_claude = Path.home() / ".claude"
-    for name in (".credentials.json", "plugins", "settings.json"):
+    # share subscription auth + plugin code; everything else stays workspace-local
+    for name in (".credentials.json", "plugins"):
         link, target = claude / name, real_claude / name
         if target.exists() and not link.exists():
             try:
                 link.symlink_to(target)
             except OSError:
                 pass
+
+    # per-workspace settings.json: carry plugin enablement / hooks / permissions
+    # but NOT global mcpServers — symlinking the real file would leak every
+    # global MCP into every workspace. mcpServers starts empty and grows per ws.
+    settings = claude / "settings.json"
+    if not settings.exists():
+        base = {}
+        rs = real_claude / "settings.json"
+        if rs.exists():
+            try:
+                base = json.loads(rs.read_text())
+            except Exception:
+                base = {}
+        base["mcpServers"] = {}
+        settings.write_text(json.dumps(base, indent=2))
 
     cj = ws / ".claude.json"
     if not cj.exists():
