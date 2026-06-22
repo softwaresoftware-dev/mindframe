@@ -20,13 +20,26 @@
   #topbar a { color: var(--color-text-muted); text-decoration: none; }
   #topbar a:hover { color: var(--color-accent-wash); }
   #topbar .sep { color: #3a3a42; }
-  #topbar .id { color: #5a5a63; }
+  /* .id anchors the left group: its auto right-margin pushes the action
+     buttons (#promote, #export) to the right as one contiguous group. */
+  #topbar .id { color: #5a5a63; margin-right: auto; }
   #share {
-    margin-left: auto; font: inherit; font-size: 11.5px; cursor: pointer;
+    font: inherit; font-size: 11.5px; cursor: pointer;
     color: var(--color-text-muted); background: transparent;
     border: 1px solid var(--color-border); border-radius: 999px; padding: .25rem .7rem;
   }
   #share:hover { color: var(--color-accent-wash); border-color: var(--color-accent-soft); }
+  /* promote-to-app: only shown for `created` frames (loadDock toggles .show).
+     Gold echoes the app identity (the apptitle pill). Sits in the right-hand
+     action group beside #export (the group is anchored by .id's margin). */
+  #promote {
+    display: none; font: inherit; font-size: 11.5px; cursor: pointer;
+    color: var(--color-gold); background: transparent;
+    border: 1px solid var(--color-border); border-radius: 999px; padding: .25rem .7rem;
+  }
+  #promote.show { display: inline-block; }
+  #promote:hover { border-color: var(--color-gold); }
+  #promote:disabled { opacity: .5; cursor: default; }
 
   /* main = left dock + the surface */
   #main { flex: 1; display: flex; flex-direction: row; min-height: 0; }
@@ -223,6 +236,7 @@
     <a href="/">← home</a>
     <span class="sep">/</span>
     <span class="id" id="frame-id"></span>
+    <button id="promote" type="button" title="promote this conversation into a standalone app: full-bleed, the agent becomes its maintainer">&#x2934; promote to app</button>
     <button id="share" type="button" title="download this page as one self-contained html file">export</button>
   </div>
   <div id="main">
@@ -372,6 +386,29 @@
     if (e.key === 'Escape' && document.body.classList.contains('maintain')) setMaintain(false);
   });
 
+  // ----- promote to app: flip kind created -> app via the existing endpoint.
+  // Only offered for `created` frames (loadDock toggles .show); the server
+  // rejects the change on delivered/watch frames. On success loadDock() runs,
+  // sees kind==='app', and flips the body to app-mode (hiding this topbar). ----
+  const promoteBtn = document.getElementById('promote');
+  promoteBtn.addEventListener('click', async () => {
+    const was = promoteBtn.textContent;
+    promoteBtn.disabled = true;
+    promoteBtn.textContent = 'promoting…';
+    try {
+      const r = await fetch(API('kind'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'app' }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await loadDock();   // flips to app-mode and hides the topbar
+    } catch (e) {
+      promoteBtn.textContent = was;
+      promoteBtn.disabled = false;
+      appendLog({ kind: 'warn', label: 'promote to app failed: ' + e.message });
+    }
+  });
+
   // ----- dock: list every mindframe, switch without new tabs -----
   let dockFrames = [], spawnFailWarned = false;
   async function loadDock(){
@@ -393,6 +430,9 @@
       const isApp = !!(me && me.kind === 'app');
       document.body.classList.toggle('app-mode', isApp);
       if (isApp) document.getElementById('apptitle').textContent = me.title || MF_ID;
+      // Offer "promote to app" only on plain conversations (created). delivered/
+      // watch frames can't change kind; app frames are already there.
+      promoteBtn.classList.toggle('show', ((me && me.kind) || 'created') === 'created');
     } catch (e) {}
   }
   function timeAgo(ms){
