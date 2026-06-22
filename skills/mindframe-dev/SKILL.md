@@ -37,7 +37,7 @@ python3 "$(dirname SKILL.md)/mindframe_dev.py" <command>
 | `status` | Per-daemon pid + process + health. |
 | `logs [name] [--tail N]` | Tail a daemon log (or all). Names: `session-bridge`, `taskpilot`, `dispatcher`, `dispatcher-poller`, `dashboard`. |
 | `open` | Print (and try to open) the dashboard URL. |
-| `host [name] [--port P] [--remove]` | Map a bare hostname on port 80 to the dashboard via an nginx reverse proxy. Default `mindframe.localhost`. |
+| `host [name] [--port P] [--remove]` | Map a bare hostname on port 80 to the dashboard via an nginx reverse proxy. Default `mindframe-dev.localhost`. |
 | `down [--wipe]` | Stop all daemons. Ports are retained so the next `up` reuses them. `--wipe` also deletes the dev home + logs. |
 
 ## What comes up
@@ -58,16 +58,17 @@ just-killed port in `TIME_WAIT` still reads as free).
 
 ## The hostname (no port to remember)
 
-`host` gives you `http://mindframe.localhost/` with no port:
+`host` gives you `http://mindframe-dev.localhost/` with no port:
 
 - `*.localhost` resolves to loopback automatically (systemd-resolved), so there
   is **no `/etc/hosts` edit** and no extra DNS.
 - It installs an nginx vhost (`server_name mindframe.localhost`) reverse-proxying
   to the dashboard port, using the standard sites-available/enabled + reload
   flow. On this machine those steps are covered by the nginx NOPASSWD sudo rules.
-- For an even shorter bare `http://mindframe/`, add one line to `/etc/hosts`
-  (`127.0.0.1 mindframe`) yourself (needs a sudo password) and run
-  `host mindframe`.
+- `mindframe.localhost` (no `-dev`) is left free for a real / prod deployment.
+- For an even shorter bare `http://mindframe-dev/`, add one line to `/etc/hosts`
+  (`127.0.0.1 mindframe-dev`) yourself (needs a sudo password) and run
+  `host mindframe-dev`.
 
 Re-run `host` after a port change; remove the mapping with `host --remove`.
 

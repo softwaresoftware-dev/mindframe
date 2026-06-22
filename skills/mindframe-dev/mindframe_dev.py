@@ -431,7 +431,8 @@ def cmd_host(args):
     enabled = f"/etc/nginx/sites-enabled/{name}"
 
     if args.remove:
-        subprocess.run(["sudo", "-n", "rm", "-f", enabled], check=False)
+        # no flags: must match the NOPASSWD rule `rm /etc/nginx/sites-enabled/*`
+        subprocess.run(["sudo", "-n", "rm", enabled], check=False)
         subprocess.run(["sudo", "-n", "nginx", "-t"], check=False)
         subprocess.run(["sudo", "-n", "systemctl", "reload", "nginx"], check=False)
         log(f"removed {name} (ran `nginx -t` + reload)")
@@ -522,8 +523,8 @@ def main():
     p_logs.add_argument("--tail", type=int, default=40)
     sub.add_parser("open", help="print/open the dashboard url")
     p_host = sub.add_parser("host", help="map a bare hostname (port 80) to the dashboard via nginx")
-    p_host.add_argument("name", nargs="?", default="mindframe.localhost",
-                        help="hostname (default mindframe.localhost — auto-resolves to loopback)")
+    p_host.add_argument("name", nargs="?", default="mindframe-dev.localhost",
+                        help="hostname (default mindframe-dev.localhost — auto-resolves to loopback)")
     p_host.add_argument("--port", type=int, help="dashboard port (default: from state)")
     p_host.add_argument("--remove", action="store_true", help="remove the mapping")
     p_down = sub.add_parser("down", help="stop the stack")
