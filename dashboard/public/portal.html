@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mindframe — Workspaces</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    /* The launcher above the launcher: pick a workspace, then land on its home.
+       Reuses the shell's tokens + .topbar/.brand so it feels like one product. */
+    .portal { max-width: 680px; margin: 0 auto; padding: 9vh var(--space-lg) var(--space-2xl); }
+    .portal-head { text-align: center; margin-bottom: var(--space-xl); }
+    .portal-title {
+      font-family: var(--font-heading); font-weight: 600; font-size: 1.9rem;
+      color: var(--color-text); margin: 0 0 .45rem; letter-spacing: .01em;
+    }
+    .portal-sub { color: var(--color-text-muted); font-size: 13px; }
+    .ws-grid { display: grid; gap: var(--space-sm); }
+    .ws-card {
+      display: flex; align-items: baseline; gap: var(--space-md);
+      padding: var(--space-md) var(--space-lg);
+      background: var(--color-surface); border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg); text-decoration: none; color: var(--color-text-soft);
+      transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+    }
+    .ws-card:hover {
+      border-color: var(--color-accent-soft);
+      background: var(--color-surface-hover);
+      color: var(--color-accent-wash);
+    }
+    .ws-name { font-family: var(--font-heading); font-weight: 500; font-size: 1.05rem; flex: 1; }
+    .ws-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--color-text-faint); white-space: nowrap; }
+    .ws-arrow { color: var(--color-text-faint); transition: color var(--transition-fast); }
+    .ws-card:hover .ws-arrow { color: var(--color-accent-hover); }
+    .portal-empty, .portal-err { text-align: center; color: var(--color-text-muted); padding: var(--space-xl) 0; font-size: 13px; }
+    .portal-empty code { font-family: var(--font-mono); color: var(--color-gold); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="wordmark">MINDFRAME</span>
+    </a>
+  </header>
+
+  <main class="portal">
+    <div class="portal-head">
+      <h1 class="portal-title">Workspaces</h1>
+      <p class="portal-sub">Each workspace has its own knowledge base, connections, and mindframes.</p>
+    </div>
+    <div class="ws-grid" id="ws-grid"><div class="portal-empty">loading…</div></div>
+  </main>
+
+  <script>
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+
+    (async () => {
+      const grid = document.getElementById("ws-grid");
+      try {
+        const r = await fetch("/api/workspaces");
+        const j = await r.json();
+        const ws = j.workspaces || [];
+        if (!ws.length) {
+          grid.innerHTML = `<div class="portal-empty">No workspaces yet.
+            Create one with <code>/mindframe:workspace create &lt;name&gt;</code>.</div>`;
+          return;
+        }
+        grid.innerHTML = ws.map(w => {
+          const n = w.frames ?? 0;
+          return `<a class="ws-card" href="/w/${encodeURIComponent(w.id)}/">
+            <span class="ws-name">${esc(w.label || w.id)}</span>
+            <span class="ws-meta">${n} ${n === 1 ? "mindframe" : "mindframes"}</span>
+            <span class="ws-arrow">&rarr;</span>
+          </a>`;
+        }).join("");
+      } catch (e) {
+        grid.innerHTML = `<div class="portal-err">couldn't load workspaces: ${esc(String(e))}</div>`;
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -59,7 +59,8 @@ SB_DIR = PROVIDERS / "session-bridge" / "daemon"
 
 DEV_ROOT = Path(os.environ.get("MINDFRAME_DEV_ROOT", str(Path.home() / ".mindframe-dev")))
 VENV = DEV_ROOT / "venv"
-HOME_DIR = DEV_ROOT / "home"          # the ephemeral fake $HOME / MINDFRAME_HOME
+HOME_DIR = DEV_ROOT / "home"          # MINDFRAME_HOME root (holds workspaces/)
+WORKSPACES = HOME_DIR / "workspaces"  # one partition per workspace lives here
 RUN = DEV_ROOT / "run"
 LOGS = RUN / "logs"
 STATE = RUN / "state.json"
@@ -162,36 +163,50 @@ def ensure_venv():
     marker.write_text(want)
 
 
-def seed_home(fresh):
-    """Build the throwaway $HOME: isolated .mindframe tree + a minimal .claude
-    that shares subscription auth + installed plugin code with the real home so
-    spawned agents can actually run, while keeping MCPs/connectors/vault local."""
-    if fresh and HOME_DIR.exists():
-        import shutil
-        shutil.rmtree(HOME_DIR)
+# dev workspaces seeded by `up`. Each is a fully isolated partition under
+# home/workspaces/<id>/. Personal is just another workspace (no special default).
+DEFAULT_WORKSPACES = [
+    ("personal", "Personal"),
+    ("crestborne", "Crestborne"),
+    ("pulsiv", "Pulsiv"),
+    ("arctype", "Arctype"),
+]
 
+
+def _seed_dummy_frame(ws_dir, fid, title, body):
+    fdir = ws_dir / ".mindframe" / "frames" / fid
+    if (fdir / "index.html").exists():
+        return
+    fdir.mkdir(parents=True, exist_ok=True)
+    (fdir / "index.html").write_text(
+        f'<!doctype html>\n<meta name="mf-patch" content="safe">\n'
+        f"<title>{title}</title>\n<h1>{title}</h1>\n<p>{body}</p>\n")
+    (fdir / "meta.json").write_text(json.dumps(
+        {"id": fid, "title": title, "task_id": fid, "status": "running", "kind": "created"}))
+
+
+def seed_workspace(ws_id):
+    """Build one isolated workspace partition: its own .mindframe tree + a
+    minimal .claude that shares subscription auth + plugin code with the real
+    home, while keeping MCPs/connectors/vault local. Mirrors the named-workspace
+    isolation model, minus the per-workspace daemons."""
+    ws = WORKSPACES / ws_id
     for sub in ("vault", "frames", "connections", "secrets"):
-        (HOME_DIR / ".mindframe" / sub).mkdir(parents=True, exist_ok=True)
-    (HOME_DIR / ".mindframe" / "secrets").chmod(0o700)
+        (ws / ".mindframe" / sub).mkdir(parents=True, exist_ok=True)
+    (ws / ".mindframe" / "secrets").chmod(0o700)
 
-    claude = HOME_DIR / ".claude"
+    claude = ws / ".claude"
     (claude / "skills").mkdir(parents=True, exist_ok=True)
-
     real_claude = Path.home() / ".claude"
-    # share these read-mostly bits by symlink (auth + plugin code + settings)
     for name in (".credentials.json", "plugins", "settings.json"):
-        link = claude / name
-        target = real_claude / name
+        link, target = claude / name, real_claude / name
         if target.exists() and not link.exists():
             try:
                 link.symlink_to(target)
             except OSError:
                 pass
-    # presence of .claude/settings.json is how the dashboard detects workspace mode
 
-    # fresh, MCP-isolated .claude.json — but carry over enabledPlugins so the
-    # agent still sees installed plugin skills (mindframe, taskpilot, ...).
-    cj = HOME_DIR / ".claude.json"
+    cj = ws / ".claude.json"
     if not cj.exists():
         enabled = {}
         real_cj = Path.home() / ".claude.json"
@@ -202,13 +217,43 @@ def seed_home(fresh):
                 enabled = {}
         cj.write_text(json.dumps({"mcpServers": {}, "enabledPlugins": enabled}, indent=2))
 
-    # share git identity if present (agents commit the vault)
     gc = Path.home() / ".gitconfig"
-    if gc.exists() and not (HOME_DIR / ".gitconfig").exists():
+    if gc.exists() and not (ws / ".gitconfig").exists():
         try:
-            (HOME_DIR / ".gitconfig").symlink_to(gc)
+            (ws / ".gitconfig").symlink_to(gc)
         except OSError:
             pass
+    return ws
+
+
+def seed_home(fresh):
+    """MINDFRAME_HOME root that holds workspaces/ + a workspaces.yaml registry.
+    Seeds the default workspace set with a little dummy content so the portal
+    and per-workspace homes have something to show."""
+    if fresh and HOME_DIR.exists():
+        import shutil
+        shutil.rmtree(HOME_DIR)
+    WORKSPACES.mkdir(parents=True, exist_ok=True)
+
+    for ws_id, _label in DEFAULT_WORKSPACES:
+        seed_workspace(ws_id)
+
+    # registry (hand-written YAML — the controller is stdlib-only, no PyYAML)
+    reg = ["workspaces:"]
+    for ws_id, label in DEFAULT_WORKSPACES:
+        reg += [f"  {ws_id}:", f"    label: {label}"]
+    (HOME_DIR / "workspaces.yaml").write_text("\n".join(reg) + "\n")
+
+    # a touch of seed content in two workspaces
+    _seed_dummy_frame(WORKSPACES / "personal", "welcome", "Welcome",
+                      "Your personal workspace.")
+    _seed_dummy_frame(WORKSPACES / "crestborne", "deal-memo", "Deal Memo",
+                      "Crestborne workspace.")
+    for ws_id, note, text in (("personal", "hello.md", "# Hello\nPersonal vault.\n"),
+                              ("crestborne", "deal.md", "# Deal\nCrestborne vault.\n")):
+        p = WORKSPACES / ws_id / ".mindframe" / "vault" / note
+        if not p.exists():
+            p.write_text(text)
 
 
 # --- daemon specs + start ---------------------------------------------------
@@ -222,7 +267,7 @@ def daemon_specs(ports):
     base = os.environ.copy()
     base["PYTHONUNBUFFERED"] = "1"
 
-    disp_data = HOME_DIR / ".mindframe" / "dispatcher"
+    disp_data = HOME_DIR / "dispatcher"  # shared for now; per-workspace channels lands in slice C
     (disp_data / "recipes").mkdir(parents=True, exist_ok=True)
     (disp_data / "event-sources").mkdir(parents=True, exist_ok=True)
     channels = disp_data / "channels.yaml"
@@ -259,7 +304,9 @@ def daemon_specs(ports):
             "env": {**base,
                     "TASKPILOT_DAEMON_PORT": str(tp),
                     "TASKPILOT_DATA_DIR": str(HOME_DIR / "taskpilot"),
-                    "TASKPILOT_AGENT_HOME": str(HOME_DIR),
+                    # per-task HOME is the real target (slice B); until then any
+                    # stray spawn lands in an isolated partition, not the real home
+                    "TASKPILOT_AGENT_HOME": str(WORKSPACES / "personal"),
                     "SESSION_BRIDGE_URL": sb_url},
             "health": f"{tp_url}/health",
         },
@@ -283,9 +330,8 @@ def daemon_specs(ports):
             "args": [PY, "server/server.py"],
             "env": {**base,
                     "PORT": str(dash),
+                    # server derives frames/vault per-workspace from MINDFRAME_HOME/workspaces/<id>
                     "MINDFRAME_HOME": str(HOME_DIR),
-                    "MINDFRAME_FRAMES_ROOT": str(HOME_DIR / ".mindframe" / "frames"),
-                    "MINDFRAME_VAULT_DIR": str(HOME_DIR / ".mindframe" / "vault"),
                     "MINDFRAME_DISPATCHER_URL": disp_url,
                     "MINDFRAME_DISPATCHER_BEARER_FILE": str(BEARER),
                     "MINDFRAME_TASKPILOT_DAEMON": tp_url,

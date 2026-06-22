@@ -48,6 +48,7 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from contextvars import ContextVar
 from pydantic import BaseModel, Field
 
 # --------------------------- config ---------------------------
@@ -57,12 +58,58 @@ ROOT = SERVER_DIR.parent
 ARTIFACTS_ROOT = ROOT / "artifacts"
 WEB_ROOT = ROOT / "public"
 _MINDFRAME_HOME = Path(os.environ.get("MINDFRAME_HOME", str(Path.home() / ".mindframe")))
-FRAMES_ROOT = Path(os.environ.get("MINDFRAME_FRAMES_ROOT", str(_MINDFRAME_HOME / "frames")))
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# Knowledge-base vault. Defaults to <MINDFRAME_HOME>/vault; override with
-# MINDFRAME_VAULT_DIR for named workspaces.
-VAULT_DIR = Path(os.environ.get("MINDFRAME_VAULT_DIR", str(_MINDFRAME_HOME / "vault")))
+# Multi-tenant: one dashboard process serves every workspace. A workspace is a
+# partition dir under MINDFRAME_HOME/workspaces/<id>/. The active workspace for a
+# request is set by WorkspaceMiddleware from the /w/<id>/ path prefix and read
+# via the _current_ws ContextVar; frames and the vault resolve per-request.
+WORKSPACES_ROOT = Path(os.environ.get("MINDFRAME_WORKSPACES_ROOT", str(_MINDFRAME_HOME / "workspaces")))
+_current_ws: ContextVar = ContextVar("current_ws", default=None)
+
+
+def current_ws():
+    return _current_ws.get()
+
+
+def ws_home(ws=None):
+    # Falls back to a non-existent path when no workspace is active, so callers
+    # that guard with .is_dir() degrade to empty results rather than crashing.
+    return WORKSPACES_ROOT / (ws or _current_ws.get() or "__noworkspace__")
+
+
+def frames_root() -> Path:
+    return ws_home() / ".mindframe" / "frames"
+
+
+def vault_dir() -> Path:
+    return ws_home() / ".mindframe" / "vault"
+
+
+def list_workspaces() -> list[dict[str, Any]]:
+    """Workspaces = partition dirs under WORKSPACES_ROOT, labelled from
+    MINDFRAME_HOME/workspaces.yaml, with a live frame count."""
+    labels: dict[str, Any] = {}
+    try:
+        import yaml
+        data = yaml.safe_load((_MINDFRAME_HOME / "workspaces.yaml").read_text("utf-8")) or {}
+        for wid, meta in (data.get("workspaces") or {}).items():
+            labels[wid] = (meta or {}).get("label")
+    except Exception:
+        pass
+    out: list[dict[str, Any]] = []
+    if WORKSPACES_ROOT.is_dir():
+        for d in sorted(WORKSPACES_ROOT.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            fr = d / ".mindframe" / "frames"
+            n = sum(1 for f in fr.iterdir() if (f / "index.html").is_file()) if fr.is_dir() else 0
+            out.append({
+                "id": d.name,
+                "label": labels.get(d.name) or d.name.replace("-", " ").title(),
+                "frames": n,
+            })
+    return out
 
 
 PORT = int(os.environ.get("PORT", "5174"))
@@ -115,15 +162,9 @@ def _warm_connections_loop() -> None:
     takes ~7s, so a cold /api/connections blocks the home page's count for that
     long. Refreshing just under the TTL means the endpoint is virtually always a
     cache hit (instant); the slow probe runs here, off the request path."""
-    while True:
-        try:
-            data = _discover_connections()
-            with _conn_lock:
-                _conn_cache["data"] = data
-                _conn_cache["at"] = time.time()
-        except Exception as e:  # never let the warmer die
-            log(f"connections warm failed: {e}")
-        time.sleep(max(5.0, _CONN_TTL_S - 5.0))
+    # Multi-tenant: connections are per-workspace and discovered on request
+    # (fast file reads from each workspace's .claude). Nothing global to warm.
+    return
 
 
 @asynccontextmanager
@@ -147,6 +188,42 @@ if CORS_ORIGINS:
     )
 
 
+_WS_PATH_RE = re.compile(r"^/w/([A-Za-z0-9_-]{1,64})(/.*)?$")
+
+
+class WorkspaceMiddleware:
+    """Pure-ASGI: strip a /w/<id>/ prefix and stash the workspace in a ContextVar
+    so every downstream route resolves frames/vault/connections against that
+    partition. Pure ASGI (not BaseHTTPMiddleware) keeps the endpoint in the same
+    task, so the ContextVar is captured by run_in_threadpool for sync routes."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            m = _WS_PATH_RE.match(scope.get("path", ""))
+            if m:
+                ws, rest = m.group(1), (m.group(2) or "/")
+                if not (WORKSPACES_ROOT / ws).is_dir():
+                    await JSONResponse({"error": f"unknown workspace: {ws}"},
+                                       status_code=404)(scope, receive, send)
+                    return
+                token = _current_ws.set(ws)
+                scope = dict(scope)
+                scope["path"] = rest
+                scope["raw_path"] = rest.encode("utf-8")
+                try:
+                    await self.app(scope, receive, send)
+                finally:
+                    _current_ws.reset(token)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(WorkspaceMiddleware)
+
+
 @app.get("/api/health")
 async def api_health() -> dict[str, Any]:
     return {
@@ -154,14 +231,21 @@ async def api_health() -> dict[str, Any]:
         "port": PORT,
         "dispatcher_url": DISPATCHER_URL,
         "dispatcher_bearer_present": DISPATCHER_BEARER_FILE.is_file(),
+        "workspaces": [w["id"] for w in list_workspaces()],
     }
+
+
+@app.get("/api/workspaces")
+async def api_workspaces() -> Response:
+    """The portal's data: every workspace partition with its label + frame count."""
+    return JSONResponse({"workspaces": list_workspaces()})
 
 
 # --------------------------- mindframe surface listing ---------------------------
 #
 # A mindframe is a *surface*: the agent owns one index.html it rewrites in place
 # (see docs/onboarding-ux.md). This endpoint lists surface mindframes: frame dirs
-# under FRAMES_ROOT that hold an index.html. Per-mindframe viewing is served at
+# under frames_root() that hold an index.html. Per-mindframe viewing is served at
 # /m/<id> and creation at POST /api/frames/create.
 
 
@@ -253,7 +337,7 @@ def _supersede_deliveries(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for f in frames:
         if (f["kind"] == "delivered" and not f["archived"] and f.get("watch")
                 and f["modified"] < newest_per_watch.get(f["watch"], 0)):
-            fdir = FRAMES_ROOT / f["id"]
+            fdir = frames_root() / f["id"]
             meta = _read_meta(fdir)
             meta["archived"] = True
             meta["superseded"] = True
@@ -268,15 +352,15 @@ def _supersede_deliveries(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 @app.get("/api/frames")
 async def api_frames(archived: int = 0) -> dict[str, Any]:
-    """List surface mindframes — frame dirs under FRAMES_ROOT holding an
+    """List surface mindframes — frame dirs under frames_root() holding an
     index.html — newest-activity first, with the operator-facing kind
     (created / delivered / watch) and delivery provenance. Archived frames
     are hidden unless ?archived=1; superseded deliveries auto-archive."""
     out: list[dict[str, Any]] = []
-    if not FRAMES_ROOT.is_dir():
+    if not frames_root().is_dir():
         return {"frames": []}
     try:
-        entries = list(FRAMES_ROOT.iterdir())
+        entries = list(frames_root().iterdir())
     except OSError:
         return {"frames": []}
     for fdir in entries:
@@ -379,10 +463,10 @@ async def api_frames_activity() -> dict[str, Any]:
     can poll every couple seconds."""
     now = time.time()
     out: list[dict[str, Any]] = []
-    if not FRAMES_ROOT.is_dir():
+    if not frames_root().is_dir():
         return {"frames": []}
     try:
-        entries = list(FRAMES_ROOT.iterdir())
+        entries = list(frames_root().iterdir())
     except OSError:
         return {"frames": []}
     live = _live_tmux_cached()
@@ -545,7 +629,7 @@ def _mint_frame(mid: str, title: str, prompt: str,
     """Mint frames/<mid> on disk: placeholder page + meta.json. Instant — no
     daemon calls. mkdir raises FileExistsError if the dir appeared since the
     caller checked (caller decides what a lost race means)."""
-    fdir = FRAMES_ROOT / mid
+    fdir = frames_root() / mid
     fdir.mkdir(parents=True, mode=0o755)   # no exist_ok: surface a lost race to the caller
     # Workspace MCP isolation is handled at the agent-runtime level: the
     # workspace's taskpilot runs agents with HOME=<workspace root>, so the
@@ -643,7 +727,7 @@ async def create_mindframe(body: CreateMindframe, background_tasks: BackgroundTa
 
     for _ in range(5):
         mid = _mint_frame_id()
-        if not (FRAMES_ROOT / mid).exists():
+        if not (frames_root() / mid).exists():
             break
     else:
         return JSONResponse({"error": "could not mint a unique frame id"}, status_code=500)
@@ -673,7 +757,7 @@ def _frame_dir(mid: str) -> Path | None:
     the directory doesn't exist. Also guards against path traversal via the id."""
     if not FRAME_ID_RE.match(mid):
         return None
-    d = FRAMES_ROOT / mid
+    d = frames_root() / mid
     return d if d.is_dir() else None
 
 
@@ -1122,8 +1206,9 @@ def _agent_transcript(fdir: Path, task_id: str) -> Path | None:
     files: list[Path] = []
     # Candidate $HOME roots the agent may have run under (deduped).
     home_roots = [Path.home()]
-    if _MINDFRAME_HOME not in home_roots:
-        home_roots.append(_MINDFRAME_HOME)
+    for extra in (ws_home(), _MINDFRAME_HOME):
+        if extra not in home_roots:
+            home_roots.append(extra)
     for cwd in (fdir.resolve(), TASKPILOT_HOME / task_id):
         enc = re.sub(r"[/.]", "-", str(cwd))
         for root in home_roots:
@@ -1307,14 +1392,14 @@ def serve_artifact(sid: str, path: str) -> Response:
 
     Resolution order (first hit wins):
       1. dashboard/artifacts/<sid>/<path>
-      2. <FRAMES_ROOT>/<sid>/<path>
+      2. <frames_root()>/<sid>/<path>
 
     Each lookup is sandbox-checked so `..` traversal can't escape.
     """
     if not (SID_RE.match(sid) or FRAME_ID_RE.match(sid)):
         return PlainTextResponse("not found", status_code=404)
 
-    for root in (ARTIFACTS_ROOT, FRAMES_ROOT):
+    for root in (ARTIFACTS_ROOT, frames_root()):
         if not root.is_dir():
             continue
         base = root / sid
@@ -1335,7 +1420,7 @@ def serve_artifact(sid: str, path: str) -> Response:
 # --------------------------- vault panel ---------------------------
 #
 # Surfaces the single knowledge-base vault to the UI: its metadata, recent
-# entries, and node-link graph. The path is fixed at VAULT_DIR
+# entries, and node-link graph. The path is fixed at vault_dir()
 # (~/.mindframe/vault). There is no vault catalog and no sharing —
 # one deployment, one vault.
 
@@ -1382,7 +1467,7 @@ def _resolve_vault_or_error() -> tuple[Path, str, Response | None]:
     when the vault dir doesn't exist yet (fresh install, pre-setup) — handlers
     should return it directly.
     """
-    path = VAULT_DIR
+    path = vault_dir()
     name = path.name
     if not path.is_dir():
         return path, name, JSONResponse(
@@ -1398,7 +1483,7 @@ def vault_info() -> Response:
     The path is fixed at ~/.mindframe/vault, so this always returns 200 — the
     `exists` flag is false until /mindframe:setup creates it.
     """
-    path = VAULT_DIR
+    path = vault_dir()
     name = path.name
     exists = path.is_dir()
     counts = _count_entries_per_type(path) if exists else {}
@@ -1698,11 +1783,11 @@ def _parse_mcp_list() -> list[dict[str, Any]]:
     global MCPs. In default mode (no workspace home), falls back to live
     `claude mcp list` for the full global view.
     """
-    ws_marker = _MINDFRAME_HOME / ".claude" / "settings.json"
+    ws_marker = ws_home() / ".claude" / "settings.json"
     if ws_marker.is_file():
         names: dict[str, None] = {}  # ordered de-dupe
-        for cfg in (_MINDFRAME_HOME / ".claude.json",
-                    _MINDFRAME_HOME / ".claude" / "settings.json"):
+        for cfg in (ws_home() / ".claude.json",
+                    ws_home() / ".claude" / "settings.json"):
             try:
                 data = json.loads(cfg.read_text("utf-8"))
             except (OSError, ValueError):
@@ -1759,10 +1844,10 @@ def _skill_dirs() -> list[Path]:
     operator authors them via /mindframe:connect. In default mode, scans the
     global user-scope skills dir plus installed-plugin skills.
     """
-    ws_settings = _MINDFRAME_HOME / ".claude" / "settings.json"
+    ws_settings = ws_home() / ".claude" / "settings.json"
     if ws_settings.is_file():
         # Workspace mode: only workspace-local connector skills
-        return [_MINDFRAME_HOME / ".claude" / "skills"]
+        return [ws_home() / ".claude" / "skills"]
 
     dirs = [Path.home() / ".claude" / "skills"]
     manifest = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
@@ -1856,15 +1941,7 @@ def _discover_connections() -> dict:
 def list_connections() -> Response:
     """Live-discovered connections (MCPs + connector skills), minus mindframe's
     own runtime. Cached for _CONN_TTL_S so the discovery probes stay cheap."""
-    now = time.time()
-    with _conn_lock:
-        data, at = _conn_cache["data"], _conn_cache["at"]
-    if data is None or (now - at) > _CONN_TTL_S:
-        data = _discover_connections()
-        with _conn_lock:
-            _conn_cache["data"] = data
-            _conn_cache["at"] = now
-    return JSONResponse(data)
+    return JSONResponse(_discover_connections())
 
 
 # --------------------------- read-only system endpoints ---------------------------
@@ -2120,9 +2197,9 @@ def _watch_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
     """This watch's recent delivered frames (newest first, archived included
     so history survives the inbox)."""
     out = []
-    if not FRAMES_ROOT.is_dir():
+    if not frames_root().is_dir():
         return out
-    for fdir in FRAMES_ROOT.iterdir():
+    for fdir in frames_root().iterdir():
         if not fdir.is_dir() or not (fdir / "index.html").is_file():
             continue
         meta = _read_meta(fdir)
@@ -2156,7 +2233,7 @@ def list_watches() -> Response:
             "paused_triggers": paused.get(d["id"], []),
             "wired": bool(d["triggered_by"]),
             "paused": not d["triggered_by"] and bool(paused.get(d["id"])),
-            "frame_id": wid if (FRAMES_ROOT / wid / "index.html").is_file() else None,
+            "frame_id": wid if (frames_root() / wid / "index.html").is_file() else None,
             "runs": _watch_runs(d["id"]),
             "deliveries": _watch_deliveries(d["id"]),
         })
@@ -2219,7 +2296,7 @@ async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
     if not (DISPATCHER_HOME / "recipes" / rid / "recipe.yaml").is_file():
         return JSONResponse({"error": f"no recipe '{rid}'"}, status_code=404)
     wid = f"watch-{rid}"[:64]
-    fdir = FRAMES_ROOT / wid
+    fdir = frames_root() / wid
     if (fdir / "index.html").is_file():
         return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
     if not await _daemon_reachable():
@@ -2250,9 +2327,9 @@ async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
 def _frame_task_index() -> dict[str, str]:
     """task_id -> frame_id for every frame on disk."""
     out: dict[str, str] = {}
-    if not FRAMES_ROOT.is_dir():
+    if not frames_root().is_dir():
         return out
-    for fdir in FRAMES_ROOT.iterdir():
+    for fdir in frames_root().iterdir():
         if fdir.is_dir() and (fdir / "index.html").is_file():
             out[_frame_task_id(fdir.name, fdir)] = fdir.name
     return out
@@ -2334,8 +2411,8 @@ def activity_feed(limit: int = 30) -> Response:
     items: list[dict[str, Any]] = []
     frame_ids: set[str] = set()
 
-    if FRAMES_ROOT.is_dir():
-        for fdir in FRAMES_ROOT.iterdir():
+    if frames_root().is_dir():
+        for fdir in frames_root().iterdir():
             if not fdir.is_dir() or not FRAME_ID_RE.match(fdir.name):
                 continue
             if not (fdir / "index.html").is_file():
@@ -2429,6 +2506,12 @@ def serve_spa(full_path: str) -> Response:
         candidate = (web / full_path).resolve()
         if (web in candidate.parents) and candidate.is_file():
             return FileResponse(candidate, headers=headers)
+    # bare "/" with no active workspace -> the portal; inside /w/<ws>/ (stripped
+    # to "/" by the middleware) -> the home SPA.
+    if not full_path and current_ws() is None:
+        portal = web / "portal.html"
+        if portal.is_file():
+            return FileResponse(portal, headers=headers)
     index = web / "index.html"
     if index.is_file():
         return FileResponse(index, headers=headers)

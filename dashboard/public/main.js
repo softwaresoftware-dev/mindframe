@@ -13,6 +13,15 @@
 
 const HEALTH_POLL_MS = 15000;
 
+// Multi-tenant: this SPA runs under /w/<ws>/. Derive the workspace and prefix
+// every API call + in-app navigation with it; the server strips the /w/<ws>
+// prefix and resolves the workspace. /api/health stays global (unprefixed).
+const WS = (location.pathname.match(/^\/w\/([^\/]+)/) || [])[1] || null;
+const BASE = WS ? "/w/" + WS : "";
+const api = (p) => BASE + p;
+// Normalize a server-returned url (e.g. /m/<id>) into the current workspace.
+const nav = (u) => (u && u.startsWith("/") && !u.startsWith("/w/") && BASE) ? BASE + u : u;
+
 const $ = (id) => document.getElementById(id);
 const root = () => $("root");
 
@@ -78,14 +87,14 @@ function vaultLastTouched(v) {
 
 async function drawerMindframes(body) {
   try {
-    const j = await (await fetch("/api/frames")).json();
+    const j = await (await fetch(api("/api/frames"))).json();
     const frames = j.frames || [];
     const head = `<div class="drawer-actions"><button class="btn btn-primary btn-sm" id="drawer-new">+ new mindframe</button></div>`;
     if (!frames.length) {
       body.innerHTML = head + `<div class="empty"><p>No mindframes yet — create one to spin up an agent on a live page.</p></div>`;
     } else {
       body.innerHTML = head + `<div class="frame-list">` + frames.map(f => `
-        <a class="frame-row" href="/m/${encodeURIComponent(f.id)}">
+        <a class="frame-row" href="${BASE}/m/${encodeURIComponent(f.id)}">
           <span class="frame-marker frame-marker-${escapeHtml(f.status)}"></span>
           <span class="frame-title-wrap">
             <span class="frame-title">${escapeHtml(f.title)}</span>
@@ -112,7 +121,7 @@ const agoM = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
 
 async function drawerWatches(body) {
   try {
-    const j = await (await fetch("/api/watches")).json();
+    const j = await (await fetch(api("/api/watches"))).json();
     const ws = j.watches || [];
     const cards = ws.map(w => {
       const state = w.wired ? ["live", "the dispatcher fires it on " + w.triggered_by.join(", ")]
@@ -122,7 +131,7 @@ async function drawerWatches(body) {
         `<div class="mgmt-line"><span class="mgmt-dot st-${escapeHtml(r.status)}"></span>
          <span class="mono">${escapeHtml(r.task_id)}</span><span class="mgmt-dim">${escapeHtml(r.status)}</span></div>`).join("");
       const dels = (w.deliveries || []).map(d =>
-        `<a class="mgmt-line mgmt-link" href="/m/${encodeURIComponent(d.id)}">
+        `<a class="mgmt-line mgmt-link" href="${BASE}/m/${encodeURIComponent(d.id)}">
          <span class="mgmt-dot st-delivered"></span><span>${escapeHtml(d.title)}</span>
          <span class="mgmt-dim">${d.archived ? "archived" : "in inbox"} · ${agoM(d.modified)}</span></a>`).join("");
       return `
@@ -148,12 +157,12 @@ async function drawerWatches(body) {
     body.querySelectorAll(".mgmt-card [data-act]").forEach(b => b.addEventListener("click", async (e) => {
       const id = e.target.closest(".mgmt-card").dataset.w, act = e.target.dataset.act;
       if (act === "manage") {
-        const r = await fetch(`/api/watches/${encodeURIComponent(id)}/open`, { method: "POST" });
+        const r = await fetch(api(`/api/watches/${encodeURIComponent(id)}/open`), { method: "POST" });
         const d = await r.json();
-        if (r.ok) location.href = d.url; else showToast(d.error || "couldn't open", "err");
+        if (r.ok) location.href = nav(d.url); else showToast(d.error || "couldn't open", "err");
         return;
       }
-      const r = await fetch(`/api/watches/${encodeURIComponent(id)}/${act}`, { method: "POST" });
+      const r = await fetch(api(`/api/watches/${encodeURIComponent(id)}/${act}`), { method: "POST" });
       if (!r.ok) showToast((await r.json().catch(() => ({}))).error || `${act} failed`, "err");
       drawerWatches(body);   // re-render with fresh state
     }));
@@ -170,7 +179,7 @@ async function drawerWatches(body) {
 
 async function drawerAgents(body) {
   try {
-    const j = await (await fetch("/api/runs")).json();
+    const j = await (await fetch(api("/api/runs"))).json();
     const runs = j.runs || [];
     const live = runs.filter(r => r.alive), past = runs.filter(r => !r.alive);
     const row = (r) => `
@@ -179,7 +188,7 @@ async function drawerAgents(body) {
         <span class="mgmt-runname">${escapeHtml(r.name)}</span>
         <span class="pill pill-kind">${escapeHtml(r.kind)}</span>
         <span class="mgmt-dim">${agoM(r.updated)}</span>
-        ${r.frame_id ? `<a class="btn-mini btn-go" href="/m/${encodeURIComponent(r.frame_id)}">open</a>` : ""}
+        ${r.frame_id ? `<a class="btn-mini btn-go" href="${BASE}/m/${encodeURIComponent(r.frame_id)}">open</a>` : ""}
         ${r.alive ? `<button class="btn-mini btn-danger" data-kill>kill</button>` : ""}
       </div>`;
     body.innerHTML =
@@ -188,7 +197,7 @@ async function drawerAgents(body) {
     body.querySelectorAll("[data-kill]").forEach(b => b.addEventListener("click", async (e) => {
       const id = e.target.closest(".mgmt-run").dataset.t;
       if (!confirm(`Kill ${id}? Its tmux session ends now; a frame agent revives on the next message.`)) return;
-      const r = await fetch(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST" });
+      const r = await fetch(api(`/api/runs/${encodeURIComponent(id)}/stop`), { method: "POST" });
       if (!r.ok) showToast((await r.json().catch(() => ({}))).error || "kill failed", "err");
       drawerAgents(body);
     }));
@@ -199,7 +208,7 @@ async function drawerAgents(body) {
 
 async function drawerConnections(body) {
   try {
-    const j = await (await fetch("/api/connections")).json();
+    const j = await (await fetch(api("/api/connections"))).json();
     const cs = j.connections || [];
     body.innerHTML = (cs.map(c => `
       <div class="mgmt-line">
@@ -224,7 +233,7 @@ async function drawerConnections(body) {
 
 async function drawerKnowledge(body) {
   try {
-    const r = await fetch("/api/vault");
+    const r = await fetch(api("/api/vault"));
     const v = await r.json();
     if (!r.ok || v.error || !v.exists) {
       body.innerHTML = `<div class="empty"><p>No knowledge base yet.
@@ -312,11 +321,11 @@ async function openDomain(key) {
   _spawnPending = true;
   renderSpawning(d.title, d.composing);
   try {
-    const r = await fetch("/api/frames/create", {
+    const r = await fetch(api("/api/frames/create"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt: (d.prompt + DOMAIN_SPINE).replace(/\{origin\}/g, location.origin),
+        prompt: (d.prompt + DOMAIN_SPINE).replace(/\{origin\}/g, location.origin + BASE),
         title: d.title,
       }),
     });
@@ -325,7 +334,7 @@ async function openDomain(key) {
     if (j.spawn && j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`spawned, but the agent didn't start: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
-    location.href = j.url;   // /m/<id> — watch it compose on the surface
+    location.href = nav(j.url);   // /m/<id> — watch it compose on the surface
   } catch (e) {
     showToast(`network error: ${e.message}`, "err");
     route();
@@ -402,7 +411,7 @@ async function openBrowseDialog() {
 
   try {
     const [g, vis] = await Promise.all([
-      fetch("/api/vault/graph").then(r => r.json()),
+      fetch(api("/api/vault/graph")).then(r => r.json()),
       loadVisNetwork(),
     ]);
 
@@ -544,6 +553,7 @@ const HUB_NODES = [
 function renderHome() {
   root().innerHTML = `
     <div class="calm">
+      <a href="/" class="calm-back" title="all workspaces" style="position:fixed;top:74px;left:22px;color:#50505a;font-size:11.5px;text-decoration:none;letter-spacing:.06em;z-index:5">&larr; workspaces</a>
       <div class="calm-stage">
         <form id="calm-form" autocomplete="off">
           <input id="calm-start" placeholder="What should we work on?" autofocus>
@@ -604,18 +614,18 @@ async function loadCalmLines() {
   if (!box) return;
   const lines = [];
   try {
-    const frames = ((await (await fetch("/api/frames")).json()).frames) || [];
+    const frames = ((await (await fetch(api("/api/frames"))).json()).frames) || [];
     const inbox = frames.filter(f => f.kind === "delivered");
     const desk  = frames.filter(f => f.kind === "created");
     // Apps are destinations, not attention items — a quiet chip row.
     const apps = frames.filter(f => f.kind === "app");
     const appsBox = $("calm-apps");
     if (appsBox) appsBox.innerHTML = apps.map(f =>
-      `<a class="calm-app" href="/m/${encodeURIComponent(f.id)}">${escapeHtml(f.title)}</a>`).join("");
+      `<a class="calm-app" href="${BASE}/m/${encodeURIComponent(f.id)}">${escapeHtml(f.title)}</a>`).join("");
     for (const f of inbox.slice(0, 2)) lines.push({ k: "inbox", f,
       sub: `${f.origin?.watch || "delivered"} · ${relativeTime(f.modified)}`, done: true });
     if (desk[0]) lines.push({ k: "resume", f: desk[0], sub: relativeTime(desk[0].modified) });
-    const items = (((await (await fetch("/api/activity")).json()).items) || [])
+    const items = (((await (await fetch(api("/api/activity"))).json()).items) || [])
       .filter(i => i.kind !== "delivery").slice(0, 2);
     const agoShort = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
       return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d"; };
@@ -624,8 +634,8 @@ async function loadCalmLines() {
   box.innerHTML = "";
   for (const l of lines) {
     const a = el("a", { class: "calm-line" + (l.quiet ? " quiet" : ""),
-                        href: l.f ? `/m/${encodeURIComponent(l.f.id)}`
-                            : l.frame_id ? `/m/${encodeURIComponent(l.frame_id)}` : "#" }, [
+                        href: l.f ? `${BASE}/m/${encodeURIComponent(l.f.id)}`
+                            : l.frame_id ? `${BASE}/m/${encodeURIComponent(l.frame_id)}` : "#" }, [
       el("span", { class: "calm-k" }, l.k),
       el("span", { class: "calm-x" }, l.f ? l.f.title : l.text),
       l.sub ? el("span", { class: "calm-t" }, l.sub) : null,
@@ -634,7 +644,7 @@ async function loadCalmLines() {
       const d = el("button", { class: "calm-done", type: "button", title: "done — archive" }, "✓");
       d.addEventListener("click", async (e) => {
         e.preventDefault(); e.stopPropagation();
-        try { await fetch(`/api/frame/${encodeURIComponent(l.f.id)}/archive`, { method: "POST" }); } catch (err) {}
+        try { await fetch(api(`/api/frame/${encodeURIComponent(l.f.id)}/archive`), { method: "POST" }); } catch (err) {}
         loadCalmLines();
       });
       a.appendChild(d);
@@ -698,10 +708,10 @@ function layoutHub() {
 async function loadHubCounts() {
   const set = (key, val) => { const e = $(`hub-count-${key}`); if (e) e.textContent = val; };
   const j = (r) => r.ok ? r.json() : Promise.reject(r.status);
-  fetch("/api/frames").then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
-  fetch("/api/vault").then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
-  fetch("/api/watches").then(j).then(d => set("watches", (d.watches || []).length)).catch(() => {});
-  fetch("/api/connections").then(j).then(d => set("connections", `${(d.connections || []).length}`)).catch(() => {});
+  fetch(api("/api/frames")).then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
+  fetch(api("/api/vault")).then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
+  fetch(api("/api/watches")).then(j).then(d => set("watches", (d.watches || []).length)).catch(() => {});
+  fetch(api("/api/connections")).then(j).then(d => set("connections", `${(d.connections || []).length}`)).catch(() => {});
 }
 
 // ----- Drawer open / close -----
@@ -815,11 +825,11 @@ async function startLaunchpad() {
   }
   showToast("Spawning your launchpad…", "info");
   try {
-    const r = await fetch("/api/frames/create", {
+    const r = await fetch(api("/api/frames/create"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt: LAUNCHPAD_PROMPT.replace(/\{origin\}/g, location.origin),
+        prompt: LAUNCHPAD_PROMPT.replace(/\{origin\}/g, location.origin + BASE),
         title: "Where to start",
       }),
     });
@@ -832,8 +842,8 @@ async function startLaunchpad() {
     if (j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`launchpad created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
-    if (tab) tab.location = j.url;     // redirect the opened tab to /m/<id>
-    else location.href = j.url;        // popup blocked — fall back to same tab
+    if (tab) tab.location = nav(j.url);     // redirect the opened tab to /w/<ws>/m/<id>
+    else location.href = nav(j.url);        // popup blocked — fall back to same tab
     loadHubCounts();                   // the new mindframe bumps the Mindframes count
   } catch (e) {
     showToast(`network error: ${e.message}`, "err");
@@ -849,7 +859,7 @@ async function createMindframe(text) {
   const btn = document.querySelector("#create-form .chat-submit");
   if (btn) { btn.disabled = true; btn.textContent = "Spawning agent…"; }
   try {
-    const r = await fetch("/api/frames/create", {
+    const r = await fetch(api("/api/frames/create"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: text }),
@@ -863,7 +873,7 @@ async function createMindframe(text) {
     if (j.spawn !== "ok" && j.spawn !== "starting") {
       showToast(`frame created, but the agent didn't spawn: ${j.spawn_result?.error || "see logs"}`, "warn");
     }
-    location.href = j.url;   // open the surface shell at /m/<id>
+    location.href = nav(j.url);   // open the surface shell at /m/<id>
   } catch (e) {
     showToast(`network error: ${e.message}`, "err");
     if (btn) { btn.disabled = false; btn.textContent = "Create mindframe"; }
@@ -876,11 +886,11 @@ async function loadFeed() {
   const box = $("feed");
   if (!box) return;
   try {
-    const j = await (await fetch("/api/activity")).json();
+    const j = await (await fetch(api("/api/activity"))).json();
     const items = (j.items || []).slice(0, 6);
     if (!items.length) { box.innerHTML = ""; return; }
     box.innerHTML = `<div class="feed-hdr">recent activity</div>` + items.map(i => `
-      <a class="feed-item feed-${escapeHtml(i.kind)}" ${i.frame_id ? `href="/m/${encodeURIComponent(i.frame_id)}"` : 'href="#" onclick="return false"'}>
+      <a class="feed-item feed-${escapeHtml(i.kind)}" ${i.frame_id ? `href="${BASE}/m/${encodeURIComponent(i.frame_id)}"` : 'href="#" onclick="return false"'}>
         <span class="feed-time">${relativeTime(i.at)}</span>
         <span class="feed-text">${escapeHtml(i.text)}</span>
       </a>`).join("");
