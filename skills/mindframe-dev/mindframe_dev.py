@@ -195,6 +195,14 @@ def seed_workspace(ws_id):
         (ws / ".mindframe" / sub).mkdir(parents=True, exist_ok=True)
     (ws / ".mindframe" / "secrets").chmod(0o700)
 
+    # per-workspace dispatcher config: the one shared dispatcher reads each
+    # workspace's channels/recipes/event-sources and routes its events here
+    disp = ws / ".mindframe" / "dispatcher"
+    (disp / "recipes").mkdir(parents=True, exist_ok=True)
+    (disp / "event-sources").mkdir(parents=True, exist_ok=True)
+    if not (disp / "channels.yaml").exists():
+        (disp / "channels.yaml").write_text("routes: []\npaused_routes: []\n")
+
     claude = ws / ".claude"
     (claude / "skills").mkdir(parents=True, exist_ok=True)
     real_claude = Path.home() / ".claude"
@@ -303,6 +311,8 @@ def daemon_specs(ports):
         "DISPATCHER_INGEST_TOKEN_FILE": str(BEARER),
         "SESSION_BRIDGE_URL": sb_url,
         "TASKPILOT_DAEMON_URL": tp_url,
+        # multi-tenant: discover per-workspace event-sources/channels/recipes
+        "DISPATCHER_WORKSPACES_ROOT": str(WORKSPACES),
     }
 
     return [
