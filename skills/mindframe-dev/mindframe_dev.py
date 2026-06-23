@@ -251,12 +251,17 @@ def seed_workspace(ws_id):
                 pass
         cj.write_text(json.dumps(seed, indent=2))
 
-    gc = Path.home() / ".gitconfig"
-    if gc.exists() and not (ws / ".gitconfig").exists():
-        try:
-            (ws / ".gitconfig").symlink_to(gc)
-        except OSError:
-            pass
+    # OS-level CLI identity (one shared machine identity) so agents' gh / gcloud
+    # / aws / git keep working under HOME=partition; per-workspace difference is
+    # MCPs / connector skills / vault, not the base CLIs.
+    home = Path.home()
+    for name in (".gitconfig", ".npmrc", ".ssh", ".config", ".aws", ".azure", ".gnupg"):
+        link, target = ws / name, home / name
+        if target.exists() and not link.exists():
+            try:
+                link.symlink_to(target)
+            except OSError:
+                pass
     return ws
 
 

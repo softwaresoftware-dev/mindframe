@@ -100,80 +100,137 @@ delivers messages to them) must be running — confirm its health endpoint
 answers before PHASE 3.
 
 ==============================================================================
-PHASE 3 — BIRTH THE FIRST MINDFRAME
+PHASE 3 — STAND UP THE STACK + BIRTH THE FIRST WORKSPACE
 ==============================================================================
 
-This is the whole point. You install the substrate, spawn the setup mindframe,
-and bring up its surface. The setup mindframe then runs the actual onboarding.
+Mindframe is ONE shared stack that serves many workspaces. You stand that stack
+up once, create the operator's first workspace ("personal") as an isolated
+partition, spawn the setup mindframe INTO it, and open the surface. There are NO
+per-workspace daemons and no per-workspace ports.
 
-3.1 — MINIMAL CONFIG. One value; the default is fine, the mindframe can adjust
-  the rest later. Don't interrogate the operator here.
-    DEPLOYMENT   default: the operator's machine/org name (or "mindframe")
-  The knowledge-base vault is NOT configurable — it always lives at the fixed
-  path ~/.mindframe/vault. It is a plain local directory (not a git repo);
-  create it if it doesn't exist:
-    mkdir -p "$HOME/.mindframe/vault"
+3.0 — THE MODEL (what you are standing up). One daemon each, all reading
+  ~/.mindframe:
+    session-bridge       :8910   mesh (session-mesh provider)
+    taskpilot            :8912   agent runtime — per-task HOME isolates workspaces
+    dispatcher           :8911   ingress + poller (event-routing provider)
+    mindframe-dashboard  :5174   the Surface — multi-tenant; mindframe owns it
+  A workspace is a PARTITION dir, never a deployment:
+    ~/.mindframe/workspaces/<id>/
+      .mindframe/{vault,frames,connections,secrets,
+                  dispatcher/{channels.yaml,recipes,event-sources}}
+      .claude/{skills, settings.json, .credentials.json, plugins}
+      .claude.json
+  Registry: ~/.mindframe/workspaces.yaml  ->  {workspaces: {<id>: {label}}}
+  The dashboard serves the workspace PORTAL at / and each workspace's home at
+  /w/<id>/ ; it derives frames/vault per request from
+  ~/.mindframe/workspaces/<id>/.mindframe/, so do NOT set MINDFRAME_FRAMES_ROOT
+  or MINDFRAME_VAULT_DIR.
 
-3.2 — PREPARE THE SETUP MINDFRAME'S FRAME DIR. A mindframe is a frame dir the
-  dashboard serves at /m/<id>; the agent writes its page (index.html) into it.
-  Use the id "mindframe-setup" under the dashboard's frames root so the frame id
-  and the agent's task id match (message delivery needs them aligned). Drop a
-  meta.json so the dashboard lists it with a title:
-    FRAME_DIR="$HOME/.mindframe/frames/mindframe-setup"
+3.1 — CREATE THE FIRST WORKSPACE ("personal"). A partition + a seeded login so
+  its agents run on the operator's Claude subscription with NO per-workspace
+  OAuth. (A fresh HOME otherwise runs Claude Code's first-run onboarding, whose
+  first step is sign-in — `hasCompletedOnboarding` is the key that skips it.)
+
+    WS="$HOME/.mindframe/workspaces/personal"
+    mkdir -p "$WS/.mindframe"/{vault,frames,connections,secrets} \
+             "$WS/.mindframe/dispatcher"/{recipes,event-sources} \
+             "$WS/.claude/skills"
+    chmod 700 "$WS/.mindframe/secrets"
+    printf 'routes: []\npaused_routes: []\n' > "$WS/.mindframe/dispatcher/channels.yaml"
+    printf 'workspaces:\n  personal:\n    label: Personal\n' > "$HOME/.mindframe/workspaces.yaml"
+
+    # share subscription auth + plugin code; keep MCPs / skills / vault local
+    ln -sfn "$HOME/.claude/.credentials.json" "$WS/.claude/.credentials.json"
+    ln -sfn "$HOME/.claude/plugins"           "$WS/.claude/plugins"
+
+    # share OS-level CLI identity (one machine identity) so the agent's
+    # gh / gcloud / aws / git keep working under HOME=$WS. Per-workspace
+    # difference lives in MCPs, connector skills, and the vault — not the
+    # base CLIs.
+    for id in .gitconfig .npmrc .ssh .config .aws .azure .gnupg; do
+      [ -e "$HOME/$id" ] && ln -sfn "$HOME/$id" "$WS/$id"
+    done
+
+    # per-workspace settings.json: carry plugin enablement / hooks / permissions
+    # but NOT global mcpServers (they would leak into every workspace)
+    python3 - "$HOME/.claude/settings.json" "$WS/.claude/settings.json" <<'PY'
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: d={}
+d["mcpServers"]={}
+json.dump(d,open(sys.argv[2],"w"),indent=2)
+PY
+
+    # .claude.json: empty mcpServers (isolated) + the auth/onboarding state so a
+    # spawned agent here is already signed in on the subscription
+    python3 - "$HOME/.claude.json" "$WS/.claude.json" <<'PY'
+import json,sys
+try: r=json.load(open(sys.argv[1]))
+except Exception: r={}
+seed={"mcpServers":{}}
+for k in ("enabledPlugins","oauthAccount","userID","hasCompletedOnboarding","lastOnboardingVersion","numStartups"):
+    if k in r: seed[k]=r[k]
+json.dump(seed,open(sys.argv[2],"w"),indent=2)
+PY
+
+3.2 — SETUP FRAME DIR, inside the personal partition (frame id == agent task id
+  so message delivery aligns):
+    FRAME_DIR="$WS/.mindframe/frames/mindframe-setup"
     mkdir -p "$FRAME_DIR"
     printf '{"id":"mindframe-setup","title":"Setup","task_id":"mindframe-setup","status":"active"}\n' > "$FRAME_DIR/meta.json"
 
-3.3 — LOCATE THE MINDFRAME PLUGIN ASSETS. The bundle ships the dashboard server
-  and the setup mindframe's brief:
+3.3 — LOCATE THE PLUGIN ASSETS:
     MF_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/*/mindframe/*/ 2>/dev/null | sort -V | tail -1)"
-    # brief:     $MF_ROOT/setup/brief.md
-    # dashboard: $MF_ROOT/dashboard/server/server.py
+    # brief: $MF_ROOT/setup/brief.md   dashboard: $MF_ROOT/dashboard/server/server.py
 
-3.4 — FILL IN THE SETUP MINDFRAME BRIEF. The brief has one placeholder, the
-  frame dir. (The setup agent runs as the operator, so there's no separate home
-  to thread; the vault path is fixed at ~/.mindframe/vault, hardcoded in the
-  brief — nothing else to substitute.)
-    sed -e "s#__FRAME_DIR__#$FRAME_DIR#g" \
-        "$MF_ROOT/setup/brief.md" > "$FRAME_DIR/brief.txt"
+3.4 — FILL THE SETUP BRIEF. The agent runs with HOME=$WS, so its vault is
+  $WS/.mindframe/vault. Substitute the frame dir:
+    sed -e "s#__FRAME_DIR__#$FRAME_DIR#g" "$MF_ROOT/setup/brief.md" > "$FRAME_DIR/brief.txt"
   That filled-in text IS the setup mindframe's standing brief.
 
-3.5 — SPAWN THE SETUP MINDFRAME. Use an available agent-spawning tool to create
-  and spawn a LONG-RUNNING agent — one that idles between messages, stays
-  reachable for message delivery, and never declares itself done — NOT a
-  fire-and-forget batch job. (The setup mindframe must stay alive to handle
-  every later message. It does not need to survive reboots; the brief's
-  "never declare done" rule keeps it from being reaped between turns.)
+3.5 — SPAWN THE SETUP MINDFRAME into the personal partition. Use an available
+  agent-spawning tool to create a LONG-RUNNING agent (idles between messages,
+  stays reachable, never declares itself done — NOT a fire-and-forget batch job):
     name:        mindframe-setup
     working dir: $FRAME_DIR
+    HOME:        $WS    <- the workspace partition (per-task home). This isolates
+                           its MCPs / skills / vault and runs it on the seeded
+                           subscription login. If the spawning tool exposes a
+                           per-task home/HOME option, set it to $WS.
     brief:       the contents of $FRAME_DIR/brief.txt
-  The agent must be reachable for message delivery (it idles and acts on messages
-  forever). On startup it composes its first page (BEAT 1 of the brief:
-  "this is you"). Wait until $FRAME_DIR/index.html exists before 3.7.
+  On startup it composes its first page (BEAT 1: "this is you"). Wait until
+  $FRAME_DIR/index.html exists before 3.7.
 
-3.6 — RUN THE DASHBOARD as a managed daemon (reboot-persistent). One server
-  serves every mindframe's surface at /m/<id>, plus the home hub (the graph of
-  every mindframe), the knowledge base, and the operator's connections. Use an
-  available daemon-management tool to run:
-    command: $VENV/bin/python "$MF_ROOT/dashboard/server/server.py"
-    env:     PORT=5174
-             MINDFRAME_TASKPILOT_DAEMON=<base URL of the agent-spawning
-                        provider's daemon — the same endpoint that delivers
-                        messages to agents>
-  It reads the frames root (~/.mindframe/frames) and the vault
-  (~/.mindframe/vault) by default. It needs fastapi + uvicorn + httpx + pyyaml.
-  Install them in a venv — system pip is blocked on modern Debian/Ubuntu
-  (PEP 668: externally-managed-environment), so do NOT `pip install` globally:
-    VENV="$HOME/.mindframe/dashboard-venv"
-    python3 -m venv "$VENV"
-    "$VENV/bin/pip" install --quiet fastapi uvicorn httpx pyyaml
-  then run the server with "$VENV/bin/python" (above). For a quick POC a plain
-  backgrounded process is acceptable, but a managed daemon is preferred so the
-  surface survives reboots.
+3.6 — RUN THE STACK, workspace-aware. session-bridge / taskpilot / dispatcher
+  were installed by PHASE 2's providers; mindframe composes two pieces of
+  workspace wiring on top:
 
-3.7 — OPEN THE SURFACE. Open http://127.0.0.1:5174/m/mindframe-setup in the
-  operator's browser — use an available browser-automation tool, or print the
-  URL and ask the operator to open it. They should see a single glowing "you"
-  node and an invitation to say what they do.
+  a) DISPATCHER POLLER + INGRESS must discover each workspace's
+     event-sources/channels. Ensure their env has
+       DISPATCHER_WORKSPACES_ROOT=$HOME/.mindframe/workspaces
+     and NO ANTHROPIC_API_KEY (subscription only). If the provider's setup didn't
+     set these, re-register the dispatcher daemons through the daemon tool with
+     them.
+
+  b) THE DASHBOARD (mindframe owns it) — run as a managed daemon
+     (reboot-persistent). One server serves the portal at /, every workspace at
+     /w/<id>/, and each mindframe's surface at /w/<id>/m/<frame>:
+       command: $VENV/bin/python "$MF_ROOT/dashboard/server/server.py"
+       env: PORT=5174
+            MINDFRAME_HOME=$HOME/.mindframe
+            MINDFRAME_TASKPILOT_DAEMON=<taskpilot base url, e.g. http://127.0.0.1:8912>
+            MINDFRAME_DISPATCHER_URL=<dispatcher base url, e.g. http://127.0.0.1:8911>
+       Do NOT set MINDFRAME_FRAMES_ROOT / MINDFRAME_VAULT_DIR (derived per
+       workspace). Ensure ANTHROPIC_API_KEY is absent from the daemon env.
+     venv (PEP 668 — never `pip install` globally):
+       VENV="$HOME/.mindframe/dashboard-venv"
+       python3 -m venv "$VENV"
+       "$VENV/bin/pip" install --quiet fastapi uvicorn httpx pyyaml
+
+3.7 — OPEN THE SURFACE. Open the operator's browser to the setup mindframe:
+       http://127.0.0.1:5174/w/personal/m/mindframe-setup
+  (the portal of all workspaces is at http://127.0.0.1:5174/.) They should see a
+  single glowing "you" node and an invitation to say what they do.
 
 ==============================================================================
 PHASE 4 — HAND OFF
@@ -181,10 +238,11 @@ PHASE 4 — HAND OFF
 
 Your terminal job is done. Tell the operator, plainly:
 
-  "Mindframe is installed and your first mindframe is open at
-   http://127.0.0.1:5174/m/mindframe-setup . Setup continues there — just talk
-   to it in the message box. Tell it what you do and it'll build your knowledge
-   base in front of you. I'm done here in the terminal."
+  "Mindframe is installed and your first workspace is open at
+   http://127.0.0.1:5174/w/personal/m/mindframe-setup . Setup continues there —
+   just talk to it in the message box. Tell it what you do and it'll build your
+   knowledge base in front of you. Your other workspaces live at
+   http://127.0.0.1:5174/ . I'm done here in the terminal."
 
 Do NOT keep narrating phases in the chat. The setup mindframe owns the rest.
 If the operator comes back to the terminal with a problem, help; otherwise the
