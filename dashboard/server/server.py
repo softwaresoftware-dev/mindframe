@@ -108,8 +108,48 @@ def list_workspaces() -> list[dict[str, Any]]:
                 "id": d.name,
                 "label": labels.get(d.name) or d.name.replace("-", " ").title(),
                 "frames": n,
+                "auth": _auth_status(d.name)["status"],
             })
     return out
+
+
+def _auth_status(ws: str | None = None) -> dict[str, Any]:
+    """Cheap, claude-less probe of a workspace's Claude Code subscription login —
+    exactly what a spawned agent there needs. Auth is the operator's single
+    subscription seeded into each partition; reports ready / expired / no-login /
+    api-key-conflict with a human message + fix so the UI can surface it."""
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        return {"status": "api-key-conflict",
+                "message": "An ANTHROPIC_API_KEY in the environment overrides the Claude subscription login and breaks agents.",
+                "fix": "Unset ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in the daemon environment, then restart the stack."}
+    home = ws_home(ws) if ws else _MINDFRAME_HOME
+    cred = home / ".claude" / ".credentials.json"
+    if not cred.is_file():
+        return {"status": "no-login",
+                "message": "This workspace has no Claude Code login.",
+                "fix": "Provision the workspace login (seed it from your account, or run `claude login` in it)."}
+    try:
+        oauth = json.loads(cred.read_text()).get("claudeAiOauth") or {}
+    except Exception:
+        oauth = {}
+    account, has_account = None, False
+    try:
+        c = json.loads((home / ".claude.json").read_text())
+        oa = c.get("oauthAccount") or {}
+        account = oa.get("emailAddress") if isinstance(oa, dict) else None
+        has_account = bool(oa) and bool(c.get("hasCompletedOnboarding"))
+    except Exception:
+        pass
+    exp = oauth.get("expiresAt")
+    if exp and exp / 1000 < time.time():
+        return {"status": "expired", "account": account,
+                "message": "The Claude subscription login for this workspace has expired.",
+                "fix": "Run `claude login` to refresh it."}
+    if not has_account:
+        return {"status": "no-login",
+                "message": "This workspace is missing its login / onboarding state.",
+                "fix": "Re-provision the workspace, or run `claude login` in it."}
+    return {"status": "ready", "account": account}
 
 
 PORT = int(os.environ.get("PORT", "5174"))
@@ -232,6 +272,7 @@ async def api_health() -> dict[str, Any]:
         "dispatcher_url": DISPATCHER_URL,
         "dispatcher_bearer_present": DISPATCHER_BEARER_FILE.is_file(),
         "workspaces": [w["id"] for w in list_workspaces()],
+        "auth": _auth_status(current_ws()),
     }
 
 
@@ -727,6 +768,14 @@ async def create_mindframe(body: CreateMindframe, background_tasks: BackgroundTa
         return JSONResponse(
             {"error": "taskpilot daemon (agent-spawning) not reachable — can't spawn a mindframe agent."},
             status_code=503)
+
+    # Pre-spawn auth gate: refuse to mint a frame whose agent would silently hang
+    # at a Claude Code login screen. Surface the reason instead.
+    auth = _auth_status(current_ws())
+    if auth["status"] != "ready":
+        return JSONResponse(
+            {"error": f"This workspace isn't signed in. {auth['message']} {auth['fix']}",
+             "auth": auth}, status_code=503)
 
     for _ in range(5):
         mid = _mint_frame_id()

@@ -559,6 +559,7 @@ function renderHome() {
           <input id="calm-start" placeholder="What should we work on?" autofocus>
         </form>
         <div class="calm-hint">enter to begin &middot; empty for suggestions</div>
+        <div id="calm-auth" hidden></div>
         <div id="calm-apps" aria-label="your apps"></div>
         <div id="calm-lines" aria-label="attention"></div>
         <div class="calm-more" id="calm-more"></div>
@@ -580,6 +581,24 @@ function renderHome() {
     if (text) createMindframe(text);   // decided: straight to a purposeful frame
     else startLaunchpad();             // undecided: the launchpad surveys + suggests
   });
+
+  // passive auth banner: surface when this workspace can't spawn agents, before
+  // the operator even tries (the create path also blocks + toasts the same).
+  fetch(api("/api/health")).then(r => r.json()).then(h => {
+    const a = (h && h.auth) || {};
+    if (a.status && a.status !== "ready") {
+      const b = $("calm-auth"); if (!b) return;
+      b.hidden = false;
+      b.setAttribute("style",
+        "max-width:620px;margin:14px auto 0;padding:9px 13px;border-radius:8px;" +
+        "font-size:12.5px;line-height:1.5;text-align:center;" +
+        (a.status === "api-key-conflict"
+          ? "color:#e07a5f;background:rgba(224,122,95,.12)"
+          : "color:#d8a657;background:rgba(216,166,87,.10)"));
+      b.textContent = "⚠ " + (a.message || "this workspace isn't signed in") +
+        (a.fix ? "  " + a.fix : "");
+    }
+  }).catch(() => {});
 
   // everything — frames · watches · knowledge · connections
   const FOOT = [

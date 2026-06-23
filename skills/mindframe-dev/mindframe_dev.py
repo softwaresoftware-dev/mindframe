@@ -232,14 +232,24 @@ def seed_workspace(ws_id):
 
     cj = ws / ".claude.json"
     if not cj.exists():
-        enabled = {}
+        seed = {"mcpServers": {}}  # MCPs isolated per workspace
         real_cj = Path.home() / ".claude.json"
         if real_cj.exists():
             try:
-                enabled = json.loads(real_cj.read_text()).get("enabledPlugins", {})
+                real = json.loads(real_cj.read_text())
+                # Carry plugin enablement + the auth/onboarding state so a
+                # spawned agent runs on the operator's subscription login with NO
+                # per-workspace OAuth prompt. A fresh HOME otherwise runs
+                # first-run onboarding, whose first step is sign-in —
+                # hasCompletedOnboarding is the key that skips it.
+                for k in ("enabledPlugins", "oauthAccount", "userID",
+                          "hasCompletedOnboarding", "lastOnboardingVersion",
+                          "numStartups"):
+                    if k in real:
+                        seed[k] = real[k]
             except Exception:
-                enabled = {}
-        cj.write_text(json.dumps({"mcpServers": {}, "enabledPlugins": enabled}, indent=2))
+                pass
+        cj.write_text(json.dumps(seed, indent=2))
 
     gc = Path.home() / ".gitconfig"
     if gc.exists() and not (ws / ".gitconfig").exists():
@@ -290,6 +300,12 @@ def daemon_specs(ports):
 
     base = os.environ.copy()
     base["PYTHONUNBUFFERED"] = "1"
+    # mindframe agents run on the Claude Code subscription only. A stray (often
+    # invalid) ANTHROPIC_API_KEY in the env takes precedence over the
+    # subscription login and breaks agent auth, so keep it out of every daemon —
+    # and therefore out of every spawned agent that inherits the daemon env.
+    base.pop("ANTHROPIC_API_KEY", None)
+    base.pop("ANTHROPIC_AUTH_TOKEN", None)
 
     disp_data = HOME_DIR / "dispatcher"  # shared for now; per-workspace channels lands in slice C
     (disp_data / "recipes").mkdir(parents=True, exist_ok=True)
