@@ -542,6 +542,9 @@
     try {
       const j = await (await fetch(BASE + '/api/frames/activity', { cache: 'no-store' })).json();
       const st = new Map((j.frames || []).map(f => [f.id, f]));
+      const me = st.get(MF_ID);                 // this frame's live state drives boot/asleep narration
+      selfAwake = me ? !!me.awake : false;
+      selfWorking = me ? !!me.working : false;
       docklist.querySelectorAll('.dk').forEach(row => {
         const f = st.get(row.dataset.id) || {};
         row.classList.toggle('working', !!f.working);
@@ -627,9 +630,14 @@
   // take over the moment the transcript appears. Time-boxed so an old frame
   // with no transcript doesn't pulse forever.
   const shellLoadedAt = Date.now();
-  let bootShown = false;
+  let narratedState = null;   // 'starting' | 'asleep' — narrate each once, accurately
+  let selfAwake = null;       // this frame's tmux liveness, from the dock activity poll
+  let selfWorking = false;
   function inBootWindow(){
-    return !spawnFailWarned && !actFile && !lastMtime && (Date.now() - shellLoadedAt) < 120000;
+    // Genuine boot pulse: the agent's tmux is up but it hasn't written a
+    // transcript yet. An asleep frame (no tmux) must NOT pulse "working".
+    return !spawnFailWarned && selfAwake === true && !actFile && !lastMtime
+           && (Date.now() - shellLoadedAt) < 120000;
   }
 
   async function pollActivity(){
@@ -638,9 +646,18 @@
                             { cache: 'no-store' }).then(x => x.json());
       if (r.file !== actFile) { actFile = r.file; actOffset = 0; }
       actOffset = r.offset;
-      if (!bootShown && inBootWindow()){
-        bootShown = true;
-        appendLog({ kind: 'info', label: 'starting the agent (~20s), then it composes the page…' });
+      // Narrate the agent's REAL state (once each) instead of guessing from a
+      // missing transcript. Only while no transcript has appeared and within the
+      // open window — once cognition arrives, real chips take over.
+      if (selfAwake !== null && !lastMtime && !spawnFailWarned
+          && (Date.now() - shellLoadedAt) < 120000) {
+        if (selfAwake && narratedState !== 'starting') {
+          narratedState = 'starting';
+          appendLog({ kind: 'info', label: 'the agent is starting up — it will compose this page shortly…' });
+        } else if (!selfAwake && narratedState !== 'asleep') {
+          narratedState = 'asleep';
+          appendLog({ kind: 'info', label: 'this mindframe is asleep — send a message to wake it' });
+        }
       }
       // Liveness comes from the transcript's mtime — a server-side fact — not
       // from when replayed events happen to arrive in this tab. A first-load
