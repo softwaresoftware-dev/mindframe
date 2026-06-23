@@ -15,7 +15,7 @@ and reach the world through **Perception**.
 
 | Layer | What runs it | State |
 |---|---|---|
-| **Surface** | the dashboard: one FastAPI server (`dashboard/server/server.py`) + SPA that serves every mindframe at `/m/<id>` | `~/.mindframe/frames/<id>/index.html` |
+| **Surface** | the dashboard: one multi-tenant FastAPI server (`dashboard/server/server.py`) + SPA — portal at `/`, workspace at `/w/<id>/`, mindframe at `/w/<id>/m/<frame>` | `~/.mindframe/workspaces/<id>/.mindframe/frames/<frame>/index.html` |
 | **Agent runtime** | `taskpilot` spawns a persistent tmux-backed `claude`; the starter prompt and every later message are delivered over the Mesh (not tmux keystrokes) | transcript in `~/.claude/projects/<encoded-cwd>/` |
 | **Event ingress** | `dispatcher` (`:8911`): dedupe → `channels.yaml` static route → LLM fallback → spawn an ephemeral agent | `~/.dispatcher/events.db` |
 | **Knowledge** | a single vault: markdown + frontmatter, the 4-layer schema in `docs/kb-schema.md` *(under redesign — see note)* | `~/.mindframe/vault` (hardcoded) |
@@ -78,7 +78,7 @@ box; the Surface serves the page and proxies messages. There is no second
 - **The Mesh is the agent transport.** `taskpilot` does not type into the TUI;
   it POSTs the prompt and every message to `session-bridge :8910/sessions/<id>/message`.
   Agent runtime and Mesh are coupled by this.
-- **Default workspace is single-instance.** The default deployment (`~/.mindframe/`) uses one vault and one dashboard. Named workspaces (`~/.mindframe/workspaces/<name>/`) are fully isolated with their own vault, frames, daemon stack, and MCPs — create them with `/mindframe:workspace create <name>`.
+- **One stack, many workspaces.** A single shared stack (session-bridge / taskpilot / dispatcher / dashboard) serves every workspace; a workspace is a *partition* under `~/.mindframe/workspaces/<id>/` with its own vault, frames, connections, MCPs, and skills — **not** its own daemons or ports. Agents isolate by per-task `$HOME`; the dashboard is multi-tenant (portal at `/`, workspace at `/w/<id>/`). The runtime contract is replicated across mindframe + taskpilot + dispatcher — read [`docs/single-stack-contract.md`](docs/single-stack-contract.md) before changing any part. Manage workspaces with `/mindframe:workspace`.
 - **Agents recommend; humans act.** Anything irreversible or outward-facing is
   drawn on the mindframe's page as a pending action and waits for the operator
   to confirm in a message.
@@ -101,13 +101,14 @@ These act *on* the stack rather than being part of it:
   capability, probes each provider, heals safe issues, reports the rest with
   evidence.
 - **Open** — `/mindframe:open [workspace]`. The "open up mindframe" entry
-  point: discovers the dashboard's port, brings the dashboard daemon up if it is
-  down, then opens the operator's browser to the home (the calm launcher).
-  Accepts an optional workspace name. Skill in `skills/open/`.
-- **Workspace** — `/mindframe:workspace`. Create, list, open, and delete named
-  workspaces — fully isolated mindframe deployments each with their own vault,
-  daemon stack (taskpilot + dispatcher + dashboard on distinct ports), agents,
-  and MCP set. Skill in `skills/workspace/`.
+  point: brings the single dashboard daemon up if it is down, then opens the
+  operator's browser to the portal (`/`) or a workspace (`/w/<id>/`). Skill in
+  `skills/open/`.
+- **Workspace** — `/mindframe:workspace`. Create, list, open, and delete
+  workspaces — each a *partition* under `~/.mindframe/workspaces/<id>/` (its own
+  vault, frames, connections, MCPs, skills, with the operator's subscription
+  login seeded in), served by the one shared stack. No per-workspace daemons or
+  ports. Skill in `skills/workspace/`.
 - **The work** — what a mindframe agent produces (a triage, a review, a report,
   an answer). The agent does it directly: interactively in its surface, or as an
   ephemeral agent the dispatcher spawns per event from an operator-wired recipe.
@@ -118,6 +119,11 @@ These act *on* the stack rather than being part of it:
 
 - `docs/architecture.md` — the six layers in depth: what runs each, the state it
   holds, and the runtime flow. The canonical architecture reference.
+- `docs/single-stack-contract.md` — the single-stack runtime contract (ports,
+  env, partition layout, auth seeding, `/w/<id>/`, per-task HOME, dispatcher
+  workspace-derivation) + the **replication map** across mindframe + taskpilot +
+  dispatcher. Read before changing any coupled part; each repo has a matching
+  `.claude/rules/single-stack-contract.md`.
 - `docs/interfaces.md` — the contracts *between* layers: the dispatcher event
   API, `channels.yaml`, the recipe contract, the agent-runtime spawn interface,
   the Mesh tools, and the Surface app API.
