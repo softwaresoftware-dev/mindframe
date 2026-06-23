@@ -47,7 +47,7 @@ source, on a stable private port block:
 
 | Daemon | Default dev port | Source |
 |---|---|---|
-| session-bridge | 7910 | `providers/session-bridge/daemon` |
+| session-bridge | 8910 (shared host bridge) | `providers/session-bridge/daemon` |
 | dispatcher | 7911 | `providers/dispatcher` |
 | taskpilot | 7912 | `providers/taskpilot` |
 | dashboard | 7174 | `frameworks/mindframe/dashboard` |

@@ -393,10 +393,17 @@ def cmd_up(args):
     state = load_state()
     ports = state.get("ports")
     if not ports:
-        taken = set()
-        ports = {}
-        for key, pref in (("sb", PORT_BASE), ("disp", PORT_BASE + 1),
-                          ("tp", PORT_BASE + 2), ("dash", DASH_PORT_PREF)):
+        # session-bridge is a single shared per-host name registry, and the
+        # per-session channel.mjs HARDCODES 127.0.0.1:8910 (ignores
+        # SESSION_BRIDGE_URL) — so a spawned agent's channel always registers on
+        # 8910. The dev stack therefore reuses the host bridge on 8910 instead
+        # of running an isolated one; cmd_up skips starting it when 8910 is
+        # already healthy. (Sessions are keyed by unique task id, so dev/prod
+        # sharing the registry doesn't collide.)
+        taken = {8910}
+        ports = {"sb": 8910}
+        for key, pref in (("disp", PORT_BASE + 1), ("tp", PORT_BASE + 2),
+                          ("dash", DASH_PORT_PREF)):
             ports[key] = free_port(pref, taken)
             taken.add(ports[key])
     pids = state.get("pids", {})

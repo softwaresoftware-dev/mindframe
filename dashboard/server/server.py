@@ -741,7 +741,9 @@ async def create_mindframe(body: CreateMindframe, background_tasks: BackgroundTa
     except OSError as e:
         return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
     background_tasks.add_task(_spawn_frame_bg, mid, fdir, body.prompt)
-    return JSONResponse({"id": mid, "url": f"/m/{mid}", "spawn": "starting"})
+    ws = current_ws()
+    url = f"/w/{ws}/m/{mid}" if ws else f"/m/{mid}"
+    return JSONResponse({"id": mid, "url": url, "spawn": "starting"})
 
 
 # --------------------------- mindframe surface (viewing) ---------------------------
