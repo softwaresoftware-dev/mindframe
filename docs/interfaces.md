@@ -62,11 +62,15 @@ from `DISPATCHER_INGEST_TOKEN` (direct value) or
 `~/.mindframe/secrets/dispatcher-bearer.token`). Missing header → 401; wrong
 token → 403.
 
-**Ingestion is poll-first.** The dispatcher's primary ingestion path is its
-poller (reading `~/.dispatcher/event-sources/*.yaml` and polling each system
-via an adapter). The `POST /api/event` webhook below still works — mindframe's
-`/api/dashboard-event` proxy speaks it — but is **deprecated** and answers with
-a `Deprecation: true` header. See the dispatcher plugin's own CLAUDE.md.
+**Ingestion is poll-first, per workspace.** The dispatcher's primary ingestion
+path is its poller, which aggregates event-source declarations across every
+workspace partition
+(`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/event-sources/*.yaml`, via
+`DISPATCHER_WORKSPACES_ROOT`), polls each system via an adapter, and **tags each
+event with its workspace** — routing then uses that workspace's `channels.yaml`
+and spawns with its home. The `POST /api/event` webhook below still works —
+mindframe's `/api/dashboard-event` proxy speaks it — but is **deprecated** and
+answers with a `Deprecation: true` header. See the dispatcher plugin's own CLAUDE.md.
 
 ### `POST /api/event` — ingest an event (deprecated webhook)
 
@@ -111,9 +115,10 @@ its outcome lands in the audit log (status `spawned` / `spawn-failed`).
 
 ## 3. Static routing — `channels.yaml`
 
-`channels.yaml` (default `~/.dispatcher/channels.yaml`) is the static fast
-path consulted before the LLM dispatcher. It is re-read on every request —
-edits take effect without a restart.
+`channels.yaml` (per workspace, at
+`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/channels.yaml`) is the static
+fast path consulted before the LLM dispatcher, against the **originating event's
+workspace**. It is re-read on every request — edits take effect without a restart.
 
 ```yaml
 routes:
@@ -140,8 +145,10 @@ decision should be left unmapped so it falls through to the LLM dispatcher.
 
 ## 4. Recipe contract
 
-A **recipe** is a directory (default `~/.dispatcher/recipes/<id>/`) defining
-an ephemeral agent the dispatcher can spawn. Files:
+A **recipe** is a directory (per workspace, at
+`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/recipes/<id>/`) defining an
+ephemeral agent the dispatcher can spawn. The spawn runs with the workspace's
+`home` (taskpilot per-task `$HOME`), so the agent runs in that partition. Files:
 
 ```
 recipes/<id>/
@@ -203,9 +210,9 @@ Composition rules, enforced by the spawner at runtime:
 
 The vault is a local directory of Markdown notes with YAML frontmatter — one
 note per entity, organized by the four layers (Thing, Event, Knowledge,
-Process) — plus a `CATALOG.md` index. It lives at the fixed path
-`~/.mindframe/vault`, is populated at setup and by mindframe agents as they
-work, and is **read by grep**, not by embeddings.
+Process) — plus a `CATALOG.md` index. There is one vault **per workspace** at
+`~/.mindframe/workspaces/<id>/.mindframe/vault`, populated at setup and by that
+workspace's agents as they work, and **read by grep**, not by embeddings.
 
 The schema is **per-install**, two-layered:
 
@@ -227,19 +234,21 @@ the same way, over HTTP.
 |---|---|
 | `GET /health` | `{ok, version, running, total}`. |
 | `GET /tasks[?status=]`, `GET /tasks/{id}` | List/detail. Status is reconciled against tmux ground truth on every read (`running` + dead tmux → `crashed`), plus live `tmux_alive`/`channel_healthy`. |
-| `PUT /tasks/{id}` | Upsert the task definition `{description, name?, cwd?, model?, brief?}`. Idempotent; the id is a caller-chosen slug. |
+| `PUT /tasks/{id}` | Upsert the task definition `{description, name?, cwd?, home?, model?, brief?}`. `home` sets the agent's `$HOME` (its workspace partition) — the key to one taskpilot serving every workspace. Idempotent; the id is a caller-chosen slug. |
 | `POST /tasks/{id}/start` | Ensure running (idempotent): no-op if alive, (re)spawn if crashed/stopped. Optional `{prompt}` overrides the starter prompt — the Surface passes a revival brief here when respawning a frame's dead agent. Blocks ~16s on an actual spawn. |
 | `POST /tasks/{id}/stop` | Ensure stopped (idempotent). The row survives for a later start. |
 | `POST /tasks/{id}/message` | Deliver `{text, from_session?}` to a running agent with **verified delivery**. Errors carry `detail.code`: 409 `agent_not_running` (start + retry), 503 `channel_not_ready` (retry shortly), 502 `delivery_failed`. |
 | `DELETE /tasks/{id}` | Stop + delete the task entirely, freeing the id for reuse. |
-| `POST /tasks/create_and_spawn` | Deprecated composite (PUT + start in one call), kept for event-driven callers; idempotent. |
+| `POST /tasks/create_and_spawn` | Composite (PUT + start in one call) for event-driven callers — the dispatcher passes the workspace's `home`; idempotent. |
 
-Each spawned agent runs `claude` in a detached tmux session with the
-operator's real `$HOME` — it inherits the operator's plugins, MCPs, and
-identity. Its durable state is the transcript at
-`~/.claude/projects/<encoded-cwd>/`. **Messages reach agents over the Mesh**
-(`session-bridge :8910/sessions/<id>/message`), never by typing into the tmux
-pane; the starter prompt is delivered the same way at spawn time.
+Each spawned agent runs `claude` in a detached tmux session with `$HOME` set to
+its task's `home` — the workspace partition — so it sees that workspace's MCPs,
+connector skills, and vault and runs on the subscription login seeded there (the
+spawner scrubs `ANTHROPIC_API_KEY`; opt out with `TASKPILOT_KEEP_API_KEY`). Its
+durable state is the transcript under `$HOME/.claude/projects/…`. **Messages
+reach agents over the Mesh** (`session-bridge :8910/sessions/<id>/message`),
+never by typing into the tmux pane; the starter prompt is delivered the same way
+at spawn time.
 
 Tasks do not auto-respawn and have no reboot persistence — anything that must
 survive reboots unattended runs through the `daemon` capability instead. But
@@ -273,31 +282,35 @@ through this mesh.
 
 ## 8. Dashboard app API
 
-The dashboard (`dashboard/server/server.py`) is the Surface layer — a FastAPI
-server on `127.0.0.1:5174` (configurable via `PORT`) serving the SPA and every
-mindframe. Full env-var table in [`../dashboard/README.md`](../dashboard/README.md).
+The dashboard (`dashboard/server/server.py`) is the Surface layer — one
+**multi-tenant** FastAPI server on `127.0.0.1:5174` (configurable via `PORT`)
+serving the portal, every workspace, and every mindframe. A `WorkspaceMiddleware`
+strips the `/w/<id>/` prefix and resolves frames/vault per request from
+`MINDFRAME_HOME/workspaces/<id>/.mindframe/`. Endpoints below shown as
+`/w/<id>/…` are **workspace-scoped** (the SPA sends the prefix; the middleware
+strips it); `/`, `/api/health`, and `/api/workspaces` are top-level. Full env-var
+table in [`../dashboard/README.md`](../dashboard/README.md).
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/health` | `{ok, port, dispatcher_url, dispatcher_bearer_present}`. |
-| `GET /api/frames` | List surface mindframes (frame dirs under `~/.mindframe/frames` holding an `index.html`), newest-activity first. |
-| `POST /api/frames/create` | `{prompt, title?}` — mint a frame dir, drop a placeholder page, then define + start its persistent agent via taskpilot (`PUT /tasks/{id}` + `POST /tasks/{id}/start`, task_id == frame id). Returns `{id, url, spawn, …}`. |
-| `GET /api/frames/activity` | Per-frame `working` flag for the dock — true if the agent's transcript was written in the last 8s. |
-| `GET /m/<id>` | The per-mindframe surface shell (iframe over the agent's page + message rail + cognition log). |
-| `GET /api/frame/<id>/page` | The agent's current `index.html` (or a composing placeholder). |
-| `GET /api/frame/<id>/rev` | Revision = the page file's `mtime_ns`; the shell polls it and reloads on change. |
-| `POST /api/frame/<id>/message` | `{text}` — deliver a message to the frame's agent via taskpilot. If the agent died (reboot/crash), it is revived first: the server starts the task with a revival brief ("resume ownership of the existing page"), then delivers. Response carries `revived: true` when that happened. |
-| `GET /api/frame/<id>/activity` | Tail the agent's transcript for cognition events (`?offset=`, `?file=`); also reports `mtime`, `model`, `context`. |
-| `DELETE /api/frame/<id>` | Tear a mindframe down: delete its task (stops the agent, frees the task id; best-effort), then remove the frame dir. |
-| `POST /api/dashboard-event` | `{event_type, data?}` — proxy to the dispatcher's `/api/event` with `source: dashboard-button`. The server reads the bearer from `~/.mindframe/secrets/dispatcher-bearer.token`; the browser never sees it. |
-| `GET /api/vault` | The single vault at `~/.mindframe/vault`: path, per-type entry counts, last modified. |
-| `GET /api/vault/entries` | Recent entries (`?limit=`, default 50), newest first. |
-| `GET /api/vault/graph` | Node-link graph: nodes per note, edges from `[[wikilinks]]` + frontmatter foreign keys (per the vault's `schema.yaml`). Capped at `?limit=` nodes (default 500). |
-| `GET /api/connections` | Live connection discovery — presence only. `claude mcp list` plus a scan for connector skills (`SKILL.md` with a `connection:` fingerprint), minus the bundle's own runtime plugins (browser-bridge is kept — it's a real access door). No auth probing; results cached ~30s and warmed in the background. |
-| `GET /api/events` | Dispatcher routes read from `~/.dispatcher/channels.yaml`, grouped by source. Read-only. |
-| `GET /api/agents` | Definitions (recipes under `~/.dispatcher/recipes/`) + live tasks (read from `~/.taskpilot/taskpilot.db`, cross-checked against live tmux sessions). Read-only. |
-| `GET /artifacts/<id>/<path>` | Sibling files an agent writes next to its `index.html` (looked up under `dashboard/artifacts/<id>/` then the frame dir; traversal-checked). |
-| `GET /<path>` | SPA fallback — serves `public/`. |
+| `GET /` | The workspace **portal** — lists workspaces with frame counts + auth status. |
+| `GET /api/workspaces` | `{workspaces:[{id,label,frames,auth}]}` — the portal's data (top-level). |
+| `GET /api/health` | `{ok, port, dispatcher_url, dispatcher_bearer_present, workspaces[], auth}`. Top-level; `auth` reports the workspace's subscription-login status when called as `/w/<id>/api/health` (`ready` / `expired` / `no-login` / `api-key-conflict`, each with a message + fix). |
+| `GET /w/<id>/api/frames` | List the workspace's mindframes (frame dirs under `~/.mindframe/workspaces/<id>/.mindframe/frames` holding an `index.html`), newest-activity first. |
+| `POST /w/<id>/api/frames/create` | `{prompt, title?}` — mint a frame dir in the workspace, drop a placeholder, then define + start its agent via taskpilot with `home` = the workspace partition (task_id == frame id). **Pre-spawn auth gate:** 503 with a clear reason if the workspace isn't signed in (instead of a frame whose agent hangs at a login screen). Returns `{id, url: "/w/<id>/m/<frame>", spawn}`. |
+| `GET /w/<id>/api/frames/activity` | Per-frame `working` (transcript written recently) + `awake` (agent tmux alive) flags for the dock. |
+| `GET /w/<id>/m/<frame>` | The per-mindframe surface shell (iframe over the agent's page + message rail + cognition log). |
+| `GET /w/<id>/api/frame/<frame>/page` | The agent's current `index.html` (or a composing placeholder). |
+| `GET /w/<id>/api/frame/<frame>/rev` | Revision = the page file's `mtime_ns`; the shell polls it and reloads on change. |
+| `POST /w/<id>/api/frame/<frame>/message` | `{text}` — deliver a message to the frame's agent via taskpilot. If the agent died (reboot/crash) it is revived first (started with a revival brief, then delivered); response carries `revived: true`. |
+| `GET /w/<id>/api/frame/<frame>/activity` | Tail the agent's transcript for cognition events (`?offset=`, `?file=`); also reports `mtime`, `model`, `context`. |
+| `DELETE /w/<id>/api/frame/<frame>` | Tear a mindframe down: delete its task (stops the agent, frees the id; best-effort), then remove the frame dir. |
+| `POST /w/<id>/api/dashboard-event` | `{event_type, data?}` — proxy to the dispatcher's `/api/event` with `source: dashboard-button`. The server reads the bearer from `~/.mindframe/secrets/dispatcher-bearer.token`; the browser never sees it. |
+| `GET /w/<id>/api/vault[/entries\|/graph]` | The workspace's vault at `~/.mindframe/workspaces/<id>/.mindframe/vault`: counts + last-modified; recent entries; and a node-link graph (edges from `[[wikilinks]]` + frontmatter FKs, capped at `?limit=`). |
+| `GET /w/<id>/api/connections` | The workspace's connections — presence only: its `.claude.json` MCPs plus a scan of its `.claude/skills` for connector skills (`SKILL.md` with a `connection:` fingerprint), minus the bundle's own runtime plugins. No auth probing. |
+| `GET /api/events`, `/api/agents`, `/api/runs`, `/api/activity` | Read-only system views (dispatcher routes/recipes, taskpilot tasks, recent activity). **Not yet workspace-scoped** — they read the shared dispatcher/taskpilot state; see [`single-stack-contract.md`](single-stack-contract.md). |
+| `GET /w/<id>/artifacts/<frame>/<path>` | Sibling files an agent writes next to its `index.html` (traversal-checked). |
+| `GET /<path>` | Static / SPA fallback — serves `public/`. |
 
 The dispatcher and taskpilot daemons are optional dependencies: the dashboard
 runs without them, and only the endpoints that talk to each fail when its

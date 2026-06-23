@@ -26,13 +26,13 @@ If a Tier-1 heal fails or its re-probe still fails, stop healing that subsystem 
 
 ## Flow
 
-### [check 1/7] locate the deployment
+### [check 1/7] locate the deployment + workspaces
 
 Read bundle config from `~/.claude/settings.json` → `pluginConfigs.mindframe.options`:
 
 - `deployment_name` — must be a non-empty string. If missing, that's a Tier 2 finding: `/mindframe:setup` is the proper path on a fresh install.
 
-The vault is **not configurable** — it always lives at `~/.mindframe/vault`. Resolve `VAULT` to that path for the rest of the run. If the directory does not exist, this is the **first finding** and it is blocking — every check that reads the vault will be `unknown` until it is created. That's a fresh-install signal, not a misconfiguration: tell the operator to run `/mindframe:setup`. Do not create or invent a vault elsewhere.
+Mindframe is **one shared stack serving many workspaces** (see `docs/single-stack-contract.md`). Enumerate the workspaces — partition dirs under `~/.mindframe/workspaces/*/`, cross-checked with the registry `~/.mindframe/workspaces.yaml`. If there are none, that's a fresh-install signal: tell the operator to run `/mindframe:setup`. **Each workspace has its own vault** at `~/.mindframe/workspaces/<id>/.mindframe/vault` — there is no single global `~/.mindframe/vault`. The vault checks (check 4) and dispatcher-config checks (check 5) therefore run **per workspace**. Do not create or invent a vault elsewhere.
 
 ### [check 2/7] inventory the bundle
 
@@ -47,8 +47,9 @@ The bundle is `mindframe` plus the providers bound to its required capabilities.
 | `daemon` | daemon-manager | yes |
 
 Two layers mindframe owns directly are **not** resolved capabilities but still
-need checking: the **Surface** (the dashboard daemon) and the **Knowledge** vault
-at `~/.mindframe/vault`.
+need checking: the **Surface** (the one multi-tenant dashboard daemon) and the
+per-workspace **Knowledge** vaults (one under each
+`~/.mindframe/workspaces/<id>/.mindframe/vault`).
 
 Providers are swappable per install — resolve what is *actually* bound, don't assume. Run the softwaresoftware dependency checker for `mindframe` (intent: "check the mindframe plugin's dependencies are satisfied") and read installed plugins from `~/.claude/settings.json` → `enabledPlugins` (or `claude plugin list`).
 
@@ -85,40 +86,59 @@ Then check the agent runtime itself:
 
   Independent of which branch fires, treat `has_autostart=false` on an otherwise-healthy `session-bridge` row as a **Tier 2 warning** — the mesh works now but will be dead after the next reboot. Fix: `daemon_install_autostart(daemon_name="session-bridge")`. Same treatment for any other bundle daemon (`mindframe-dashboard`, `dispatcher-ingress`) with `has_autostart=false`.
 
-### [check 4/7] knowledge base — vault
+  There must be exactly **one** of each daemon — `taskpilot`, `dispatcher`(-ingress + poller), `session-bridge`, `mindframe-dashboard`. Any leftover **per-workspace** daemons (`taskpilot-<name>`, `dispatcher-<name>`, `mindframe-dashboard-<name>` on offset ports) are from the retired multi-deployment model: a **Tier 2** finding — they double-serve and leak agents. Report them; the fix is to stop + unregister them (the single stack serves every workspace).
 
-Against `VAULT` from check 1 (skip with an `unknown` finding if check 1 was blocked):
+- **Subscription auth — no API key.** Confirm `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are **absent** from the daemon environments (check the daemon-manager registrations and the current shell env). A key there overrides the Claude subscription login and silently breaks every spawned agent (often "Invalid API key"). Present → **Tier 2**: scrub it from the daemon registration + the launching shell and restart. (taskpilot also unsets it per-spawn as a backstop; mindframe runs on the subscription only.)
 
-- **Directory.** `$VAULT` must exist as a directory. The vault is a plain local directory (not a git repo) — there are no commit/clean checks. Missing → Tier 2: the fix is `/mindframe:setup`, which creates it.
-- **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML. It is the deployment's contract (`docs/interfaces.md`). Missing → Tier 2: the fix is `/mindframe:setup` step 4 (assemble the schema); do not write `schema.yaml` yourself.
-- **Catalog.** `$VAULT/CATALOG.md` should exist with one section per entity type declared in `schema.yaml`. Missing or stale (an entity-type directory exists with notes but has no catalog section) → Tier 1: regenerate `CATALOG.md` from the directories the schema declares, then re-probe.
-- **Schema drift.** For each entity-type directory under the vault, confirm the type is declared in `schema.yaml`. A directory of notes for an *undeclared* type is drift — Tier 2 finding (writers are expected to validate against the schema; an undeclared type means notes were written bypassing it). Report the directory and note count; don't delete anything.
-- **Population.** The vault is owned directly by mindframe (plain files, no external provider). If the directory exists but is empty of notes, that's a "setup incomplete" warning, not a break.
+### [check 4/7] knowledge base + auth — per workspace
 
-### [check 5/7] event router — dispatcher config
+Run this **for each workspace** from check 1. For workspace `<id>` resolve
+`WS="$HOME/.mindframe/workspaces/<id>"` and `VAULT="$WS/.mindframe/vault"`.
 
-The dispatcher daemon health was covered in check 3. Here, validate its **config**, which lives outside the bundle at `~/.dispatcher/` (`DISPATCHER_DIR`):
+Vault, per workspace:
 
-- **`channels.yaml`** must exist and parse as YAML (verify with `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" ~/.dispatcher/channels.yaml`). Each route needs a `source` and a `target`.
-- **Recipe contract.** Check it inline against the live config — no shipped checker:
-  1. For every route whose `target` is `spawn:<name>`, the directory `~/.dispatcher/recipes/<name>/` must exist and contain a parseable `recipe.yaml`.
-  2. For each such pair, every `{{placeholder}}` appearing in the recipe's brief template must be fillable from the route's `brief:` block (or the event payload, per the recipe's own declarations). An undeclared required placeholder is a finding; name the recipe and the key.
+- **Directory.** `$VAULT` must exist as a directory (plain files, not a git repo — no commit/clean checks). Missing → Tier 2: `/mindframe:setup` (first workspace) or `/mindframe:workspace create <id>` creates it.
+- **Schema manifest.** `$VAULT/schema.yaml` must exist and parse as YAML — the workspace's contract (`docs/interfaces.md`). Missing → Tier 2; don't write it yourself.
+- **Catalog.** `$VAULT/CATALOG.md` should have one section per entity type declared in `schema.yaml`. Missing or stale → Tier 1: regenerate from the schema's directories, then re-probe.
+- **Schema drift.** A note directory for a type *not* declared in `schema.yaml` is drift — Tier 2; report the directory and note count, delete nothing.
+- **Population.** An existing-but-empty vault is a "setup incomplete" warning, not a break.
 
-  Heal tier depends on the failure: an obvious **typo** in a route key (a `target` naming a recipe that exists under a near-identical name, a misspelled `source`) is Tier 1 — fix it with `Edit`, re-parse to confirm. A **missing recipe directory** or an **unfillable required placeholder** is Tier 2 — report it; the operator owns the routing intent.
+Auth seed, per workspace — the workspace's agents run on the operator's Claude
+subscription, seeded into its partition (`docs/single-stack-contract.md`):
 
-- **Audit log.** If `dispatcher-ingress` is healthy, pull a recent error summary (intent: "get the dispatcher event summary by status" — `GET /api/events/summary`). A spike in `failed` / `spawn-failed` / `exception` is a finding worth surfacing even though doctor can't fix the root cause; include the counts and point at `GET /api/events?status=failed` for detail.
+- `$WS/.claude/.credentials.json` present (a symlink to the operator's credential is fine), and `$WS/.claude.json` carries `oauthAccount` + `hasCompletedOnboarding` (the key that skips first-run sign-in) with `mcpServers: {}`.
+- Better, ask the dashboard, which probes this live: `GET http://127.0.0.1:5174/api/workspaces` returns each workspace's `auth` (`ready` / `expired` / `no-login` / `api-key-conflict`). Anything but `ready` is a Tier-2 finding with the dashboard's stated fix (re-seed the workspace, or `claude login`) — an incomplete seed means that workspace's agents would hang at a login screen on spawn.
 
-### [check 6/7] dashboard
+### [check 5/7] event router — dispatcher config (per workspace + wiring)
 
-The dashboard is the one app mindframe owns directly (`dashboard/`, served by a FastAPI backend — `docs/interfaces.md`).
+The dispatcher daemon health was covered in check 3. The one shared dispatcher **derives the workspace from each event source**, so routing config is **per workspace**, under each partition's `~/.mindframe/workspaces/<id>/.mindframe/dispatcher/` (`channels.yaml`, `recipes/`, `event-sources/`).
 
-- Find its port: the `mindframe-dashboard` daemon's registration (daemon capability), the `PORT` env in its config, or the default `5174`. Probe `GET /api/health` → expect `{ ok, port, dispatcher_url, dispatcher_bearer_present }`. No response → Tier 1: restart the `mindframe-dashboard` daemon, re-probe.
-- `dispatcher_bearer_present: false` is a **Tier 2 warning**: agent-page action buttons that go through `/api/dashboard-event` will 503 until a bearer exists at `~/.mindframe/secrets/dispatcher-bearer.token`. Don't generate one yourself — that's a setup step.
-- Confirm `dashboard/public/` has the static frontend and the backend dependencies are installed (`dashboard/README.md` has the run contract). A dashboard that was never started is a warning, not a break — note it and move on.
+First the wiring: the dispatcher **poller** must run with `DISPATCHER_WORKSPACES_ROOT=~/.mindframe/workspaces` (check its daemon-registration env). Missing → **Tier 2**: it discovers no workspace's event-sources; re-register the poller with that env. (The legacy global `~/.dispatcher/` is no longer the source of truth.)
+
+Then, per workspace `<id>` (let `DD="$WS/.mindframe/dispatcher"`):
+
+- **`channels.yaml`** must exist and parse as YAML; each route needs a `source` and a `target`.
+- **Recipe contract** (inline — no shipped checker):
+  1. For every route whose `target` is `spawn:<name>`, `DD/recipes/<name>/recipe.yaml` must exist and parse.
+  2. Every `{{placeholder}}` in that recipe's brief must be fillable from the route's `brief:` block (or the event payload, per the recipe). An undeclared required placeholder is a finding — name the workspace, recipe, and key.
+
+  Heal tier as before: an obvious route-key **typo** is Tier 1 (`Edit`, re-parse); a **missing recipe directory** or an **unfillable required placeholder** is Tier 2 — the operator owns the routing intent.
+
+- **Audit log.** If `dispatcher-ingress` is healthy, pull a recent error summary (intent: "get the dispatcher event summary by status" — `GET /api/events/summary`). A spike in `failed` / `spawn-failed` / `exception` is worth surfacing; include counts and point at `GET /api/events?status=failed` for detail.
+
+### [check 6/7] dashboard (the one multi-tenant Surface)
+
+The dashboard is the one app mindframe owns directly (`dashboard/`, FastAPI — `docs/interfaces.md`): **one** server on port **5174** serving the portal at `/`, every workspace at `/w/<id>/`, and every mindframe at `/w/<id>/m/<frame>`. There are no per-workspace dashboards.
+
+- Probe `GET http://127.0.0.1:5174/api/health` → expect `{ ok, port, dispatcher_url, dispatcher_bearer_present, auth, workspaces }`. No response → Tier 1: restart the `mindframe-dashboard` daemon, re-probe.
+- **Multi-tenancy.** `GET /api/workspaces` must list the same workspaces found in check 1, each with a frame count and an `auth` status. A workspace on disk but missing here (or listed but absent on disk) is a finding.
+- **Deployment auth.** `auth.status` in `/api/health` must be `ready`. `api-key-conflict` (an `ANTHROPIC_API_KEY` in the dashboard's env) or `no-login`/`expired` is a Tier-2 finding — use the `fix` the probe returns.
+- `dispatcher_bearer_present: false` is a **Tier 2 warning**: agent-page action buttons via `/api/dashboard-event` 503 until a bearer exists at `~/.mindframe/secrets/dispatcher-bearer.token`. Don't generate one yourself.
+- Confirm `dashboard/public/` has the static frontend and the backend deps are installed (`dashboard/README.md`). A never-started dashboard is a warning, not a break.
 
 ### [check 7/7] skills & perception
 
-- **Skills.** For each skill under `skills/` (currently `setup`, `doctor`, `open`, `connect`), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
+- **Skills.** For each skill under `skills/` (currently `setup`, `doctor`, `open`, `connect`, `workspace`, `sync`, `mindframe-dev`), confirm `SKILL.md` exists and its frontmatter has a non-empty `name` and `description`. A skill whose `name` does not match its directory is a finding — Tier 1 fix with `Edit`.
 - **Perception.** `claude-browser-bridge` plus whatever MCPs and connector skills the operator has adopted. Report what `/api/connections` (or `claude mcp list` plus a scan of `~/.claude/skills/*/SKILL.md` for `connection:` fingerprints) discovers. These are informational — an agent degrades gracefully when one is absent — but a deployment whose wired event routes depend on a tool that is no longer reachable is worth flagging Tier 2.
 - **Hermetic tests.** If this is a dev checkout with pytest available, optionally run `python3 -m pytest dashboard/tests/ tests/e2e_fresh/ -q` as a regression signal. Report pass/fail; don't heal test failures. Skip silently on an installed deployment without pytest.
 

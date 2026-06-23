@@ -16,12 +16,12 @@ directly.
 
 | Layer | What runs it | State |
 |---|---|---|
-| **Surface** | the dashboard: one FastAPI server (`dashboard/server/server.py`, port `5174`) + SPA serving every mindframe at `/m/<id>` | `~/.mindframe/frames/<id>/index.html` |
-| **Agent runtime** | `taskpilot` (`:8912`) spawns tmux-backed `claude`; prompt + every message delivered over the Mesh | transcript in `~/.claude/projects/<encoded-cwd>/`; task rows in `~/.taskpilot/taskpilot.db` |
-| **Event ingress** | `dispatcher` (`:8911`): dedupe → `channels.yaml` static route → LLM fallback → spawn an ephemeral agent | `~/.dispatcher/events.db` |
-| **Knowledge** | a single vault: markdown + frontmatter, the schema in [`kb-schema.md`](kb-schema.md) *(under redesign)* | `~/.mindframe/vault` (hardcoded) |
-| **Mesh** | `session-bridge` (`:8910`): agent↔agent↔human messaging; also the Agent-runtime delivery channel | transient (in-memory registry) |
-| **Perception** | `claude-browser-bridge` + whatever MCPs/connector skills the operator already has, discovered live via `/api/connections` | — |
+| **Surface** | the dashboard: one **multi-tenant** FastAPI server (`dashboard/server/server.py`, port `5174`) + SPA — portal at `/`, workspace home at `/w/<id>/`, mindframe at `/w/<id>/m/<frame>` | `~/.mindframe/workspaces/<id>/.mindframe/frames/<frame>/index.html` |
+| **Agent runtime** | one `taskpilot` (`:8912`) spawns tmux-backed `claude` for every workspace, each agent with a **per-task `$HOME`** = its workspace partition; prompt + every message delivered over the Mesh | transcript under the agent's `$HOME/.claude/projects/…`; task rows in `~/.taskpilot/taskpilot.db` (each row carries its `home`) |
+| **Event ingress** | one `dispatcher` (`:8911`, ingress + poller): per event, **derive the workspace from its source** → that workspace's `channels.yaml` → spawn with the workspace's home | `~/.dispatcher/events.db` (rows tagged with `workspace`) |
+| **Knowledge** | a vault **per workspace**: markdown + frontmatter, schema in [`kb-schema.md`](kb-schema.md) *(under redesign)* | `~/.mindframe/workspaces/<id>/.mindframe/vault` |
+| **Mesh** | `session-bridge` (`:8910`): agent↔agent↔human messaging; also the Agent-runtime delivery channel — one shared per-host registry | transient (in-memory registry) |
+| **Perception** | `claude-browser-bridge` + the MCPs/connector skills in each **workspace's** `.claude`, discovered live via `/w/<id>/api/connections` | — |
 
 Read top to bottom: a human touches the **Surface**; the Surface drives the
 **Agent runtime**; events arrive through **Event ingress** and spawn agents in
@@ -35,17 +35,22 @@ reach the world through **Perception**.
 ### Surface — the dashboard
 
 The piece mindframe owns. A FastAPI server with no build step (`public/` is
-plain HTML/CSS/JS). It serves the SPA home — the calm launcher: one "What
-should we work on?" input (typed text creates a purposeful frame; empty opens
-a launchpad), the operator's attention in a few lines (inbox with provenance,
-resume, recent activity), app chips, and drawers for everything else
-(frames, watches, agents, knowledge, connections) — and every mindframe at
-`/m/<id>`.
+plain HTML/CSS/JS). One process serves every workspace: a **portal** at `/`
+listing the operator's workspaces, each workspace's **home** at `/w/<id>/` — the
+calm launcher: one "What should we work on?" input (typed text creates a
+purposeful frame; empty opens a launchpad), the operator's attention in a few
+lines (inbox with provenance, resume, recent activity), app chips, and drawers
+(frames, watches, agents, knowledge, connections) — and each mindframe at
+`/w/<id>/m/<frame>`. A `WorkspaceMiddleware` strips the `/w/<id>` prefix and the
+server resolves frames/vault per request from
+`~/.mindframe/workspaces/<id>/.mindframe/` (there is no global frames/vault).
 
 A **mindframe** is the unit it hosts: a persistent agent that owns one HTML
-page it rewrites in place, plus a message box. The Surface mints one
-(`POST /api/frames/create` → taskpilot `PUT /tasks/<id>` + `start`, task id
-== frame id), serves its shell, and proxies operator messages to its agent. The agent
+page it rewrites in place, plus a message box. The Surface mints one inside the
+active workspace (`POST /w/<id>/api/frames/create` → taskpilot `PUT /tasks/<id>`
++ `start`, with the task's `home` set to the workspace partition so the agent
+runs there; task id == frame id), serves its shell, and proxies operator
+messages to its agent. The agent
 rewrites `index.html` with the Write tool; the shell polls
 `/api/frame/<id>/rev` (the file's mtime) and reloads on change. The shell's
 "working" indicator derives from the agent's transcript mtime.
@@ -71,9 +76,13 @@ reboot-persistent through the `daemon` capability; the tasks it spawns are
 not — a dead task stays down until a caller starts it again (the Surface does
 this automatically on the next operator message).
 
-A spawned agent inherits the operator's real `~/.claude` — plugins, MCPs, and
-identity. Its durable state is its transcript at
-`~/.claude/projects/<encoded-cwd>/`.
+**One taskpilot serves every workspace.** Each task carries a `home`; the
+spawner exports it as the agent's `$HOME`, so the agent runs inside its workspace
+partition (`~/.mindframe/workspaces/<id>/`) — it sees that workspace's MCPs
+(`.claude.json`), connector skills (`.claude/skills`), and vault, and runs on the
+operator's subscription login seeded there (no per-workspace OAuth; the spawner
+also scrubs `ANTHROPIC_API_KEY`). Its durable state is its transcript under
+`$HOME/.claude/projects/…`.
 
 **The Mesh is the transport.** taskpilot does not type into the Claude TUI; it
 POSTs the starter prompt and every later message to the agent's mesh channel
@@ -81,28 +90,32 @@ at `session-bridge :8910/sessions/<id>/message`.
 
 ### Event ingress — dispatcher
 
-`dispatcher` acquires external events and routes them. Ingestion is
-**poll-first**: its poller reads event-source declarations
-(`~/.dispatcher/event-sources/*.yaml`) and polls each system on an interval.
-The `POST /api/event` webhook on `:8911` still works (the dashboard's
-`/api/dashboard-event` proxy uses it) but is deprecated. All endpoints except
-`/api/health` are bearer-authed; audit + dedupe state lives in
-`~/.dispatcher/events.db`.
+One `dispatcher` acquires external events for every workspace and routes them.
+Ingestion is **poll-first**: its poller aggregates event-source declarations
+across all workspace partitions
+(`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/event-sources/*.yaml`, via
+`DISPATCHER_WORKSPACES_ROOT`) and **tags each polled event with the workspace it
+came from** (the source's owning partition). The `POST /api/event` webhook on
+`:8911` still works (the dashboard's `/api/dashboard-event` proxy uses it) but is
+deprecated. All endpoints except `/api/health` are bearer-authed; audit + dedupe
+state lives in `~/.dispatcher/events.db` (rows carry the `workspace`; cursors are
+namespaced by workspace).
 
-Routing, in order: dedupe → static route from `channels.yaml`
-(`session:<name>` forward or `spawn:<recipe>`) → LLM fallback to the
-dispatcher's own Claude session. A `spawn:` route reads
-`~/.dispatcher/recipes/<id>/`, composes the brief, and calls taskpilot's
-`create_and_spawn` composite (define + start in one call).
+Routing, in order, against the **originating workspace's** config: dedupe →
+static route from that workspace's `channels.yaml` (`session:<name>` forward or
+`spawn:<recipe>`) → LLM fallback to the dispatcher's own Claude session. A
+`spawn:` route reads the workspace's `recipes/<id>/`, composes the brief, and
+calls taskpilot's `create_and_spawn` with the workspace's `home` — so the spawned
+agent runs in the right partition.
 
 ### Knowledge — the vault
 
-Mindframe owns this layer directly: a single local directory at
-`~/.mindframe/vault` (hardcoded; not configurable, not a resolved capability).
+Mindframe owns this layer directly: a local vault **per workspace** at
+`~/.mindframe/workspaces/<id>/.mindframe/vault` (not a resolved capability).
 Markdown notes with YAML frontmatter, one note per entity, organized by the
 four-layer schema in [`kb-schema.md`](kb-schema.md), plus a `CATALOG.md`
-index. Read by grep, not embeddings. Written by setup's bootstrap and by
-mindframe agents as they work. **Under redesign in a separate effort** — treat
+index. Read by grep, not embeddings. Written by setup's bootstrap and by that
+workspace's agents as they work. **Under redesign in a separate effort** — treat
 the schema as descriptive of today's vault, not final.
 
 ### Mesh — session-bridge
@@ -116,11 +129,12 @@ is both the human↔agent channel and the Agent runtime's delivery transport.
 ### Perception — browser-bridge + adopted tools
 
 `claude-browser-bridge` gives an agent control of a real browser for any web
-UI an API doesn't cover. Alongside it, agents use whatever MCPs and authed
-CLIs the operator already has — nothing is bundled; the Surface's
-`/api/connections` discovers them live (`claude mcp list` plus a scan for
-connector skills carrying a `connection:` fingerprint; presence only, no auth
-probing). `/mindframe:connect` authors new connector skills per operator.
+UI an API doesn't cover. Alongside it, each workspace's agents use the MCPs and
+connector skills configured in **that workspace's** `.claude` — nothing is
+bundled; the Surface's `/w/<id>/api/connections` discovers them live (the
+workspace's `.claude.json` MCPs plus a scan of its `.claude/skills` for connector
+skills carrying a `connection:` fingerprint; presence only, no auth probing).
+`/mindframe:connect` authors new connector skills into a workspace.
 
 ---
 
@@ -131,7 +145,7 @@ probing). `/mindframe:connect` authors new connector skills per operator.
 | Surface | *(mindframe owns it)* | `dashboard/` |
 | Agent runtime | `agent-spawning` | `taskpilot` |
 | Event ingress | `event-routing` | `dispatcher` |
-| Knowledge | *(mindframe owns it)* | plain files at `~/.mindframe/vault` |
+| Knowledge | *(mindframe owns it)* | a vault per workspace at `~/.mindframe/workspaces/<id>/.mindframe/vault` |
 | Mesh | `session-mesh` | `session-bridge` |
 | Perception | `browser-automation` | `claude-browser-bridge` + adopted tools |
 
@@ -148,11 +162,11 @@ The push path:
 
 ```
 external event ──▶ Event ingress (dispatcher :8911, poll-first)
-                      dedupe → channels.yaml → LLM fallback
+                      derive workspace → its channels.yaml → LLM fallback
                       └─ spawn:<recipe>
-                             │ POST :8912/tasks/create_and_spawn (define+start)
+                             │ POST :8912/tasks/create_and_spawn (define+start, home=workspace)
                              ▼
-                      Agent runtime (taskpilot)
+                      Agent runtime (taskpilot; HOME = workspace partition)
                       tmux-backed claude; prompt + messages over the Mesh
                              │
               ┌──────────────┼──────────────┐
@@ -162,21 +176,22 @@ external event ──▶ Event ingress (dispatcher :8911, poll-first)
                           adopted MCPs)  if a tool is available)
 ```
 
-1. **Ingress.** The event is acquired (polled or webhooked), deduplicated, and
-   written to `events.db`.
-2. **Route.** `channels.yaml` is consulted for a static match; anything
-   semantic falls through to the LLM dispatcher.
+1. **Ingress.** The event is acquired (polled or webhooked), **tagged with its
+   workspace** (the owning partition), deduplicated, and written to `events.db`.
+2. **Route.** The originating workspace's `channels.yaml` is consulted for a
+   static match; anything semantic falls through to the LLM dispatcher.
 3. **Spawn.** A `spawn:` route composes the recipe's brief and calls the Agent
-   runtime daemon. The new agent's prompt is delivered over the Mesh.
-4. **Work.** The agent reads the vault, pulls live signals through Perception,
-   and does its job.
+   runtime daemon **with the workspace's home**, so the new agent runs in that
+   partition; its prompt is delivered over the Mesh.
+4. **Work.** The agent reads its workspace's vault, pulls live signals through
+   Perception, and does its job.
 5. **Recommend.** The agent produces an artifact. Anything irreversible waits
    for human confirmation.
 
-The **interactive** path is the same runtime entered from the top: the
-operator opens the Surface, creates or messages a mindframe, and the Surface
-delivers the message to the Agent runtime through the same `:8912` daemon.
-There is no separate interactive stack.
+The **interactive** path is the same runtime entered from the top: the operator
+opens a workspace (`/w/<id>/`), creates or messages a mindframe, and the Surface
+delivers the message to the Agent runtime through the same `:8912` daemon. There
+is no separate interactive stack.
 
 ---
 
@@ -187,7 +202,7 @@ There is no separate interactive stack.
 - **Every composed layer is a plugin or an MCP**, bound by capability. Skills
   reference capabilities by intent, never by provider name.
 - **The Mesh is the agent transport.** No keystroke injection.
-- **Default workspace is single-instance.** The default deployment uses one vault and one dashboard. Named workspaces run isolated stacks; see `/mindframe:workspace`.
+- **One stack, many workspaces.** A single shared stack serves every workspace; a workspace is a *partition* under `~/.mindframe/workspaces/<id>/`, not its own daemons or ports. Agents isolate by per-task `$HOME`; the dashboard is multi-tenant (`/w/<id>/`). See [`single-stack-contract.md`](single-stack-contract.md).
 - **Agents recommend; humans act.** Irreversible steps are gated on
   confirmation.
 - **No credentials in mindframe.** Identity inheritance; the only secrets
@@ -198,12 +213,14 @@ There is no separate interactive stack.
 
 | State | Home | Lifetime |
 |---|---|---|
-| A mindframe's page | `~/.mindframe/frames/<id>/index.html` | persistent; rewritten by its agent |
-| Customer knowledge | `~/.mindframe/vault` | persistent |
-| Agent transcript | `~/.claude/projects/<encoded-cwd>/` | the life of the agent |
-| Task rows | `~/.taskpilot/taskpilot.db` | persistent |
-| Event audit + dedupe | `~/.dispatcher/events.db` | rolling; dedupe entries expire |
-| Routing config + recipes | `~/.dispatcher/channels.yaml`, `~/.dispatcher/recipes/` | persistent |
+| Workspace registry | `~/.mindframe/workspaces.yaml` | persistent |
+| A mindframe's page | `~/.mindframe/workspaces/<id>/.mindframe/frames/<frame>/index.html` | persistent; rewritten by its agent |
+| Customer knowledge | `~/.mindframe/workspaces/<id>/.mindframe/vault` (per workspace) | persistent |
+| Workspace connections + auth seed | `~/.mindframe/workspaces/<id>/.claude/` (+ `.claude.json`) | persistent |
+| Agent transcript | the agent's `$HOME/.claude/projects/…` (its workspace partition) | the life of the agent |
+| Task rows (incl. each task's `home`) | `~/.taskpilot/taskpilot.db` | persistent |
+| Event audit + dedupe | `~/.dispatcher/events.db` (rows tagged with `workspace`) | rolling; dedupe entries expire |
+| Routing config + recipes + event-sources | `~/.mindframe/workspaces/<id>/.mindframe/dispatcher/` (per workspace) | persistent |
 | Generated secrets | `~/.mindframe/secrets/` | persistent; file-handoff only |
 | Agent ↔ agent / human messages | the session-bridge mesh | transient |
 | Bundle config | `~/.claude/settings.json` (`pluginConfigs.mindframe`) | persistent |

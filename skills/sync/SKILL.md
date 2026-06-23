@@ -5,21 +5,39 @@ description: Pull fresh data from connected sources into the mindframe vault. Us
 
 # Vault Sync
 
-Pull fresh data from connected sources and write it into `~/.mindframe/vault`, conforming to `schema.yaml`. Each connector skill may declare a `sync:` block — this skill reads those blocks and drives the update.
+Pull fresh data from connected sources into a **workspace's** vault, conforming
+to that workspace's `schema.yaml`. Sync is **per-workspace**: each workspace is a
+partition under `~/.mindframe/workspaces/<id>/` with its own vault, its own
+connector skills, and its own connections. Each connector skill may declare a
+`sync:` block — this skill reads those blocks and drives the update.
 
 ## Input
 
-Optionally: a source name (`/mindframe:sync github`). If omitted, sync all connectors that have a `sync:` block.
+- A **workspace id** — from the dispatcher brief (`brief.workspace`) when an event
+  triggers the sync, or from the operator (`/mindframe:sync <workspace> [source]`).
+  If omitted, default to `personal` (or ask, if several workspaces exist).
+- Optionally a **source** name to sync just one connector; otherwise sync every
+  connector in that workspace with a `sync:` block.
+
+Resolve the partition once and use it throughout:
+
+```bash
+WS_ID="${WS_ID:-personal}"
+WS="$HOME/.mindframe/workspaces/$WS_ID"
+VAULT="$WS/.mindframe/vault"
+SKILLS="$WS/.claude/skills"
+[ -d "$WS" ] || { echo "workspace '$WS_ID' not found under ~/.mindframe/workspaces/"; exit 1; }
+```
 
 ## Step 1 — Find syncable connectors
 
-Scan `~/.claude/skills/` for connector skills with a `sync:` block:
+Scan **this workspace's** connector skills for a `sync:` block:
 
 ```bash
-grep -rl "^sync:" ~/.claude/skills/*/SKILL.md 2>/dev/null
+grep -rl "^sync:" "$SKILLS"/*/SKILL.md 2>/dev/null
 ```
 
-If a specific source was requested, filter to that name. If none found, tell the operator that no connections have sync configured and suggest `/mindframe:connect` to add one.
+If a specific source was requested, filter to that name. If none found, tell the operator that this workspace has no connections with sync configured and suggest `/mindframe:connect` to add one.
 
 ## Step 2 — For each connector
 
@@ -32,7 +50,7 @@ Run the connector's `check` command. If it exits non-zero, skip this connector a
 Run `sync.pull`. Capture stdout. If it fails, report the error and skip this connector.
 
 **c. Map to vault entities**
-Read `~/.mindframe/vault/schema.yaml` to know valid entity types, required fields, FK targets, and directories. Then:
+Read `$VAULT/schema.yaml` to know valid entity types, required fields, FK targets, and directories. Then:
 
 - The `sync.entities` list in the connector declares which types this source populates.
 - For each object in the pulled data, identify the matching entity type and derive a `name` or `slug` (following the meta-schema identity rules: Things/Knowledge/Process use plain kebab names; Events prefix with `YYYY-MM-DD-`).
@@ -52,20 +70,27 @@ Read `~/.mindframe/vault/schema.yaml` to know valid entity types, required field
 Before writing, verify every FK value resolves to an existing vault note or is being created in this same pass. If an FK target doesn't exist and isn't being created, write the value as a string but add a `# unresolved FK` comment — don't skip the note.
 
 **f. Update CATALOG.md**
-Read `~/.mindframe/vault/CATALOG.md`. Add rows for new entities; update rows where frontmatter changed. Never remove a row unless its note file was deleted. Re-sort each section by name/slug.
+Read `$VAULT/CATALOG.md`. Add rows for new entities; update rows where frontmatter changed. Never remove a row unless its note file was deleted. Re-sort each section by name/slug.
 
 **g. Commit**
-If the vault is a git repo, commit: `sync: pull from <source> (<N> entities, <M> new)`.
+If `$VAULT` is a git repo, commit: `sync: pull from <source> (<N> entities, <M> new)`.
 
 ## Step 3 — Schedule
 
 Dispatcher wiring and cron scheduling are set up automatically when a connection is made via `/mindframe:connect`. The operator should not need to wire this manually.
 
-**How automatic sync triggers work:**
-- **Event-driven sources (GitHub):** the dispatcher polls via an event-source YAML; push/repository events route to `spawn:vault-sync` with `brief: { source: github }`.
-- **Schedule-based sources (Confluence, REST APIs):** a cron job posts a synthetic event (`source: vault-sync-schedule, event_type: <source>`) to the dispatcher, which routes it to `spawn:vault-sync`.
+A workspace's event-sources, routes, and recipes live in its own partition
+(`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/`); the one shared dispatcher
+reads them and derives the workspace from the source, so the spawned sync runs in
+the right workspace's HOME.
 
-Both paths spawn the `vault-sync` recipe, which runs this skill. The cron fires at the schedule declared in the connector's `sync.schedule` field.
+**How automatic sync triggers work:**
+- **Event-driven sources (GitHub):** the dispatcher polls via an event-source YAML in the workspace's partition; push/repository events route to `spawn:vault-sync` with `brief: { workspace: <id>, source: github }`.
+- **Schedule-based sources (Confluence, REST APIs):** a cron job posts a synthetic event (`source: vault-sync-schedule, event_type: <source>`) to the dispatcher, which routes it to `spawn:vault-sync` with the workspace in the brief.
+
+Both paths spawn the `vault-sync` recipe, which runs this skill with `WS_ID` set
+from `brief.workspace`. The cron fires at the schedule declared in the connector's
+`sync.schedule` field.
 
 If the operator asks about a wiring issue or sync is not triggering, run `/mindframe:doctor` — it checks the recipe, channels.yaml routes, event-source YAMLs, and cron entries and reports what's broken.
 
