@@ -85,6 +85,34 @@ box; the Surface serves the page and proxies messages. There is no second
 - **Subscription auth only.** Every `claude` process runs on the Claude Code
   subscription. No `ANTHROPIC_API_KEY` anywhere in the bundle.
 
+## Local development — always use the dev stack
+
+**Do mindframe dev work against the dev stack, never the production stack.** The
+production stack (the installed `~/.claude/plugins` copies, real `~/.mindframe`,
+real vault, systemd daemons) serves the operator's actual workspaces — do not
+edit-and-restart it to test changes.
+
+The `mindframe-dev` skill (`skills/mindframe-dev/mindframe_dev.py`) boots the
+**working-tree source** of all four daemons into a throwaway, isolated `$HOME`
+(`~/.mindframe-dev/home`) on a private port block, with zero contact with the
+real `~/.mindframe`. Edits to the local repos take effect on the next `up` — no
+reinstall.
+
+```bash
+python3 skills/mindframe-dev/mindframe_dev.py up      # boot from source (--fresh wipes the dev home)
+python3 skills/mindframe-dev/mindframe_dev.py status  # per-daemon pid + health
+python3 skills/mindframe-dev/mindframe_dev.py down     # stop (--wipe also clears the dev home)
+```
+
+| Surface | Hostname | Dashboard port | Data home |
+|---|---|---|---|
+| **dev** (work here) | `mindframe-dev.localhost` | 7174 | `~/.mindframe-dev/home` |
+| production (don't touch for dev) | `mindframe.localhost` / `mindframe.softwaresoftware.dev` | 5174 | `~/.mindframe` |
+
+After changes, `mindframe_dev.py up --fresh` must stay green and
+`/mindframe:doctor` must pass. See the skill's `SKILL.md` for the full command
+set and the hostname mapping (`host`).
+
 ## Cross-cutting concerns (not layers)
 
 These act *on* the stack rather than being part of it:
