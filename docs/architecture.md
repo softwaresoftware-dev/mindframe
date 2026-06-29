@@ -40,7 +40,7 @@ listing the operator's workspaces, each workspace's **home** at `/w/<id>/` — t
 calm launcher: one "What should we work on?" input (typed text creates a
 purposeful frame; empty opens a launchpad), the operator's attention in a few
 lines (inbox with provenance, resume, recent activity), app chips, and drawers
-(frames, watches, agents, knowledge, connections) — and each mindframe at
+(frames, agents, runs, knowledge, connections) — and each mindframe at
 `/w/<id>/m/<frame>`. A `WorkspaceMiddleware` strips the `/w/<id>` prefix and the
 server resolves frames/vault per request from
 `~/.mindframe/workspaces/<id>/.mindframe/` (there is no global frames/vault).

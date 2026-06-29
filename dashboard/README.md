@@ -22,7 +22,7 @@ mesh channel).
 `/` is the **calm launcher**: one "What should we work on?" input — typed
 text creates a purposeful frame directly, empty opens a launchpad — then the
 operator's attention in a few lines (inbox deliveries with provenance, resume,
-recent activity), app chips, and a footer opening drawers for frames, watches,
+recent activity), app chips, and a footer opening drawers for frames, agents, runs,
 agents, knowledge, and connections.
 
 ## Endpoints
@@ -45,7 +45,10 @@ agents, knowledge, and connections.
 | `GET /api/vault/graph` | Node-link graph from `[[wikilinks]]` + frontmatter foreign keys (`?limit=` nodes, default 500). |
 | `GET /api/connections` | Live discovery, presence only: `claude mcp list` + connector-skill `connection:` fingerprint scan, minus the bundle's own runtime (browser-bridge kept). Cached ~30s, background-warmed. |
 | `GET /api/events` | Dispatcher routes from `~/.dispatcher/channels.yaml`, grouped by source. Read-only. |
-| `GET /api/agents` | Recipe definitions (`~/.dispatcher/recipes/`) + live taskpilot tasks (`~/.taskpilot/taskpilot.db` × live tmux sessions). Read-only. |
+| `GET /api/agents` | Standing agents — recipes joined with their routes (live + paused), recent runs, and deliveries. The operator-facing automation list. |
+| `POST /api/agents/<id>/pause` · `/resume` · `/open` | Park / unpark an agent's routes (the dispatcher stops / resumes firing it), or open its singleton manager mindframe. |
+| `GET /api/runs` | Live + recent (48h) taskpilot runs, classified `frame` / `agent-run` / `task`. `POST /api/runs/<id>/stop` kills one. |
+| `GET /api/activity` | The home feed: deliveries, frame work, and agent runs from the last 48h, newest first. Read-only. |
 | `GET /artifacts/<id>/<path>` | Sibling files an agent writes next to its page (traversal-checked). |
 | `GET /<path>` | SPA fallback — serves `public/`. |
 
@@ -83,7 +86,7 @@ server-side only.
 | `MINDFRAME_TASKPILOT_DAEMON` | `http://127.0.0.1:8912` | Agent-runtime daemon for spawn/message/kill. |
 | `MINDFRAME_TASKPILOT_HOME` | `~/.taskpilot` | Taskpilot home, used to locate isolated-spawn transcripts. |
 | `MINDFRAME_DISPATCHER_HOME` | `~/.dispatcher` | Dispatcher home (`channels.yaml`, `recipes/`) for the events/agents feeds. |
-| `MINDFRAME_TASKPILOT_DB` | `~/.taskpilot/taskpilot.db` | Taskpilot DB read (read-only) by `/api/agents`. |
+| `MINDFRAME_TASKPILOT_DB` | `~/.taskpilot/taskpilot.db` | Taskpilot DB read (read-only) by `/api/runs` and `/api/agents`. |
 | `MINDFRAME_CORS_ORIGINS` | _(none)_ | Cross-origin allowlist. Unset by default — the UI is same-origin; CORS middleware mounts only if set. |
 
 The vault path is **not** configurable — `~/.mindframe/vault`, hardcoded.

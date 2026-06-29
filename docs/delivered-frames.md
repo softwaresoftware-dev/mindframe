@@ -57,15 +57,17 @@ DELIVER YOUR RESULT AS A MINDFRAME — the operator reviews and decides there.
      {"id": "<your task id>", "title": "<short deliverable title>",
       "task_id": "<your task id>", "status": "active",
       "kind": "delivered",
-      "origin": {"watch": "<your recipe id>",
+      "origin": {"agent": "<your recipe id>",
                  "event": "<one-line event description>",
                  "at_epoch": <unix seconds now>},
       "prompt": "<2-4 sentences for your successor: what this frame is, what
                  work produced it, where supporting material lives, and how
                  to continue helping the operator>"}
    kind+origin place the frame in the operator's INBOX with provenance
-   ("delivered by pr-prep · 8:02"); a newer delivery from the same watch
-   supersedes an older unhandled one (it auto-archives). The prompt field
+   ("delivered by pr-prep · 8:02"); a newer delivery from the same agent
+   supersedes an older unhandled one (it auto-archives). The dashboard still
+   reads the legacy `origin.watch` for frames delivered before the rename. The
+   prompt field
    seeds the revival brief — write it as a handoff.
 
 5. The frame appears in the operator's dock automatically. If a notification

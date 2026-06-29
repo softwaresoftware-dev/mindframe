@@ -147,6 +147,9 @@ These act *on* the stack rather than being part of it:
 
 - `docs/architecture.md` — the six layers in depth: what runs each, the state it
   holds, and the runtime flow. The canonical architecture reference.
+- `docs/agents-model.md` — the product vocabulary (agent / run / event /
+  connection / mindframe) and the watch→agent, adapter→connection reframe.
+  Read for what the user-facing nouns mean and why.
 - `docs/single-stack-contract.md` — the single-stack runtime contract (ports,
   env, partition layout, auth seeding, `/w/<id>/`, per-task HOME, dispatcher
   workspace-derivation) + the **replication map** across mindframe + taskpilot +
@@ -213,6 +216,6 @@ mindframe owns its knowledge layer directly now.)
 - **daemon-manager follow-ups** (cross-repo): post-restart health verification
   in sync.py (found 2026-06-12: a failed restart reports success), in-tree
   venv rebuild on version bump, agents-survive-restart despite KillMode.
-- **Watch noise at volume** — supersede-within-watch works for one watch;
-  many chatty watches will still flood the inbox. Consider per-watch digest
+- **Agent noise at volume** — supersede-within-agent works for one agent;
+  many chatty agents will still flood the inbox. Consider per-agent digest
   or quiet hours when real volume arrives.

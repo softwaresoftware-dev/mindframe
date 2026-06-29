@@ -308,7 +308,8 @@ table in [`../dashboard/README.md`](../dashboard/README.md).
 | `POST /w/<id>/api/dashboard-event` | `{event_type, data?}` — proxy to the dispatcher's `/api/event` with `source: dashboard-button`. The server reads the bearer from `~/.mindframe/secrets/dispatcher-bearer.token`; the browser never sees it. |
 | `GET /w/<id>/api/vault[/entries\|/graph]` | The workspace's vault at `~/.mindframe/workspaces/<id>/.mindframe/vault`: counts + last-modified; recent entries; and a node-link graph (edges from `[[wikilinks]]` + frontmatter FKs, capped at `?limit=`). |
 | `GET /w/<id>/api/connections` | The workspace's connections — presence only: its `.claude.json` MCPs plus a scan of its `.claude/skills` for connector skills (`SKILL.md` with a `connection:` fingerprint), minus the bundle's own runtime plugins. No auth probing. |
-| `GET /api/events`, `/api/agents`, `/api/runs`, `/api/activity` | Read-only system views (dispatcher routes/recipes, taskpilot tasks, recent activity). **Not yet workspace-scoped** — they read the shared dispatcher/taskpilot state; see [`single-stack-contract.md`](single-stack-contract.md). |
+| `GET /api/agents` (+ `POST /api/agents/<id>/{pause,resume,open}`) | The standing agents: recipes joined with routes, recent runs, deliveries; pause/resume/open manage them. |
+| `GET /api/events`, `/api/runs`, `/api/activity` | Read-only system views (dispatcher routes, taskpilot runs, recent activity). **Not yet workspace-scoped** — they read the shared dispatcher/taskpilot state; see [`single-stack-contract.md`](single-stack-contract.md). |
 | `GET /w/<id>/artifacts/<frame>/<path>` | Sibling files an agent writes next to its `index.html` (traversal-checked). |
 | `GET /<path>` | Static / SPA fallback — serves `public/`. |
 
