@@ -170,7 +170,7 @@ async function drawerAgents(body) {
       e.preventDefault();
       const txt = e.target.querySelector("input").value.trim();
       if (!txt) return;
-      createMindframe(`Set up a new agent: ${txt}. Survey my connections and event sources, existing routes (~/.dispatcher/channels.yaml) and recipes; draft the agent (recipe + trigger); show the full config as a pending action and wait for my approval before writing anything.`);
+      createMindframe(`Set up a new agent: ${txt}. Survey my connections and event sources, existing routes (~/.mindframe/dispatcher/channels.yaml) and recipes; draft the agent — a recipe under ~/.mindframe/dispatcher/recipes/<name>/ plus a route in ~/.mindframe/dispatcher/channels.yaml; show the full config as a pending action and wait for my approval before writing anything.`);
     });
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>couldn't load agents: ${escapeHtml(String(e))}</p></div>`;
@@ -286,9 +286,9 @@ const DOMAIN_PROMPTS = {
     composing: "surveying your recipes and live tasks",
     prompt: `You are the AGENTS view. The operator opened you to see and manage what can run for them — agent recipes (templates an event can spawn) and the live taskpilot tasks running now. Show them what they have, flag anything in trouble, and suggest what to do.
 
-SURVEY: GET {origin}/api/agents for your standing agents and {origin}/api/runs for live + recent runs (each run's status and age). Go deeper where it matters: list ~/.dispatcher/recipes and read a recipe.yaml; note any task marked crashed/stale.
+SURVEY: GET {origin}/api/agents for your standing agents and {origin}/api/runs for live + recent runs (each run's status and age). Go deeper where it matters: list ~/.mindframe/dispatcher/recipes and read a recipe.yaml; note any task marked crashed/stale.
 SHOW + JUDGE: your recipes (what CAN run, and which event triggers each) and your live tasks (what IS running). Flag problems plainly: a crashed task, a long-running zombie, a recipe no event ever triggers (dead weight), a recipe that targets a tool you aren't connected to. If nothing is wrong, say so and suggest one useful agent to add.
-SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never fires — wire or remove it", "you have Calendar connected but no meeting-prep agent — create one". Creating an agent means authoring a recipe at ~/.dispatcher/recipes/<name>/recipe.yaml.`,
+SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never fires — wire or remove it", "you have Calendar connected but no meeting-prep agent — create one". Creating an agent means authoring a recipe at ~/.mindframe/dispatcher/recipes/<name>/recipe.yaml.`,
   },
   connections: {
     title: "Connections",
@@ -302,11 +302,11 @@ SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the financ
   events: {
     title: "Event sources",
     composing: "reading your dispatcher routes",
-    prompt: `You are the EVENT SOURCES view. The operator opened you to see and manage what wakes an agent — dispatcher routes in ~/.dispatcher/channels.yaml, each mapping (source, event_type) to spawn:<recipe> or session:<name>. Show their routes, flag anything wrong, and suggest what to wire.
+    prompt: `You are the EVENT SOURCES view. The operator opened you to see and manage what wakes an agent — dispatcher routes in ~/.mindframe/dispatcher/channels.yaml, each mapping (source, event_type) to spawn:<recipe> or session:<name>. Show their routes, flag anything wrong, and suggest what to wire.
 
-SURVEY: GET {origin}/api/events for the routes grouped by source. Cross-check the source of truth: read ~/.dispatcher/channels.yaml and list ~/.dispatcher/recipes. Also GET {origin}/api/connections to see which tools are connected but not yet wired.
+SURVEY: GET {origin}/api/events for the routes grouped by source. Cross-check the source of truth: read ~/.mindframe/dispatcher/channels.yaml and list ~/.mindframe/dispatcher/recipes. Also GET {origin}/api/connections to see which tools are connected but not yet wired.
 SHOW + JUDGE: your routes, grouped by source, each showing what it spawns. Flag problems plainly: a route pointing at a recipe that doesn't exist, a connected tool with no route (events passing by unused), or no routes at all.
-SUGGEST (grounded, as buttons): e.g. "you have GitHub connected but nothing watches it — prep me when a PR opens", "Slack is connected but no mention wakes an agent". Wiring a source means adding a route to ~/.dispatcher/channels.yaml mapping (source, event_type) to spawn:<recipe> (creating the recipe too if it doesn't exist yet).`,
+SUGGEST (grounded, as buttons): e.g. "you have GitHub connected but nothing watches it — prep me when a PR opens", "Slack is connected but no mention wakes an agent". Wiring a source means adding a route to ~/.mindframe/dispatcher/channels.yaml mapping (source, event_type) to spawn:<recipe> (creating the recipe too if it doesn't exist yet).`,
   },
 };
 
@@ -808,7 +808,7 @@ const LAUNCHPAD_PROMPT = `You are the LAUNCHPAD — the operator just clicked "N
 STEP 1 — Survey (do real work, never guess):
 - Knowledge base: list ~/.mindframe/vault and read enough to know the entity types, rough counts, and a few notable nodes (real repos, people, projects, incidents, decisions).
 - Connections: run "claude mcp list"; check "gh auth status", and "gcloud auth list" / "aws sts get-caller-identity" if those CLIs exist. Note what is actually reachable.
-- Already wired (so you do not suggest duplicates): read ~/.dispatcher/channels.yaml (existing routes) and list ~/.dispatcher/recipes (existing agents).
+- Already wired (so you do not suggest duplicates): read ~/.mindframe/dispatcher/channels.yaml (existing routes) and list ~/.mindframe/dispatcher/recipes (existing agents).
 - You may also GET {origin}/api/vault, {origin}/api/connections, {origin}/api/events, and {origin}/api/agents for a fast aggregated view of the same facts.
 
 STEP 2 — Compose ONE page (the whole index.html):

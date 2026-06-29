@@ -44,7 +44,7 @@ agents, knowledge, and connections.
 | `GET /api/vault/entries` | Recent entries (`?limit=`, default 50). |
 | `GET /api/vault/graph` | Node-link graph from `[[wikilinks]]` + frontmatter foreign keys (`?limit=` nodes, default 500). |
 | `GET /api/connections` | Live discovery, presence only: `claude mcp list` + connector-skill `connection:` fingerprint scan, minus the bundle's own runtime (browser-bridge kept). Cached ~30s, background-warmed. |
-| `GET /api/events` | Dispatcher routes from `~/.dispatcher/channels.yaml`, grouped by source. Read-only. |
+| `GET /api/events` | Dispatcher routes from the active workspace's `channels.yaml` (`~/.mindframe/dispatcher/`), grouped by source. Read-only. |
 | `GET /api/agents` | Standing agents — recipes joined with their routes (live + paused), recent runs, and deliveries. The operator-facing automation list. |
 | `POST /api/agents/<id>/pause` · `/resume` · `/open` | Park / unpark an agent's routes (the dispatcher stops / resumes firing it), or open its singleton manager mindframe. |
 | `GET /api/runs` | Live + recent (48h) taskpilot runs, classified `frame` / `agent-run` / `task`. `POST /api/runs/<id>/stop` kills one. |

@@ -2003,8 +2003,8 @@ def list_connections() -> Response:
 # Two endpoints that back the hub's Events and Agents drawers. Each maps one
 # bucket of the bundle's mental model to its real on-disk source of truth:
 #
-#   /api/events  — dispatcher routes      (~/.dispatcher/channels.yaml)
-#   /api/agents  — recipes + taskpilot db (~/.dispatcher/recipes, ~/.taskpilot)
+#   /api/events  — dispatcher routes      (~/.mindframe/dispatcher/channels.yaml)
+#   /api/agents  — recipes + taskpilot db (~/.mindframe/dispatcher/recipes, ~/.taskpilot)
 #
 # (The former /api/capabilities — MCPs + plugin skills — was removed with the
 # /system overview it backed; deprecated 2026-06-08.)
@@ -2013,6 +2013,15 @@ def list_connections() -> Response:
 # degrades to an empty list with a `present: false` flag, never a 500.
 
 DISPATCHER_HOME = Path(os.environ.get("MINDFRAME_DISPATCHER_HOME", str(Path.home() / ".dispatcher")))
+
+
+def dispatcher_home() -> Path:
+    """The active workspace's dispatcher partition — channels.yaml + recipes +
+    event-sources — matching where the dispatcher daemon reads per-workspace
+    config (DISPATCHER_WORKSPACES_ROOT/<ws>/.mindframe/dispatcher). Falls back
+    to the global MINDFRAME_DISPATCHER_HOME when no workspace is active."""
+    ws = _current_ws.get()
+    return ws_home(ws) / ".mindframe" / "dispatcher" if ws else DISPATCHER_HOME
 TASKPILOT_DB = Path(os.environ.get("MINDFRAME_TASKPILOT_DB", str(Path.home() / ".taskpilot" / "taskpilot.db")))
 
 _sys_cache: dict[str, dict[str, Any]] = {}
@@ -2043,7 +2052,7 @@ def _split_target(target: str) -> dict[str, str]:
 def list_event_sources() -> Response:
     """Dispatcher event-source routes, grouped by source. Each route says which
     (source, event_type) pair fires which target (spawn:<recipe> | session:<name>)."""
-    chan = DISPATCHER_HOME / "channels.yaml"
+    chan = dispatcher_home() / "channels.yaml"
     if not chan.is_file():
         return JSONResponse({"sources": [], "route_count": 0, "dispatcher_present": False})
     data = _load_yaml(chan) or {}
@@ -2078,15 +2087,15 @@ def _tmux_sessions() -> set[str]:
 
 
 def _agent_definitions() -> list[dict[str, Any]]:
-    """Recipes under ~/.dispatcher/recipes/<name>/recipe.yaml — the spawn
+    """Recipes under ~/.mindframe/dispatcher/recipes/<name>/recipe.yaml — the spawn
     templates an event route can target. These are what CAN run."""
-    recipes_dir = DISPATCHER_HOME / "recipes"
+    recipes_dir = dispatcher_home() / "recipes"
     out: list[dict[str, Any]] = []
     if not recipes_dir.is_dir():
         return out
     # Map recipe name -> the (source, event_type) routes that trigger it.
     triggers: dict[str, list[str]] = {}
-    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    chan = _load_yaml(dispatcher_home() / "channels.yaml") or {}
     for r in (chan.get("routes") or []):
         if isinstance(r, dict):
             t = _split_target(r.get("target", ""))
@@ -2120,8 +2129,8 @@ def _agent_definitions() -> list[dict[str, Any]]:
 # instruction, drawing a pending action and waiting for approval.
 
 AGENT_BRIEF = """You are the manager of ONE agent — an automation the operator owns. The agent \
-is '{rid}': recipe at ~/.dispatcher/recipes/{rid}/ (recipe.yaml + brief.json) \
-plus any routes targeting spawn:{rid} in ~/.dispatcher/channels.yaml. You own \
+is '{rid}': recipe at ~/.mindframe/dispatcher/recipes/{rid}/ (recipe.yaml + brief.json) \
+plus any routes targeting spawn:{rid} in ~/.mindframe/dispatcher/channels.yaml. You own \
 exactly ONE file, your page:
 
     {index}
@@ -2162,7 +2171,7 @@ def _paused_triggers() -> dict[str, list[str]]:
     """Recipe name -> (source/event_type) trigger strings parked under the
     channels.yaml `paused_routes:` key. The dispatcher reads only `routes:`,
     so a parked route is inert — that's what pausing IS."""
-    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    chan = _load_yaml(dispatcher_home() / "channels.yaml") or {}
     out: dict[str, list[str]] = {}
     for r in (chan.get("paused_routes") or []):
         if isinstance(r, dict):
@@ -2246,7 +2255,7 @@ def _move_agent_routes(rid: str, pause: bool) -> Response:
         import yaml
     except ImportError:
         return JSONResponse({"error": "PyYAML unavailable"}, status_code=500)
-    chan_path = DISPATCHER_HOME / "channels.yaml"
+    chan_path = dispatcher_home() / "channels.yaml"
     if not chan_path.is_file():
         return JSONResponse({"error": "no channels.yaml"}, status_code=404)
     data = _load_yaml(chan_path) or {}
@@ -2290,7 +2299,7 @@ async def open_agent(rid: str, background_tasks: BackgroundTasks) -> Response:
     Re-opening an existing agent frame just returns its URL — no new mindframe."""
     if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", rid):
         return JSONResponse({"error": "bad agent id"}, status_code=422)
-    if not (DISPATCHER_HOME / "recipes" / rid / "recipe.yaml").is_file():
+    if not (dispatcher_home() / "recipes" / rid / "recipe.yaml").is_file():
         return JSONResponse({"error": f"no recipe '{rid}'"}, status_code=404)
     wid = f"agent-{rid}"[:64]
     fdir = frames_root() / wid
@@ -2349,7 +2358,7 @@ def list_runs() -> Response:
     live = _live_tmux_cached()
     frame_of = _frame_task_index()
     recipes = set()
-    rdir = DISPATCHER_HOME / "recipes"
+    rdir = dispatcher_home() / "recipes"
     if rdir.is_dir():
         recipes = {d.name for d in rdir.iterdir() if d.is_dir()}
     now = time.time()
