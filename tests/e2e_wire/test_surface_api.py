@@ -117,9 +117,13 @@ def down_daemon(monkeypatch):
 
 @pytest.fixture()
 def frames_root(tmp_path, monkeypatch):
-    root = tmp_path / "frames"
-    root.mkdir()
-    monkeypatch.setattr(srv, "FRAMES_ROOT", root)
+    # Multi-tenant server: frames resolve per-request via frames_root() =
+    # ws_home()/.mindframe/frames. A bare request (no /w/<id> prefix) has no
+    # workspace, so ws_home() falls back to WORKSPACES_ROOT/__noworkspace__.
+    # Point WORKSPACES_ROOT at tmp and seed that partition's frames dir.
+    monkeypatch.setattr(srv, "WORKSPACES_ROOT", tmp_path)
+    root = tmp_path / "__noworkspace__" / ".mindframe" / "frames"
+    root.mkdir(parents=True)
     # Keep artifact resolution out of the repo's real dashboard/artifacts dir.
     monkeypatch.setattr(srv, "ARTIFACTS_ROOT", tmp_path / "artifacts-none")
     return root
@@ -141,13 +145,17 @@ def _make_frame(root: pathlib.Path, mid: str, task_id: str | None = None,
 def test_health_shape():
     j = client.get("/api/health").json()
     assert j["ok"] is True
-    assert set(j) == {"ok", "port", "dispatcher_url", "dispatcher_bearer_present"}
+    # Core contract; the multi-tenant server also adds `workspaces` + `auth`.
+    assert {"ok", "port", "dispatcher_url", "dispatcher_bearer_present"} <= set(j)
 
 
 # --------------------------- create ---------------------------
 
 
-def test_create_returns_instantly_and_spawns_in_background(frames_root, stub_daemon):
+def test_create_returns_instantly_and_spawns_in_background(frames_root, stub_daemon, monkeypatch):
+    # Bypass the pre-spawn auth gate (no signed-in workspace in this hermetic
+    # setup); we're testing the mint + background-spawn contract, not auth.
+    monkeypatch.setattr(srv, "_auth_status", lambda ws=None: {"status": "ready", "message": "", "fix": ""})
     r = client.post("/api/frames/create", json={"prompt": "watch the build", "title": "Build"})
     assert r.status_code == 200
     j = r.json()
