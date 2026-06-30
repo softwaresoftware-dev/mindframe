@@ -194,32 +194,38 @@ For non-GitHub sources (Confluence, REST APIs), there is no dispatcher adapter. 
 
 ### 3. Wire schedule-based sync (`sync.schedule` is set)
 
-The schedule path works by posting a synthetic event to the dispatcher on a cron timer. The dispatcher spawns the vault-sync agent via the normal route mechanism — no new adapters needed.
-
-**Add the channels.yaml route for the synthetic event:**
-```yaml
-- source: vault-sync-schedule
-  event_type: <connection-name>    # e.g. confluence
-  target: spawn:vault-sync
-  brief:
-    source: <connection-name>
-```
+Schedules are just events. Write a **schedule event-source** plus a route; the
+poller's `schedule` adapter fires a synthetic event when the cron is due (per
+workspace, no OS cron, no webhook) and spawns vault-sync via the normal route.
 
 **Map the schedule to a cron expression:**
 - `hourly` → `0 * * * *`
 - `daily` → `0 7 * * *`
 - `weekly` → `0 7 * * 1`
-- `manual` → skip (no cron, only `/mindframe:sync <source>` by hand)
+- `manual` → skip (no event-source; only `/mindframe:sync <source>` by hand)
 
-**Install the cron entry:**
-```bash
-DISPATCHER_TOKEN_FILE=~/.mindframe/secrets/dispatcher-bearer.token
-CRON_CMD="bash -lc \"curl -sf -m 30 -H 'Authorization: Bearer \$(cat $DISPATCHER_TOKEN_FILE)' -d '{\\\"source\\\":\\\"vault-sync-schedule\\\",\\\"event_type\\\":\\\"<source>\\\",\\\"data\\\":{}}' http://127.0.0.1:8911/api/event\""
-CRON_ENTRY="<cron-expression> $CRON_CMD # vault-sync-<source>"
-(crontab -l 2>/dev/null | grep -v "# vault-sync-<source>"; echo "$CRON_ENTRY") | crontab -
+**Write the schedule event-source** at the workspace partition's
+`.mindframe/dispatcher/event-sources/vault-sync-<source>-schedule.yaml`:
+```yaml
+name: vault-sync-<source>-schedule
+system: schedule
+schedule:
+  cron: "0 7 * * *"        # from the mapping above
+  event_type: <source>     # e.g. confluence
 ```
 
-The `bash -l` loads the user's profile (env vars available). The token is read at runtime from the secrets file. If the dispatcher is down when the cron fires, the curl fails silently — the next tick retries. If sources have BOTH triggers AND a schedule, wire both; they are complementary.
+**Add the channels.yaml route** (the source is `schedule`, the adapter's system):
+```yaml
+- source: schedule
+  event_type: <source>     # e.g. confluence
+  target: spawn:vault-sync
+  brief:
+    source: <source>
+```
+
+If the dispatcher is down when a scheduled minute passes, the poller fires it on
+recovery (coalesced, ~25h cap). If a source has BOTH event triggers AND a
+schedule, wire both; they are complementary.
 
 ### 4. Run the initial sync
 

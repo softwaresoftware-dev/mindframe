@@ -77,7 +77,7 @@ If `$VAULT` is a git repo, commit: `sync: pull from <source> (<N> entities, <M> 
 
 ## Step 3 — Schedule
 
-Dispatcher wiring and cron scheduling are set up automatically when a connection is made via `/mindframe:connect`. The operator should not need to wire this manually.
+Dispatcher wiring and schedule event-sources are set up automatically when a connection is made via `/mindframe:connect`. The operator should not need to wire this manually.
 
 A workspace's event-sources, routes, and recipes live in its own partition
 (`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/`); the one shared dispatcher
@@ -86,13 +86,13 @@ the right workspace's HOME.
 
 **How automatic sync triggers work:**
 - **Event-driven sources (GitHub):** the dispatcher polls via an event-source YAML in the workspace's partition; push/repository events route to `spawn:vault-sync` with `brief: { workspace: <id>, source: github }`.
-- **Schedule-based sources (Confluence, REST APIs):** a cron job posts a synthetic event (`source: vault-sync-schedule, event_type: <source>`) to the dispatcher, which routes it to `spawn:vault-sync` with the workspace in the brief.
+- **Schedule-based sources (Confluence, REST APIs):** a `schedule` event-source fires a synthetic event (`source: schedule, event_type: <source>`) when its cron is due; the poller routes it to `spawn:vault-sync` with the workspace in the brief.
 
 Both paths spawn the `vault-sync` recipe, which runs this skill with `WS_ID` set
-from `brief.workspace`. The cron fires at the schedule declared in the connector's
-`sync.schedule` field.
+from `brief.workspace`. The schedule event-source fires at the cadence from the
+connector's `sync.schedule` field.
 
-If the operator asks about a wiring issue or sync is not triggering, run `/mindframe:doctor` — it checks the recipe, channels.yaml routes, event-source YAMLs, and cron entries and reports what's broken.
+If the operator asks about a wiring issue or sync is not triggering, run `/mindframe:doctor` — it checks the recipe, channels.yaml routes, and event-source YAMLs (including schedule sources) and reports what's broken.
 
 ## Step 4 — Report
 

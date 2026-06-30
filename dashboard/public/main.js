@@ -170,7 +170,7 @@ async function drawerAgents(body) {
       e.preventDefault();
       const txt = e.target.querySelector("input").value.trim();
       if (!txt) return;
-      createMindframe(`Set up a new agent: ${txt}. Survey my connections and event sources, existing routes (~/.mindframe/dispatcher/channels.yaml) and recipes; draft the agent — a recipe under ~/.mindframe/dispatcher/recipes/<name>/ plus a route in ~/.mindframe/dispatcher/channels.yaml; show the full config as a pending action and wait for my approval before writing anything.`);
+      createMindframe(`Set up a new agent: ${txt}. Survey my connections, event sources, and existing routes/recipes in ~/.mindframe/dispatcher/. Draft the agent: a recipe under ~/.mindframe/dispatcher/recipes/<name>/, a trigger, and a route. The trigger is either an EVENT (e.g. a github event-source) or a SCHEDULE — for a schedule, write a schedule event-source (event-sources/<name>.yaml with system: schedule and a cron like '0 7 * * *') and route it with source: schedule. Show the full config as a pending action and wait for my approval before writing anything.`);
     });
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>couldn't load agents: ${escapeHtml(String(e))}</p></div>`;
