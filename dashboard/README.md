@@ -49,7 +49,7 @@ agents, knowledge, and connections.
 | `POST /api/agents/<id>/pause` · `/resume` · `/open` | Park / unpark an agent's routes (the dispatcher stops / resumes firing it), or open its singleton manager mindframe. |
 | `GET /api/runs` | Live + recent (48h) taskpilot runs, classified `frame` / `agent-run` / `task`. `POST /api/runs/<id>/stop` kills one. |
 | `GET /api/activity` | The home feed: deliveries, frame work, and agent runs from the last 48h, newest first. Read-only. |
-| `GET /artifacts/<id>/<path>` | Sibling files an agent writes next to its page (traversal-checked). |
+| `GET /artifacts/<id>/<path>` | Sibling files an agent writes next to its `index.html` in the workspace's frame dir (`frames_root()/<id>/`, traversal-checked). |
 | `GET /<path>` | SPA fallback — serves `public/`. |
 
 The dispatcher and taskpilot daemons are optional: the dashboard runs without
@@ -101,5 +101,5 @@ The vault path is **not** configurable — `~/.mindframe/vault`, hardcoded.
 | `public/main.js` | SPA logic — calm launcher, activity feed, management drawers. |
 | `public/surface.html` | Per-mindframe shell served at `/m/<id>`. The "working" indicator derives from the transcript's mtime; Send re-enables when the agent goes idle after replying, or after a 40s no-response warning. |
 | `public/style.css` | Chrome. |
-| `artifacts/<id>/` | Sibling files an agent writes next to its page. |
+
 | `tests/test_graph.py` | Unit tests for the vault graph builder. |

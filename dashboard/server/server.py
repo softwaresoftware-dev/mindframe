@@ -55,7 +55,6 @@ from pydantic import BaseModel, Field
 
 SERVER_DIR = Path(__file__).resolve().parent
 ROOT = SERVER_DIR.parent
-ARTIFACTS_ROOT = ROOT / "artifacts"
 WEB_ROOT = ROOT / "public"
 _MINDFRAME_HOME = Path(os.environ.get("MINDFRAME_HOME", str(Path.home() / ".mindframe")))
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -210,9 +209,7 @@ def _warm_connections_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _configure_logging()
-    ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
     log(f"server on http://127.0.0.1:{PORT}")
-    log(f"artifacts: {ARTIFACTS_ROOT}")
     threading.Thread(target=_warm_connections_loop, daemon=True).start()
     yield
 
@@ -1442,18 +1439,14 @@ async def api_dashboard_event(body: DashboardEvent) -> Response:
 @app.get("/artifacts/{sid}/{path:path}")
 def serve_artifact(sid: str, path: str) -> Response:
     """Serve sibling files referenced by a mindframe's page (images, data,
-    sub-pages an agent writes next to its index.html).
-
-    Resolution order (first hit wins):
-      1. dashboard/artifacts/<sid>/<path>
-      2. <frames_root()>/<sid>/<path>
-
-    Each lookup is sandbox-checked so `..` traversal can't escape.
+    sub-pages an agent writes next to its index.html) — read from the active
+    workspace's frame dir, <frames_root()>/<sid>/<path>. Sandbox-checked so
+    `..` traversal can't escape.
     """
     if not (SID_RE.match(sid) or FRAME_ID_RE.match(sid)):
         return PlainTextResponse("not found", status_code=404)
 
-    for root in (ARTIFACTS_ROOT, frames_root()):
+    for root in (frames_root(),):
         if not root.is_dir():
             continue
         base = root / sid
@@ -2350,7 +2343,7 @@ def list_runs() -> Response:
     try:
         con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
         rows = con.execute(
-            "SELECT task_id, name, status, updated_at FROM tasks "
+            "SELECT task_id, name, status, updated_at, home FROM tasks "
             "ORDER BY updated_at DESC LIMIT 200").fetchall()
         con.close()
     except sqlite3.Error:
@@ -2362,8 +2355,12 @@ def list_runs() -> Response:
     if rdir.is_dir():
         recipes = {d.name for d in rdir.iterdir() if d.is_dir()}
     now = time.time()
+    ws = _current_ws.get()
+    ws_path = str(ws_home(ws)) if ws else None
     out = []
-    for task_id, name, status, updated_at in rows:
+    for task_id, name, status, updated_at, home in rows:
+        if ws_path is not None and home != ws_path:
+            continue
         try:
             dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
             at = dt.replace(tzinfo=timezone.utc).timestamp()
@@ -2457,13 +2454,17 @@ def activity_feed(limit: int = 30) -> Response:
         try:
             con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
             rows = con.execute(
-                "SELECT task_id, name, status, updated_at FROM tasks "
+                "SELECT task_id, name, status, updated_at, home FROM tasks "
                 "ORDER BY updated_at DESC LIMIT 100").fetchall()
             con.close()
         except sqlite3.Error:
             rows = []
-        for task_id, name, status, updated_at in rows:
+        ws = _current_ws.get()
+        ws_path = str(ws_home(ws)) if ws else None
+        for task_id, name, status, updated_at, home in rows:
             if task_id in frame_ids:
+                continue
+            if ws_path is not None and home != ws_path:
                 continue
             try:
                 dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))

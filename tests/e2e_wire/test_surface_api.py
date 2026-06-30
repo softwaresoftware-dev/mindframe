@@ -124,8 +124,6 @@ def frames_root(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "WORKSPACES_ROOT", tmp_path)
     root = tmp_path / "__noworkspace__" / ".mindframe" / "frames"
     root.mkdir(parents=True)
-    # Keep artifact resolution out of the repo's real dashboard/artifacts dir.
-    monkeypatch.setattr(srv, "ARTIFACTS_ROOT", tmp_path / "artifacts-none")
     return root
 
 
@@ -487,10 +485,10 @@ def test_runs_classify_and_stop(frames_root, stub_daemon, tmp_path, monkeypatch)
     monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
     db = tmp_path / "tp.db"
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT)")
+    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT, home TEXT)")
     now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    con.execute("INSERT INTO tasks VALUES ('frame1', 'frame1', 'running', ?)", (now,))
-    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', ?)", (now,))
+    con.execute("INSERT INTO tasks VALUES ('frame1', 'frame1', 'running', ?, '')", (now,))
+    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', ?, '')", (now,))
     con.commit(); con.close()
     monkeypatch.setattr(srv, "TASKPILOT_DB", db)
     monkeypatch.setattr(srv, "_live_tmux_cached", lambda: {"frame1"})
