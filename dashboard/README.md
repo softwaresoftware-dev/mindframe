@@ -39,7 +39,6 @@ agents, knowledge, and connections.
 | `POST /api/frame/<id>/message` | `{text}` — deliver a message to the frame's agent via taskpilot. |
 | `GET /api/frame/<id>/activity` | Tail the agent's transcript (`?offset=`, `?file=`); reports cognition events + `mtime`/`model`/`context`. |
 | `DELETE /api/frame/<id>` | Kill the frame's agent (best-effort), then remove the frame dir. |
-| `POST /api/dashboard-event` | `{event_type, data?}` — proxy to the dispatcher's `/api/event`; the server holds the bearer, the browser never sees it. |
 | `GET /api/vault` | The single vault at `~/.mindframe/vault`: counts per entity type, last modified. |
 | `GET /api/vault/entries` | Recent entries (`?limit=`, default 50). |
 | `GET /api/vault/graph` | Node-link graph from `[[wikilinks]]` + frontmatter foreign keys (`?limit=` nodes, default 500). |
@@ -81,7 +80,7 @@ server-side only.
 |---|---|---|
 | `PORT` | `5174` | Backend port (also serves the UI). |
 | `MINDFRAME_FRAMES_ROOT` | `~/.mindframe/frames` | Where surface mindframes live (frame dirs holding an `index.html`). |
-| `MINDFRAME_DISPATCHER_URL` | `http://127.0.0.1:8911` | Dispatcher base URL for the `/api/dashboard-event` proxy. |
+| `MINDFRAME_DISPATCHER_URL` | `http://127.0.0.1:8911` | Dispatcher base URL, reported in `/api/health` for diagnostics. |
 | `MINDFRAME_DISPATCHER_BEARER_FILE` | `~/.mindframe/secrets/dispatcher-bearer.token` | File the server reads the dispatcher bearer from. |
 | `MINDFRAME_TASKPILOT_DAEMON` | `http://127.0.0.1:8912` | Agent-runtime daemon for spawn/message/kill. |
 | `MINDFRAME_TASKPILOT_HOME` | `~/.taskpilot` | Taskpilot home, used to locate isolated-spawn transcripts. |

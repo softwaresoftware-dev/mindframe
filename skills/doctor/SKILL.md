@@ -133,7 +133,7 @@ The dashboard is the one app mindframe owns directly (`dashboard/`, FastAPI — 
 - Probe `GET http://127.0.0.1:5174/api/health` → expect `{ ok, port, dispatcher_url, dispatcher_bearer_present, auth, workspaces }`. No response → Tier 1: restart the `mindframe-dashboard` daemon, re-probe.
 - **Multi-tenancy.** `GET /api/workspaces` must list the same workspaces found in check 1, each with a frame count and an `auth` status. A workspace on disk but missing here (or listed but absent on disk) is a finding.
 - **Deployment auth.** `auth.status` in `/api/health` must be `ready`. `api-key-conflict` (an `ANTHROPIC_API_KEY` in the dashboard's env) or `no-login`/`expired` is a Tier-2 finding — use the `fix` the probe returns.
-- `dispatcher_bearer_present: false` is a **Tier 2 warning**: agent-page action buttons via `/api/dashboard-event` 503 until a bearer exists at `~/.mindframe/secrets/dispatcher-bearer.token`. Don't generate one yourself.
+- `dispatcher_bearer_present: false` is a **Tier 2 warning**: the dispatcher's ingest bearer (`~/.mindframe/secrets/dispatcher-bearer.token`) is absent, so authed dispatcher calls (`/api/events`, `/api/direct`) won't work. Don't generate one yourself.
 - Confirm `dashboard/public/` has the static frontend and the backend deps are installed (`dashboard/README.md`). A never-started dashboard is a warning, not a break.
 
 ### [check 7/7] skills & perception

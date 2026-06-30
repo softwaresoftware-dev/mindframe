@@ -6,9 +6,6 @@ them, lists them, serves their pages, and proxies operator messages to their
 agents via the taskpilot daemon. It also surfaces the single knowledge-base
 vault, live connection discovery, and a read-only system overview.
 
-Action buttons inside agent-authored HTML POST to /api/dashboard-event, which
-proxies to the dispatcher with a bearer the server reads from disk.
-
 Endpoints:
 
   - GET  /api/health                       — liveness + dispatcher bearer presence
@@ -18,16 +15,16 @@ Endpoints:
   - GET  /api/frame/<id>/page|rev          — the agent's page + its revision
   - POST /api/frame/<id>/message           — deliver a message to the agent (revives a dead one first)
   - GET  /api/frame/<id>/activity          — tail the agent's cognition log
-  - POST /api/dashboard-event              — proxy to dispatcher (server holds the bearer)
   - GET  /api/vault[/entries|/graph]       — the single knowledge-base vault
   - GET  /api/connections                  — live connection discovery
   - GET  /api/events, /api/agents          — read-only system endpoints
   - GET  /artifacts/<id>/<path>            — serve a frame's sibling files
   - GET  /<path>                           — SPA fallback
 
-FastAPI + uvicorn + httpx. The dispatcher and taskpilot daemons are optional —
-the dashboard runs without them; only the endpoints that talk to each
-(dashboard-event, frame message) fail when its daemon is unreachable.
+FastAPI + uvicorn + httpx. The taskpilot daemon is optional — the dashboard
+runs without it; only the endpoints that talk to it (frame message, spawn) fail
+when it is unreachable. The dispatcher's routes/recipes are read from disk, never
+over HTTP.
 """
 
 from __future__ import annotations
@@ -1378,62 +1375,6 @@ def frame_activity(mid: str, offset: int = 0, file: str = "") -> Response:
 
 # --------------------------- dispatcher proxy ---------------------------
 
-
-class DashboardEvent(BaseModel):
-    """Action-button payload from agent-authored HTML.
-
-    The agent embeds `<button onclick="postEvent({...})">` in its page; the
-    SPA wraps that helper and POSTs here. We forward to the dispatcher's
-    /api/event with our held bearer; the browser never sees the token.
-
-    `event_type` and `data` pass through verbatim. `source` is forced to
-    `dashboard-button` so dispatcher routing can distinguish UI-originated
-    events from external webhooks.
-    """
-    event_type: str = Field(..., min_length=1, max_length=128)
-    data: dict | list | str | int | float | bool | None = None
-
-
-def _read_dispatcher_bearer() -> str | None:
-    """Read the dispatcher bearer token from disk, or None if absent/empty. The
-    server holds this so the browser never sees it (see /api/dashboard-event)."""
-    try:
-        return DISPATCHER_BEARER_FILE.read_text("utf-8").strip() or None
-    except OSError:
-        return None
-
-
-@app.post("/api/dashboard-event")
-async def api_dashboard_event(body: DashboardEvent) -> Response:
-    bearer = _read_dispatcher_bearer()
-    if not bearer:
-        return JSONResponse(
-            {"error": f"dispatcher bearer not found at {DISPATCHER_BEARER_FILE}"},
-            status_code=503,
-        )
-    payload = {
-        "source": "dashboard-button",
-        "event_type": body.event_type,
-        "data": body.data,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(
-                f"{DISPATCHER_URL}/api/event",
-                json=payload,
-                headers={"Authorization": f"Bearer {bearer}"},
-            )
-    except httpx.HTTPError as e:
-        return JSONResponse({"error": f"dispatcher unreachable: {e}"}, status_code=502)
-    if not r.is_success:
-        return JSONResponse(
-            {"error": f"dispatcher rejected event (status {r.status_code})", "body": r.text[:500]},
-            status_code=r.status_code,
-        )
-    try:
-        return JSONResponse(r.json())
-    except ValueError:
-        return JSONResponse({"ok": True, "raw": r.text[:500]})
 
 
 @app.get("/artifacts/{sid}/{path:path}")
