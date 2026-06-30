@@ -119,10 +119,10 @@ async function drawerMindframes(body) {
 const agoM = (ms) => { const m = Math.round((Date.now() - ms) / 60000);
   return m < 1 ? "now" : m < 60 ? m + "m" : m < 1440 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d"; };
 
-async function drawerWatches(body) {
+async function drawerAgents(body) {
   try {
-    const j = await (await fetch(api("/api/watches"))).json();
-    const ws = j.watches || [];
+    const j = await (await fetch(api("/api/agents"))).json();
+    const ws = j.agents || [];
     const cards = ws.map(w => {
       const state = w.wired ? ["live", "the dispatcher fires it on " + w.triggered_by.join(", ")]
         : w.paused ? ["paused", "parked — was " + w.paused_triggers.join(", ")]
@@ -150,34 +150,34 @@ async function drawerWatches(body) {
         </div>
       </div>`;
     }).join("");
-    body.innerHTML = (cards || `<div class="empty"><p>No watches yet.</p></div>`) + `
-      <form class="mgmt-new" id="watch-new">
-        <input placeholder="set up a new watch — describe what should run, and when…">
+    body.innerHTML = (cards || `<div class="empty"><p>No agents yet.</p></div>`) + `
+      <form class="mgmt-new" id="agent-new">
+        <input placeholder="set up a new agent — describe what to watch and what to do…">
       </form>`;
     body.querySelectorAll(".mgmt-card [data-act]").forEach(b => b.addEventListener("click", async (e) => {
       const id = e.target.closest(".mgmt-card").dataset.w, act = e.target.dataset.act;
       if (act === "manage") {
-        const r = await fetch(api(`/api/watches/${encodeURIComponent(id)}/open`), { method: "POST" });
+        const r = await fetch(api(`/api/agents/${encodeURIComponent(id)}/open`), { method: "POST" });
         const d = await r.json();
         if (r.ok) location.href = nav(d.url); else showToast(d.error || "couldn't open", "err");
         return;
       }
-      const r = await fetch(api(`/api/watches/${encodeURIComponent(id)}/${act}`), { method: "POST" });
+      const r = await fetch(api(`/api/agents/${encodeURIComponent(id)}/${act}`), { method: "POST" });
       if (!r.ok) showToast((await r.json().catch(() => ({}))).error || `${act} failed`, "err");
-      drawerWatches(body);   // re-render with fresh state
+      drawerAgents(body);   // re-render with fresh state
     }));
-    $("watch-new").addEventListener("submit", (e) => {
+    $("agent-new").addEventListener("submit", (e) => {
       e.preventDefault();
       const txt = e.target.querySelector("input").value.trim();
       if (!txt) return;
-      createMindframe(`Set up a new watch: ${txt}. Survey my event sources, existing routes (~/.dispatcher/channels.yaml) and recipes; draft the recipe + route; show the full config as a pending action and wait for my approval before writing anything.`);
+      createMindframe(`Set up a new agent: ${txt}. Survey my connections and event sources, existing routes (~/.mindframe/dispatcher/channels.yaml) and recipes; draft the agent — a recipe under ~/.mindframe/dispatcher/recipes/<name>/ plus a route in ~/.mindframe/dispatcher/channels.yaml; show the full config as a pending action and wait for my approval before writing anything.`);
     });
   } catch (e) {
-    body.innerHTML = `<div class="empty"><p>couldn't load watches: ${escapeHtml(String(e))}</p></div>`;
+    body.innerHTML = `<div class="empty"><p>couldn't load agents: ${escapeHtml(String(e))}</p></div>`;
   }
 }
 
-async function drawerAgents(body) {
+async function drawerRuns(body) {
   try {
     const j = await (await fetch(api("/api/runs"))).json();
     const runs = j.runs || [];
@@ -199,7 +199,7 @@ async function drawerAgents(body) {
       if (!confirm(`Kill ${id}? Its tmux session ends now; a frame agent revives on the next message.`)) return;
       const r = await fetch(api(`/api/runs/${encodeURIComponent(id)}/stop`), { method: "POST" });
       if (!r.ok) showToast((await r.json().catch(() => ({}))).error || "kill failed", "err");
-      drawerAgents(body);
+      drawerRuns(body);
     }));
   } catch (e) {
     body.innerHTML = `<div class="empty"><p>couldn't load runs: ${escapeHtml(String(e))}</p></div>`;
@@ -286,9 +286,9 @@ const DOMAIN_PROMPTS = {
     composing: "surveying your recipes and live tasks",
     prompt: `You are the AGENTS view. The operator opened you to see and manage what can run for them — agent recipes (templates an event can spawn) and the live taskpilot tasks running now. Show them what they have, flag anything in trouble, and suggest what to do.
 
-SURVEY: GET {origin}/api/agents for the aggregated view (recipes + live tasks, each task's status and age). Go deeper where it matters: list ~/.dispatcher/recipes and read a recipe.yaml; note any task marked crashed/stale.
+SURVEY: GET {origin}/api/agents for your standing agents and {origin}/api/runs for live + recent runs (each run's status and age). Go deeper where it matters: list ~/.mindframe/dispatcher/recipes and read a recipe.yaml; note any task marked crashed/stale.
 SHOW + JUDGE: your recipes (what CAN run, and which event triggers each) and your live tasks (what IS running). Flag problems plainly: a crashed task, a long-running zombie, a recipe no event ever triggers (dead weight), a recipe that targets a tool you aren't connected to. If nothing is wrong, say so and suggest one useful agent to add.
-SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never fires — wire or remove it", "you have Calendar connected but no meeting-prep agent — create one". Creating an agent means authoring a recipe at ~/.dispatcher/recipes/<name>/recipe.yaml.`,
+SUGGEST (grounded, as buttons): e.g. "kill this stuck task", "this recipe never fires — wire or remove it", "you have Calendar connected but no meeting-prep agent — create one". Creating an agent means authoring a recipe at ~/.mindframe/dispatcher/recipes/<name>/recipe.yaml.`,
   },
   connections: {
     title: "Connections",
@@ -302,11 +302,11 @@ SUGGEST (grounded, as buttons): e.g. "finish authenticating Stripe", "the financ
   events: {
     title: "Event sources",
     composing: "reading your dispatcher routes",
-    prompt: `You are the EVENT SOURCES view. The operator opened you to see and manage what wakes an agent — dispatcher routes in ~/.dispatcher/channels.yaml, each mapping (source, event_type) to spawn:<recipe> or session:<name>. Show their routes, flag anything wrong, and suggest what to wire.
+    prompt: `You are the EVENT SOURCES view. The operator opened you to see and manage what wakes an agent — dispatcher routes in ~/.mindframe/dispatcher/channels.yaml, each mapping (source, event_type) to spawn:<recipe> or session:<name>. Show their routes, flag anything wrong, and suggest what to wire.
 
-SURVEY: GET {origin}/api/events for the routes grouped by source. Cross-check the source of truth: read ~/.dispatcher/channels.yaml and list ~/.dispatcher/recipes. Also GET {origin}/api/connections to see which tools are connected but not yet wired.
+SURVEY: GET {origin}/api/events for the routes grouped by source. Cross-check the source of truth: read ~/.mindframe/dispatcher/channels.yaml and list ~/.mindframe/dispatcher/recipes. Also GET {origin}/api/connections to see which tools are connected but not yet wired.
 SHOW + JUDGE: your routes, grouped by source, each showing what it spawns. Flag problems plainly: a route pointing at a recipe that doesn't exist, a connected tool with no route (events passing by unused), or no routes at all.
-SUGGEST (grounded, as buttons): e.g. "you have GitHub connected but nothing watches it — prep me when a PR opens", "Slack is connected but no mention wakes an agent". Wiring a source means adding a route to ~/.dispatcher/channels.yaml mapping (source, event_type) to spawn:<recipe> (creating the recipe too if it doesn't exist yet).`,
+SUGGEST (grounded, as buttons): e.g. "you have GitHub connected but nothing watches it — prep me when a PR opens", "Slack is connected but no mention wakes an agent". Wiring a source means adding a route to ~/.mindframe/dispatcher/channels.yaml mapping (source, event_type) to spawn:<recipe> (creating the recipe too if it doesn't exist yet).`,
   },
 };
 
@@ -536,17 +536,17 @@ async function openBrowseDialog() {
 // satellite opens a drawer over the graph; clicking the center spawns a
 // launchpad mindframe — an agent that surveys the
 // vault + connections and opens, in a new tab, a page of grounded suggestions
-// (add a watch, create an agent, start a working mindframe), each a button that
+// (create an agent, start a working mindframe), each a button that
 // messages the agent to pursue it. Edges live in an SVG layer painted behind
 // the nodes; layout is recomputed on resize.
 
 const HUB_NODES = [
   { key: "mindframes",  label: "Mindframes",     hint: "desk & inbox",        render: drawerMindframes },
   { key: "knowledge",   label: "Knowledge base", hint: "what you know",       render: drawerKnowledge },
-  // Watches replaces the old Agents/Events spawn-per-click nodes: one drawer
-  // listing every automation (recipe + route + runs), each opening its own
-  // SINGLETON manager frame — never a fresh disposable agent per click.
-  { key: "watches",     label: "Watches",        hint: "what runs for you",   render: drawerWatches },
+  // Agents: standing automations (recipe + route + runs). One drawer lists
+  // every agent, each opening its own SINGLETON manager mindframe — never a
+  // fresh disposable run per click.
+  { key: "agents",      label: "Agents",         hint: "what runs for you",   render: drawerAgents },
   { key: "connections", label: "Connections",    hint: "what you can reach",  render: drawerConnections },
 ];
 
@@ -600,11 +600,11 @@ function renderHome() {
     }
   }).catch(() => {});
 
-  // everything — frames · watches · knowledge · connections
+  // everything — frames · agents · runs · knowledge · connections
   const FOOT = [
     { key: "mindframes",  word: "frames",      label: "Mindframes",     render: drawerMindframes },
-    { key: "watches",     word: "watches",     label: "Watches",        render: drawerWatches },
     { key: "agents",      word: "agents",      label: "Agents",         render: drawerAgents },
+    { key: "runs",        word: "runs",        label: "Runs",           render: drawerRuns },
     { key: "knowledge",   word: "knowledge",   label: "Knowledge base", render: drawerKnowledge },
     { key: "connections", word: "connections", label: "Connections",    render: drawerConnections },
   ];
@@ -642,7 +642,7 @@ async function loadCalmLines() {
     if (appsBox) appsBox.innerHTML = apps.map(f =>
       `<a class="calm-app" href="${BASE}/m/${encodeURIComponent(f.id)}">${escapeHtml(f.title)}</a>`).join("");
     for (const f of inbox.slice(0, 2)) lines.push({ k: "inbox", f,
-      sub: `${f.origin?.watch || "delivered"} · ${relativeTime(f.modified)}`, done: true });
+      sub: `${f.agent || f.origin?.agent || f.origin?.watch || "delivered"} · ${relativeTime(f.modified)}`, done: true });
     if (desk[0]) lines.push({ k: "resume", f: desk[0], sub: relativeTime(desk[0].modified) });
     const items = (((await (await fetch(api("/api/activity"))).json()).items) || [])
       .filter(i => i.kind !== "delivery").slice(0, 2);
@@ -729,7 +729,7 @@ async function loadHubCounts() {
   const j = (r) => r.ok ? r.json() : Promise.reject(r.status);
   fetch(api("/api/frames")).then(j).then(d => set("mindframes", (d.frames || []).length)).catch(() => {});
   fetch(api("/api/vault")).then(j).then(d => set("knowledge", d.exists ? d.total_entries : 0)).catch(() => {});
-  fetch(api("/api/watches")).then(j).then(d => set("watches", (d.watches || []).length)).catch(() => {});
+  fetch(api("/api/agents")).then(j).then(d => set("agents", (d.agents || []).length)).catch(() => {});
   fetch(api("/api/connections")).then(j).then(d => set("connections", `${(d.connections || []).length}`)).catch(() => {});
 }
 
@@ -798,7 +798,7 @@ function closeCreateOverlay() {
 //
 // Clicking "New" spawns a launchpad mindframe and opens it in a new tab. The
 // launchpad agent surveys the operator's knowledge base, connections, and
-// already-wired watches, then composes a page of concrete, grounded suggestions
+// already-wired agents, then composes a page of concrete, grounded suggestions
 // — add an event source, create an agent, or start a working mindframe — each a
 // button that messages the same agent to pursue it. The whole brief rides in the
 // spawn prompt; the generic surface brief (server-side) wraps it.
@@ -808,13 +808,13 @@ const LAUNCHPAD_PROMPT = `You are the LAUNCHPAD — the operator just clicked "N
 STEP 1 — Survey (do real work, never guess):
 - Knowledge base: list ~/.mindframe/vault and read enough to know the entity types, rough counts, and a few notable nodes (real repos, people, projects, incidents, decisions).
 - Connections: run "claude mcp list"; check "gh auth status", and "gcloud auth list" / "aws sts get-caller-identity" if those CLIs exist. Note what is actually reachable.
-- Already wired (so you do not suggest duplicates): read ~/.dispatcher/channels.yaml (existing routes) and list ~/.dispatcher/recipes (existing agents).
+- Already wired (so you do not suggest duplicates): read ~/.mindframe/dispatcher/channels.yaml (existing routes) and list ~/.mindframe/dispatcher/recipes (existing agents).
 - You may also GET {origin}/api/vault, {origin}/api/connections, {origin}/api/events, and {origin}/api/agents for a fast aggregated view of the same facts.
 
 STEP 2 — Compose ONE page (the whole index.html):
 - Open with a short, warm orientation line that names real things you found (their connected tools, their repos) — proof you actually looked, not a template.
 - Then 3 to 6 suggestions as buttons, spanning these kinds. Ground EVERY one in a real fact; omit a kind if you cannot ground it. No generic placeholders.
-  1. Add an event source (a "watch"): a connected tool that is not yet wired as a route. e.g. "Add GitHub pull requests as an event source so I get prepped when one opens."
+  1. Add an event source: a connected tool that is not yet wired as a trigger. e.g. "Add GitHub pull requests as an event source so I get prepped when one opens."
   2. Create an agent (a recipe that runs on a trigger): e.g. if Google Calendar is connected and no meeting-prep recipe exists, "Create an agent that preps me before each calendar meeting."
   3. Start a working mindframe (real work now), grounded in the KB: e.g. "Review the open PRs on <a real repo> and flag anything risky", or "Summarize my last few incidents and what we changed."
 - Group the suggestions clearly by kind. Keep copy in the operator's second person ("you"/"your"). Inline all CSS, calm and legible, no emoji.

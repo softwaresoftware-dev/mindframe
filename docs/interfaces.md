@@ -8,7 +8,7 @@ contributor works against. For the layers themselves see
 Contents:
 
 1. [Capability contract](#1-capability-contract)
-2. [Dispatcher event API](#2-dispatcher-event-api)
+2. [Dispatcher service API](#2-dispatcher-service-api)
 3. [Static routing — `channels.yaml`](#3-static-routing--channelsyaml)
 4. [Recipe contract](#4-recipe-contract)
 5. [Knowledge base](#5-knowledge-base)
@@ -51,7 +51,7 @@ Full reference: the `softwaresoftware` plugin's `docs/capability-contracts.md`.
 
 ---
 
-## 2. Dispatcher event API
+## 2. Dispatcher service API
 
 `dispatcher-ingress` is a FastAPI service on `127.0.0.1:8911`. All endpoints
 except `/api/health` require a bearer token.
@@ -68,39 +68,8 @@ workspace partition
 (`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/event-sources/*.yaml`, via
 `DISPATCHER_WORKSPACES_ROOT`), polls each system via an adapter, and **tags each
 event with its workspace** — routing then uses that workspace's `channels.yaml`
-and spawns with its home. The `POST /api/event` webhook below still works —
-mindframe's `/api/dashboard-event` proxy speaks it — but is **deprecated** and
-answers with a `Deprecation: true` header. See the dispatcher plugin's own CLAUDE.md.
-
-### `POST /api/event` — ingest an event (deprecated webhook)
-
-| Field | Type | Notes |
-|---|---|---|
-| `source` | string, 1–64 chars | Required. The system the event came from. |
-| `event_type` | string \| null | Optional. Subtype used for routing. |
-| `data` | object \| array \| scalar \| null | The event payload. |
-
-Extra fields are rejected (422). Routing is decided in this order:
-
-1. **Dedupe.** A `(source, event_id)` key seen within the idempotency window
-   (`DISPATCHER_DEDUPE_WINDOW_MINUTES`, default 10) short-circuits. `event_id`
-   is `data.event_id` / `data.id`, or a payload hash if neither exists.
-2. **Static route.** If `channels.yaml` matches (§3), the event is forwarded
-   to a mesh session (`session:`) or spawns an agent (`spawn:`) — no LLM.
-3. **LLM fallback.** Otherwise the event is forwarded to the dispatcher's own
-   Claude session, which reads the payload and decides.
-
-Response shapes (all include `"ok": true`):
-
-```jsonc
-{ "ok": true, "mode": "static-session", "routed_to": "<session>", "bridge": {…} }
-{ "ok": true, "mode": "static-spawn",   "routed_to": "spawn:<recipe>" }
-{ "ok": true, "routed_to": "dispatcher", "bridge": {…} }          // LLM fallback
-{ "ok": true, "deduped": true, "original_event_id": 41, "routed_to": "…" }
-```
-
-A `spawn:` route returns immediately; the spawn runs as a background task and
-its outcome lands in the audit log (status `spawned` / `spawn-failed`).
+and spawns with its home. The `/api/event` webhook was removed; ingestion is poll-only. See the
+dispatcher plugin's own CLAUDE.md.
 
 ### Other endpoints
 
@@ -305,10 +274,10 @@ table in [`../dashboard/README.md`](../dashboard/README.md).
 | `POST /w/<id>/api/frame/<frame>/message` | `{text}` — deliver a message to the frame's agent via taskpilot. If the agent died (reboot/crash) it is revived first (started with a revival brief, then delivered); response carries `revived: true`. |
 | `GET /w/<id>/api/frame/<frame>/activity` | Tail the agent's transcript for cognition events (`?offset=`, `?file=`); also reports `mtime`, `model`, `context`. |
 | `DELETE /w/<id>/api/frame/<frame>` | Tear a mindframe down: delete its task (stops the agent, frees the id; best-effort), then remove the frame dir. |
-| `POST /w/<id>/api/dashboard-event` | `{event_type, data?}` — proxy to the dispatcher's `/api/event` with `source: dashboard-button`. The server reads the bearer from `~/.mindframe/secrets/dispatcher-bearer.token`; the browser never sees it. |
 | `GET /w/<id>/api/vault[/entries\|/graph]` | The workspace's vault at `~/.mindframe/workspaces/<id>/.mindframe/vault`: counts + last-modified; recent entries; and a node-link graph (edges from `[[wikilinks]]` + frontmatter FKs, capped at `?limit=`). |
 | `GET /w/<id>/api/connections` | The workspace's connections — presence only: its `.claude.json` MCPs plus a scan of its `.claude/skills` for connector skills (`SKILL.md` with a `connection:` fingerprint), minus the bundle's own runtime plugins. No auth probing. |
-| `GET /api/events`, `/api/agents`, `/api/runs`, `/api/activity` | Read-only system views (dispatcher routes/recipes, taskpilot tasks, recent activity). **Not yet workspace-scoped** — they read the shared dispatcher/taskpilot state; see [`single-stack-contract.md`](single-stack-contract.md). |
+| `GET /api/agents` (+ `POST /api/agents/<id>/{pause,resume,open}`) | The standing agents: recipes joined with routes, recent runs, deliveries; pause/resume/open manage them. |
+| `GET /api/events`, `/api/runs`, `/api/activity` | Read-only system views (dispatcher routes, taskpilot runs, recent activity). `/api/agents` + `/api/events` read the active workspace's dispatcher partition (`ws_home()/.mindframe/dispatcher`, via `dispatcher_home()`); `/api/runs`/`/api/activity` read the shared taskpilot state filtered by the workspace's frames. See [`single-stack-contract.md`](single-stack-contract.md). |
 | `GET /w/<id>/artifacts/<frame>/<path>` | Sibling files an agent writes next to its `index.html` (traversal-checked). |
 | `GET /<path>` | Static / SPA fallback — serves `public/`. |
 

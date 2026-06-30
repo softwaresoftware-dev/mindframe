@@ -117,11 +117,13 @@ def down_daemon(monkeypatch):
 
 @pytest.fixture()
 def frames_root(tmp_path, monkeypatch):
-    root = tmp_path / "frames"
-    root.mkdir()
-    monkeypatch.setattr(srv, "FRAMES_ROOT", root)
-    # Keep artifact resolution out of the repo's real dashboard/artifacts dir.
-    monkeypatch.setattr(srv, "ARTIFACTS_ROOT", tmp_path / "artifacts-none")
+    # Multi-tenant server: frames resolve per-request via frames_root() =
+    # ws_home()/.mindframe/frames. A bare request (no /w/<id> prefix) has no
+    # workspace, so ws_home() falls back to WORKSPACES_ROOT/__noworkspace__.
+    # Point WORKSPACES_ROOT at tmp and seed that partition's frames dir.
+    monkeypatch.setattr(srv, "WORKSPACES_ROOT", tmp_path)
+    root = tmp_path / "__noworkspace__" / ".mindframe" / "frames"
+    root.mkdir(parents=True)
     return root
 
 
@@ -141,13 +143,17 @@ def _make_frame(root: pathlib.Path, mid: str, task_id: str | None = None,
 def test_health_shape():
     j = client.get("/api/health").json()
     assert j["ok"] is True
-    assert set(j) == {"ok", "port", "dispatcher_url", "dispatcher_bearer_present"}
+    # Core contract; the multi-tenant server also adds `workspaces` + `auth`.
+    assert {"ok", "port", "dispatcher_url", "dispatcher_bearer_present"} <= set(j)
 
 
 # --------------------------- create ---------------------------
 
 
-def test_create_returns_instantly_and_spawns_in_background(frames_root, stub_daemon):
+def test_create_returns_instantly_and_spawns_in_background(frames_root, stub_daemon, monkeypatch):
+    # Bypass the pre-spawn auth gate (no signed-in workspace in this hermetic
+    # setup); we're testing the mint + background-spawn contract, not auth.
+    monkeypatch.setattr(srv, "_auth_status", lambda ws=None: {"status": "ready", "message": "", "fix": ""})
     r = client.post("/api/frames/create", json={"prompt": "watch the build", "title": "Build"})
     assert r.status_code == 200
     j = r.json()
@@ -350,12 +356,12 @@ def test_artifact_symlink_escape_is_rejected(frames_root, tmp_path):
 def test_frames_report_kind_and_provenance(frames_root):
     _make_frame(frames_root, "deskf")
     _make_frame(frames_root, "deliv", kind="delivered",
-                origin={"watch": "pr-prep", "event": "PR #14"})
+                origin={"agent": "pr-prep", "event": "PR #14"})
     by_id = {f["id"]: f for f in client.get("/api/frames").json()["frames"]}
     assert by_id["deskf"]["kind"] == "created" and by_id["deskf"]["origin"] is None
     assert by_id["deliv"]["kind"] == "delivered"
-    assert by_id["deliv"]["origin"]["watch"] == "pr-prep"
-    assert by_id["deliv"]["watch"] == "pr-prep"
+    assert by_id["deliv"]["origin"]["agent"] == "pr-prep"
+    assert by_id["deliv"]["agent"] == "pr-prep"
 
 
 def test_archive_hides_frame_until_unarchive(frames_root):
@@ -367,11 +373,11 @@ def test_archive_hides_frame_until_unarchive(frames_root):
     assert [f["id"] for f in client.get("/api/frames").json()["frames"]] == ["deliv"]
 
 
-def test_newer_delivery_supersedes_older_same_watch(frames_root):
+def test_newer_delivery_supersedes_older_same_agent(frames_root):
     import os, time
-    old = _make_frame(frames_root, "deliv1", kind="delivered", origin={"watch": "pr-prep"})
-    new = _make_frame(frames_root, "deliv2", kind="delivered", origin={"watch": "pr-prep"})
-    other = _make_frame(frames_root, "deliv3", kind="delivered", origin={"watch": "email-triage"})
+    old = _make_frame(frames_root, "deliv1", kind="delivered", origin={"agent": "pr-prep"})
+    new = _make_frame(frames_root, "deliv2", kind="delivered", origin={"agent": "pr-prep"})
+    other = _make_frame(frames_root, "deliv3", kind="delivered", origin={"agent": "email-triage"})
     past = time.time() - 3600
     os.utime(old / "index.html", (past, past))
     ids = {f["id"] for f in client.get("/api/frames").json()["frames"]}
@@ -392,37 +398,37 @@ def test_promote_to_app_notifies_agent_and_back(frames_root, stub_daemon):
     n_msgs = len([1 for m, p, _ in stub_daemon.calls if p.endswith("/message")])
     assert client.post("/api/frame/frame1/kind", json={"kind": "created"}).status_code == 200
     assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/message")]) == n_msgs
-    assert client.post("/api/frame/frame1/kind", json={"kind": "watch"}).status_code == 422
+    assert client.post("/api/frame/frame1/kind", json={"kind": "agent"}).status_code == 422
 
 
 def test_kind_change_refused_for_delivered(frames_root, stub_daemon):
-    _make_frame(frames_root, "deliv", kind="delivered", origin={"watch": "pr-prep"})
+    _make_frame(frames_root, "deliv", kind="delivered", origin={"agent": "pr-prep"})
     assert client.post("/api/frame/deliv/kind", json={"kind": "app"}).status_code == 409
 
 
-# --------------------------- watches ---------------------------
+# --------------------------- agents ---------------------------
 
 
-def test_watch_open_is_a_singleton(frames_root, stub_daemon, tmp_path, monkeypatch):
+def test_agent_open_is_a_singleton(frames_root, stub_daemon, tmp_path, monkeypatch):
     rdir = tmp_path / "dispatcher" / "recipes" / "pr-prep"
     rdir.mkdir(parents=True)
     (rdir / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
     monkeypatch.setattr(srv, "DISPATCHER_HOME", tmp_path / "dispatcher")
-    r1 = client.post("/api/watches/pr-prep/open")
+    r1 = client.post("/api/agents/pr-prep/open")
     assert r1.status_code == 200 and r1.json()["spawn"] == "starting"
     wid = r1.json()["id"]
-    assert wid == "watch-pr-prep"
+    assert wid == "agent-pr-prep"
     meta = json.loads((frames_root / wid / "meta.json").read_text())
-    assert meta["kind"] == "watch" and meta["watch"] == "pr-prep"
+    assert meta["kind"] == "agent" and meta["agent"] == "pr-prep"
     # second open: same frame, no new spawn
     spawn_calls_before = len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")])
-    r2 = client.post("/api/watches/pr-prep/open")
+    r2 = client.post("/api/agents/pr-prep/open")
     assert r2.json()["spawn"] == "existing" and r2.json()["id"] == wid
     assert len([1 for m, p, _ in stub_daemon.calls if p.endswith("/start")]) == spawn_calls_before
-    assert client.post("/api/watches/nope/open").status_code == 404
+    assert client.post("/api/agents/nope/open").status_code == 404
 
 
-def test_watch_pause_resume_roundtrip(frames_root, tmp_path, monkeypatch):
+def test_agent_pause_resume_roundtrip(frames_root, tmp_path, monkeypatch):
     dhome = tmp_path / "dispatcher"
     (dhome / "recipes" / "pr-prep").mkdir(parents=True)
     (dhome / "recipes" / "pr-prep" / "recipe.yaml").write_text("task_name: pr-prep\n", "utf-8")
@@ -434,26 +440,26 @@ def test_watch_pause_resume_roundtrip(frames_root, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
     monkeypatch.setattr(srv, "TASKPILOT_DB", tmp_path / "no.db")
 
-    w = client.get("/api/watches").json()["watches"][0]
+    w = client.get("/api/agents").json()["agents"][0]
     assert w["wired"] is True and w["paused"] is False
 
-    r = client.post("/api/watches/pr-prep/pause")
+    r = client.post("/api/agents/pr-prep/pause")
     assert r.status_code == 200 and r.json()["moved"] == 1
-    w = client.get("/api/watches").json()["watches"][0]
+    w = client.get("/api/agents").json()["agents"][0]
     assert w["wired"] is False and w["paused"] is True
     assert w["paused_triggers"] == ["github/pull_request.opened"]
     # original preserved before the comment-stripping rewrite
     assert (dhome / "channels.yaml.bak-original").is_file()
     # pausing twice is a clean 409, not a duplicate move
-    assert client.post("/api/watches/pr-prep/pause").status_code == 409
+    assert client.post("/api/agents/pr-prep/pause").status_code == 409
 
-    r = client.post("/api/watches/pr-prep/resume")
+    r = client.post("/api/agents/pr-prep/resume")
     assert r.status_code == 200
-    w = client.get("/api/watches").json()["watches"][0]
+    w = client.get("/api/agents").json()["agents"][0]
     assert w["wired"] is True and w["paused"] is False
 
 
-def test_watches_carry_runs_and_deliveries(frames_root, tmp_path, monkeypatch):
+def test_agents_carry_runs_and_deliveries(frames_root, tmp_path, monkeypatch):
     import sqlite3
     dhome = tmp_path / "dispatcher"
     (dhome / "recipes" / "pr-prep").mkdir(parents=True)
@@ -465,9 +471,9 @@ def test_watches_carry_runs_and_deliveries(frames_root, tmp_path, monkeypatch):
     con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', '2026-06-11 18:00:00')")
     con.commit(); con.close()
     monkeypatch.setattr(srv, "TASKPILOT_DB", db)
-    _make_frame(frames_root, "pr-prep-evt9", kind="delivered", origin={"watch": "pr-prep"})
+    _make_frame(frames_root, "pr-prep-evt9", kind="delivered", origin={"agent": "pr-prep"})
 
-    w = client.get("/api/watches").json()["watches"][0]
+    w = client.get("/api/agents").json()["agents"][0]
     assert w["runs"][0]["task_id"] == "pr-prep-evt9"
     assert w["deliveries"][0]["id"] == "pr-prep-evt9"
 
@@ -479,10 +485,10 @@ def test_runs_classify_and_stop(frames_root, stub_daemon, tmp_path, monkeypatch)
     monkeypatch.setattr(srv, "DISPATCHER_HOME", dhome)
     db = tmp_path / "tp.db"
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT)")
+    con.execute("CREATE TABLE tasks (task_id TEXT, name TEXT, status TEXT, updated_at TEXT, home TEXT)")
     now = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    con.execute("INSERT INTO tasks VALUES ('frame1', 'frame1', 'running', ?)", (now,))
-    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', ?)", (now,))
+    con.execute("INSERT INTO tasks VALUES ('frame1', 'frame1', 'running', ?, '')", (now,))
+    con.execute("INSERT INTO tasks VALUES ('pr-prep-evt9', 'pr-prep-evt9', 'completed', ?, '')", (now,))
     con.commit(); con.close()
     monkeypatch.setattr(srv, "TASKPILOT_DB", db)
     monkeypatch.setattr(srv, "_live_tmux_cached", lambda: {"frame1"})
@@ -491,7 +497,7 @@ def test_runs_classify_and_stop(frames_root, stub_daemon, tmp_path, monkeypatch)
     runs = {r["task_id"]: r for r in client.get("/api/runs").json()["runs"]}
     assert runs["frame1"]["kind"] == "frame" and runs["frame1"]["alive"] is True
     assert runs["frame1"]["frame_id"] == "frame1"
-    assert runs["pr-prep-evt9"]["kind"] == "watch-run" and runs["pr-prep-evt9"]["watch"] == "pr-prep"
+    assert runs["pr-prep-evt9"]["kind"] == "agent-run" and runs["pr-prep-evt9"]["agent"] == "pr-prep"
 
     r = client.post("/api/runs/frame1/stop")
     assert r.status_code == 200
@@ -504,7 +510,7 @@ def test_runs_classify_and_stop(frames_root, stub_daemon, tmp_path, monkeypatch)
 def test_activity_feed_narrates_deliveries(frames_root, monkeypatch):
     monkeypatch.setattr(srv, "TASKPILOT_DB", frames_root / "no-such.db")
     _make_frame(frames_root, "deliv", kind="delivered",
-                origin={"watch": "pr-prep", "event": "PR #14"})
+                origin={"agent": "pr-prep", "event": "PR #14"})
     items = client.get("/api/activity").json()["items"]
     deliveries = [i for i in items if i["kind"] == "delivery"]
     assert deliveries and deliveries[0]["frame_id"] == "deliv"

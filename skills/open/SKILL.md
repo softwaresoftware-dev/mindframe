@@ -70,7 +70,7 @@ fi
 Without a workspace name: the **portal** — a calm list of workspaces, each with a
 frame count and an auth badge (`✓ ready` / `sign-in needed`). Click one to enter.
 Inside a workspace (`/w/<id>/`): the calm launcher ("What should we work on?")
-plus that workspace's frames, watches, agents, knowledge, and connections, and a
+plus that workspace's frames, agents, runs, knowledge, and connections, and a
 `← workspaces` link back to the portal.
 
 Close with one line: the URL and that it is open. Nothing more unless something

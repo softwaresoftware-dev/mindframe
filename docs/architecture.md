@@ -40,7 +40,7 @@ listing the operator's workspaces, each workspace's **home** at `/w/<id>/` — t
 calm launcher: one "What should we work on?" input (typed text creates a
 purposeful frame; empty opens a launchpad), the operator's attention in a few
 lines (inbox with provenance, resume, recent activity), app chips, and drawers
-(frames, watches, agents, knowledge, connections) — and each mindframe at
+(frames, agents, runs, knowledge, connections) — and each mindframe at
 `/w/<id>/m/<frame>`. A `WorkspaceMiddleware` strips the `/w/<id>` prefix and the
 server resolves frames/vault per request from
 `~/.mindframe/workspaces/<id>/.mindframe/` (there is no global frames/vault).
@@ -58,10 +58,7 @@ rewrites `index.html` with the Write tool; the shell polls
 The dashboard runs as a managed daemon (`mindframe-dashboard`, via the
 `daemon` capability). It binds `127.0.0.1` only and is unauthenticated — see
 the security posture in [`interfaces.md`](interfaces.md#9-security-posture).
-It holds the dispatcher bearer on disk
-(`~/.mindframe/secrets/dispatcher-bearer.token`) so agent-page action buttons
-can POST events through `/api/dashboard-event` without the token reaching the
-browser. See [`../dashboard/README.md`](../dashboard/README.md).
+See [`../dashboard/README.md`](../dashboard/README.md).
 
 ### Agent runtime — taskpilot
 
@@ -95,9 +92,8 @@ Ingestion is **poll-first**: its poller aggregates event-source declarations
 across all workspace partitions
 (`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/event-sources/*.yaml`, via
 `DISPATCHER_WORKSPACES_ROOT`) and **tags each polled event with the workspace it
-came from** (the source's owning partition). The `POST /api/event` webhook on
-`:8911` still works (the dashboard's `/api/dashboard-event` proxy uses it) but is
-deprecated. All endpoints except `/api/health` are bearer-authed; audit + dedupe
+came from** (the source's owning partition). Ingestion is poll-only — the `/api/event` webhook was removed. The remaining
+endpoints (`/api/direct`, `/api/events`) are bearer-authed (`/api/health` is not); audit + dedupe
 state lives in `~/.dispatcher/events.db` (rows carry the `workspace`; cursors are
 namespaced by workspace).
 

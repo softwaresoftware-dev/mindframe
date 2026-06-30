@@ -7,7 +7,7 @@ truth is [`dashboard/public/tokens.css`](../dashboard/public/tokens.css);
 isn't a token, it's a bug waiting to drift.
 
 **Scope:** the shell, plus an offered base for agent pages. Conversations and
-watch frames build on [`frame.css`](../dashboard/public/frame.css) — tokens +
+agent frames build on [`frame.css`](../dashboard/public/frame.css) — tokens +
 a minimal semantic base (.card, .pill, .label, .pending-action, buttons,
 tables) linked same-origin, so pages inherit the language and follow token
 changes without redeploys. APPS may keep their own theme (Plugboard is light
@@ -41,7 +41,7 @@ on purpose) — for artifacts, brand belongs to the artifact.
 | Lines | `--color-border`, `--color-border-faint`, `--color-border-strong` | card borders, separators, control borders |
 | Ink | `--color-text`, `--color-text-soft`, `--color-text-dim`, `--color-text-muted`, `--color-text-faint` | brightest → faintest; faint is timestamps and hints |
 | Action | `--color-accent`, `--color-accent-hover`, `--color-accent-soft`, `--color-accent-wash` | buttons, focus rings, working pulses, row-hover ink |
-| Identity | `--color-gold` | section labels, counts, app/watch names |
+| Identity | `--color-gold` | section labels, counts, app/agent names |
 | Status | `--color-success(-bright)`, `--color-warn`, `--color-err(-bright)`, `--color-code` | dots, pills, log tool-lines |
 | Type | `--font-heading`, `--font-body`, `--font-mono`, `--font-ui` | the three voices + UI fallback |
 | Rhythm | `--space-*`, `--radius-*`, `--transition*` | radius-round (999px) for pills and chips |
@@ -75,7 +75,7 @@ on purpose) — for artifacts, brand belongs to the artifact.
 
 ## Voice & copy
 
-- Lowercase for system chrome ("everything — frames · watches"), sentence
+- Lowercase for system chrome ("everything — frames · agents"), sentence
   case for content, UPPERCASE only for the tracked mono labels.
 - No emoji in shell chrome (the ⚙/✕/✓/‹›/← glyph set is the whole budget).
 - Counts speak plainly: "3 awake · 19 asleep", never raw enum values.

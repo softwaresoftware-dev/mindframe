@@ -6,9 +6,6 @@ them, lists them, serves their pages, and proxies operator messages to their
 agents via the taskpilot daemon. It also surfaces the single knowledge-base
 vault, live connection discovery, and a read-only system overview.
 
-Action buttons inside agent-authored HTML POST to /api/dashboard-event, which
-proxies to the dispatcher with a bearer the server reads from disk.
-
 Endpoints:
 
   - GET  /api/health                       — liveness + dispatcher bearer presence
@@ -18,16 +15,16 @@ Endpoints:
   - GET  /api/frame/<id>/page|rev          — the agent's page + its revision
   - POST /api/frame/<id>/message           — deliver a message to the agent (revives a dead one first)
   - GET  /api/frame/<id>/activity          — tail the agent's cognition log
-  - POST /api/dashboard-event              — proxy to dispatcher (server holds the bearer)
   - GET  /api/vault[/entries|/graph]       — the single knowledge-base vault
   - GET  /api/connections                  — live connection discovery
   - GET  /api/events, /api/agents          — read-only system endpoints
   - GET  /artifacts/<id>/<path>            — serve a frame's sibling files
   - GET  /<path>                           — SPA fallback
 
-FastAPI + uvicorn + httpx. The dispatcher and taskpilot daemons are optional —
-the dashboard runs without them; only the endpoints that talk to each
-(dashboard-event, frame message) fail when its daemon is unreachable.
+FastAPI + uvicorn + httpx. The taskpilot daemon is optional — the dashboard
+runs without it; only the endpoints that talk to it (frame message, spawn) fail
+when it is unreachable. The dispatcher's routes/recipes are read from disk, never
+over HTTP.
 """
 
 from __future__ import annotations
@@ -55,7 +52,6 @@ from pydantic import BaseModel, Field
 
 SERVER_DIR = Path(__file__).resolve().parent
 ROOT = SERVER_DIR.parent
-ARTIFACTS_ROOT = ROOT / "artifacts"
 WEB_ROOT = ROOT / "public"
 _MINDFRAME_HOME = Path(os.environ.get("MINDFRAME_HOME", str(Path.home() / ".mindframe")))
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -210,9 +206,7 @@ def _warm_connections_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _configure_logging()
-    ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
     log(f"server on http://127.0.0.1:{PORT}")
-    log(f"artifacts: {ARTIFACTS_ROOT}")
     threading.Thread(target=_warm_connections_loop, daemon=True).start()
     yield
 
@@ -330,10 +324,10 @@ def _page_title(index: Path) -> str | None:
 #   app       — an ARTIFACT: a functional, long-lived tool the agent built
 #               and maintains; the operator USES it (fast loop only) and the
 #               agent wakes only for maintenance. Full-bleed presentation.
-#   delivered — a watch's deliverable; arrives unprompted, lives in the Inbox
-#               until handled, carries origin {watch, event, at}
-#   watch     — a singleton frame that manages one watch (recipe + route)
-_FRAME_KINDS = {"created", "app", "delivered", "watch"}
+#   delivered — an agent's deliverable; arrives unprompted, lives in the Inbox
+#               until handled, carries origin {agent, event, at}
+#   agent     — a singleton frame that manages one agent (recipe + route)
+_FRAME_KINDS = {"created", "app", "delivered", "agent"}
 
 # Sent to a frame's agent when the operator (or the agent's own judgment, via
 # the promote endpoint) turns a conversation into an app.
@@ -365,19 +359,19 @@ def _write_meta(fdir: Path, meta: dict[str, Any]) -> None:
 
 
 def _supersede_deliveries(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Within one watch, a newer unhandled delivery supersedes older ones —
+    """Within one agent, a newer unhandled delivery supersedes older ones —
     the old frames are auto-archived (page stays on disk; history lives in
-    the watch's frame). Mutates meta on disk for the superseded; returns the
+    the agent's frame). Mutates meta on disk for the superseded; returns the
     list minus them."""
-    newest_per_watch: dict[str, int] = {}
+    newest_per_agent: dict[str, int] = {}
     for f in frames:
-        if f["kind"] == "delivered" and not f["archived"] and f.get("watch"):
-            newest_per_watch[f["watch"]] = max(
-                newest_per_watch.get(f["watch"], 0), f["modified"])
+        if f["kind"] == "delivered" and not f["archived"] and f.get("agent"):
+            newest_per_agent[f["agent"]] = max(
+                newest_per_agent.get(f["agent"], 0), f["modified"])
     keep: list[dict[str, Any]] = []
     for f in frames:
-        if (f["kind"] == "delivered" and not f["archived"] and f.get("watch")
-                and f["modified"] < newest_per_watch.get(f["watch"], 0)):
+        if (f["kind"] == "delivered" and not f["archived"] and f.get("agent")
+                and f["modified"] < newest_per_agent.get(f["agent"], 0)):
             fdir = frames_root() / f["id"]
             meta = _read_meta(fdir)
             meta["archived"] = True
@@ -395,7 +389,7 @@ def _supersede_deliveries(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def api_frames(archived: int = 0) -> dict[str, Any]:
     """List surface mindframes — frame dirs under frames_root() holding an
     index.html — newest-activity first, with the operator-facing kind
-    (created / delivered / watch) and delivery provenance. Archived frames
+    (created / delivered / agent) and delivery provenance. Archived frames
     are hidden unless ?archived=1; superseded deliveries auto-archive."""
     out: list[dict[str, Any]] = []
     if not frames_root().is_dir():
@@ -441,7 +435,7 @@ async def api_frames(archived: int = 0) -> dict[str, Any]:
             "status": meta.get("status") or "active",
             "kind": kind,
             "archived": bool(meta.get("archived")),
-            "watch": origin.get("watch") or (meta.get("watch") if kind == "watch" else None),
+            "agent": origin.get("agent") or origin.get("watch") or (meta.get("agent") or meta.get("watch") if kind in ("agent", "watch") else None),
             "origin": origin or None,
             "modified": modified,
             "tags": meta.get("tags") or [],
@@ -992,7 +986,7 @@ class FrameKind(BaseModel):
 @app.post("/api/frame/{mid}/kind")
 async def set_frame_kind(mid: str, body: FrameKind) -> Response:
     """Switch a frame between the two operator concepts: a conversation
-    ('created') and an app ('app'). Delivered and watch frames keep their
+    ('created') and an app ('app'). Delivered and agent frames keep their
     kinds. Promoting to app also tells the agent to restructure the page to
     app-grade (the maintenance contract)."""
     fdir = _frame_dir(mid)
@@ -1001,7 +995,7 @@ async def set_frame_kind(mid: str, body: FrameKind) -> Response:
     if body.kind not in ("created", "app"):
         return JSONResponse({"error": "kind must be 'created' or 'app'"}, status_code=422)
     meta = _read_meta(fdir)
-    if meta.get("kind") in ("delivered", "watch"):
+    if meta.get("kind") in ("delivered", "watch", "agent"):
         return JSONResponse({"error": f"a {meta['kind']} frame can't change kind"}, status_code=409)
     was = meta.get("kind") or "created"
     meta["kind"] = body.kind
@@ -1382,78 +1376,18 @@ def frame_activity(mid: str, offset: int = 0, file: str = "") -> Response:
 # --------------------------- dispatcher proxy ---------------------------
 
 
-class DashboardEvent(BaseModel):
-    """Action-button payload from agent-authored HTML.
-
-    The agent embeds `<button onclick="postEvent({...})">` in its page; the
-    SPA wraps that helper and POSTs here. We forward to the dispatcher's
-    /api/event with our held bearer; the browser never sees the token.
-
-    `event_type` and `data` pass through verbatim. `source` is forced to
-    `dashboard-button` so dispatcher routing can distinguish UI-originated
-    events from external webhooks.
-    """
-    event_type: str = Field(..., min_length=1, max_length=128)
-    data: dict | list | str | int | float | bool | None = None
-
-
-def _read_dispatcher_bearer() -> str | None:
-    """Read the dispatcher bearer token from disk, or None if absent/empty. The
-    server holds this so the browser never sees it (see /api/dashboard-event)."""
-    try:
-        return DISPATCHER_BEARER_FILE.read_text("utf-8").strip() or None
-    except OSError:
-        return None
-
-
-@app.post("/api/dashboard-event")
-async def api_dashboard_event(body: DashboardEvent) -> Response:
-    bearer = _read_dispatcher_bearer()
-    if not bearer:
-        return JSONResponse(
-            {"error": f"dispatcher bearer not found at {DISPATCHER_BEARER_FILE}"},
-            status_code=503,
-        )
-    payload = {
-        "source": "dashboard-button",
-        "event_type": body.event_type,
-        "data": body.data,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(
-                f"{DISPATCHER_URL}/api/event",
-                json=payload,
-                headers={"Authorization": f"Bearer {bearer}"},
-            )
-    except httpx.HTTPError as e:
-        return JSONResponse({"error": f"dispatcher unreachable: {e}"}, status_code=502)
-    if not r.is_success:
-        return JSONResponse(
-            {"error": f"dispatcher rejected event (status {r.status_code})", "body": r.text[:500]},
-            status_code=r.status_code,
-        )
-    try:
-        return JSONResponse(r.json())
-    except ValueError:
-        return JSONResponse({"ok": True, "raw": r.text[:500]})
-
 
 @app.get("/artifacts/{sid}/{path:path}")
 def serve_artifact(sid: str, path: str) -> Response:
     """Serve sibling files referenced by a mindframe's page (images, data,
-    sub-pages an agent writes next to its index.html).
-
-    Resolution order (first hit wins):
-      1. dashboard/artifacts/<sid>/<path>
-      2. <frames_root()>/<sid>/<path>
-
-    Each lookup is sandbox-checked so `..` traversal can't escape.
+    sub-pages an agent writes next to its index.html) — read from the active
+    workspace's frame dir, <frames_root()>/<sid>/<path>. Sandbox-checked so
+    `..` traversal can't escape.
     """
     if not (SID_RE.match(sid) or FRAME_ID_RE.match(sid)):
         return PlainTextResponse("not found", status_code=404)
 
-    for root in (ARTIFACTS_ROOT, frames_root()):
+    for root in (frames_root(),):
         if not root.is_dir():
             continue
         base = root / sid
@@ -2003,8 +1937,8 @@ def list_connections() -> Response:
 # Two endpoints that back the hub's Events and Agents drawers. Each maps one
 # bucket of the bundle's mental model to its real on-disk source of truth:
 #
-#   /api/events  — dispatcher routes      (~/.dispatcher/channels.yaml)
-#   /api/agents  — recipes + taskpilot db (~/.dispatcher/recipes, ~/.taskpilot)
+#   /api/events  — dispatcher routes      (~/.mindframe/dispatcher/channels.yaml)
+#   /api/agents  — recipes + taskpilot db (~/.mindframe/dispatcher/recipes, ~/.taskpilot)
 #
 # (The former /api/capabilities — MCPs + plugin skills — was removed with the
 # /system overview it backed; deprecated 2026-06-08.)
@@ -2013,6 +1947,15 @@ def list_connections() -> Response:
 # degrades to an empty list with a `present: false` flag, never a 500.
 
 DISPATCHER_HOME = Path(os.environ.get("MINDFRAME_DISPATCHER_HOME", str(Path.home() / ".dispatcher")))
+
+
+def dispatcher_home() -> Path:
+    """The active workspace's dispatcher partition — channels.yaml + recipes +
+    event-sources — matching where the dispatcher daemon reads per-workspace
+    config (DISPATCHER_WORKSPACES_ROOT/<ws>/.mindframe/dispatcher). Falls back
+    to the global MINDFRAME_DISPATCHER_HOME when no workspace is active."""
+    ws = _current_ws.get()
+    return ws_home(ws) / ".mindframe" / "dispatcher" if ws else DISPATCHER_HOME
 TASKPILOT_DB = Path(os.environ.get("MINDFRAME_TASKPILOT_DB", str(Path.home() / ".taskpilot" / "taskpilot.db")))
 
 _sys_cache: dict[str, dict[str, Any]] = {}
@@ -2043,7 +1986,7 @@ def _split_target(target: str) -> dict[str, str]:
 def list_event_sources() -> Response:
     """Dispatcher event-source routes, grouped by source. Each route says which
     (source, event_type) pair fires which target (spawn:<recipe> | session:<name>)."""
-    chan = DISPATCHER_HOME / "channels.yaml"
+    chan = dispatcher_home() / "channels.yaml"
     if not chan.is_file():
         return JSONResponse({"sources": [], "route_count": 0, "dispatcher_present": False})
     data = _load_yaml(chan) or {}
@@ -2078,15 +2021,15 @@ def _tmux_sessions() -> set[str]:
 
 
 def _agent_definitions() -> list[dict[str, Any]]:
-    """Recipes under ~/.dispatcher/recipes/<name>/recipe.yaml — the spawn
+    """Recipes under ~/.mindframe/dispatcher/recipes/<name>/recipe.yaml — the spawn
     templates an event route can target. These are what CAN run."""
-    recipes_dir = DISPATCHER_HOME / "recipes"
+    recipes_dir = dispatcher_home() / "recipes"
     out: list[dict[str, Any]] = []
     if not recipes_dir.is_dir():
         return out
     # Map recipe name -> the (source, event_type) routes that trigger it.
     triggers: dict[str, list[str]] = {}
-    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    chan = _load_yaml(dispatcher_home() / "channels.yaml") or {}
     for r in (chan.get("routes") or []):
         if isinstance(r, dict):
             t = _split_target(r.get("target", ""))
@@ -2109,76 +2052,19 @@ def _agent_definitions() -> list[dict[str, Any]]:
     return out
 
 
-def _live_agents(limit: int = 40) -> list[dict[str, Any]]:
-    """Taskpilot tasks — what IS (or recently was) running. Read straight from
-    taskpilot.db, newest first, cross-referenced with live tmux sessions."""
-    if not TASKPILOT_DB.is_file():
-        return []
-    import sqlite3
-    try:
-        con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
-    except sqlite3.Error:
-        return []
-    try:
-        cols = ("task_id", "name", "description", "status", "kind", "model",
-                "cwd", "updated_at")
-        rows = con.execute(
-            f"SELECT {', '.join(cols)} FROM tasks "
-            "ORDER BY updated_at DESC LIMIT 400"
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        con.close()
-    from datetime import datetime, timezone, timedelta
-    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
 
-    def _recent(ts: str | None) -> bool:
-        """True if an ISO/space-separated timestamp is within the 3-day cutoff
-        (treating a naive timestamp as UTC). Used to drop stale pending zombies."""
-        if not ts:
-            return False
-        try:
-            dt = datetime.fromisoformat(ts.replace(" ", "T"))
-        except ValueError:
-            return False
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt >= cutoff
-
-    sessions = _tmux_sessions()
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        rec = dict(zip(cols, row))
-        rec["live"] = rec["task_id"] in sessions
-        # "Live tasks" = what is running right now or freshly queued:
-        #   - a live tmux session (ground truth for "running"), always kept; or
-        #   - a non-terminal db status (running/pending) updated in the last 3d.
-        # Terminal runs (killed/crashed/completed) and ancient pending zombies
-        # are history, not live — drop them.
-        if not (rec["live"] or
-                (rec["status"] in ("running", "pending") and _recent(rec["updated_at"]))):
-            continue
-        desc = rec.get("description") or ""
-        rec["description"] = desc[:140] + ("…" if len(desc) > 140 else "")
-        out.append(rec)
-    # Live first, then by recency (already DESC), capped.
-    out.sort(key=lambda a: not a["live"])
-    return out[:limit]
-
-
-# --------------------------- watches ---------------------------
+# --------------------------- agents ---------------------------
 #
-# A WATCH is the operator-facing bundle of: a dispatcher route (when), a
+# An AGENT is the operator-facing bundle of: a dispatcher route (when), a
 # recipe (what), and the ephemeral runs it spawns (results, delivered as
 # frames). The operator never edits recipe.yaml or channels.yaml directly —
-# each watch has ONE singleton frame (id: watch-<recipe>) whose agent manages
-# it: shows trigger + behavior + recent runs, and edits the config on
+# each agent has ONE singleton frame (id: agent-<recipe>) whose mindframe
+# manages it: shows trigger + behavior + recent runs, and edits the config on
 # instruction, drawing a pending action and waiting for approval.
 
-WATCH_BRIEF = """You are the manager of ONE watch — an automation the operator owns. The watch \
-is '{rid}': recipe at ~/.dispatcher/recipes/{rid}/ (recipe.yaml + brief.json) \
-plus any routes targeting spawn:{rid} in ~/.dispatcher/channels.yaml. You own \
+AGENT_BRIEF = """You are the manager of ONE agent — an automation the operator owns. The agent \
+is '{rid}': recipe at ~/.mindframe/dispatcher/recipes/{rid}/ (recipe.yaml + brief.json) \
+plus any routes targeting spawn:{rid} in ~/.mindframe/dispatcher/channels.yaml. You own \
 exactly ONE file, your page:
 
     {index}
@@ -2187,12 +2073,12 @@ YOUR JOB
   1. READ the recipe, its brief, and the channels.yaml routes. Also look at \
 recent runs (task rows named like {rid}-* via `curl -s http://127.0.0.1:8912/tasks` \
 or ~/.taskpilot/) and recent deliverables (frames under ~/.mindframe/frames/ \
-whose meta.json origin.watch == "{rid}").
-  2. COMPOSE your page as the watch's home: what triggers it (in plain words), \
+whose meta.json origin.agent == "{rid}").
+  2. COMPOSE your page as the agent's home: what triggers it (in plain words), \
 what it does, whether it is currently wired (route present) or unwired, its \
 recent runs and deliverables (link deliverable frames as /m/<id>), and any \
 problems you can see.
-  3. The operator CHANGES the watch by talking to you. When asked to change \
+  3. The operator CHANGES the agent by talking to you. When asked to change \
 behavior (different trigger, different brief, pause, resume): draft the exact \
 config edit, show it on the page as a PENDING ACTION with the diff and an \
 explicit approval button, and only apply it to the files after the operator \
@@ -2209,17 +2095,17 @@ for updates; full Write only for recomposition.
 {{method:'POST',headers:{{'Content-Type':'application/json'}},\
 body:JSON.stringify({{text:'A CLEAR INSTRUCTION TO YOU'}})}})\
 .then(function(){{this.disabled=true;this.textContent='on it…'}}.bind(this))">Label</button>
-  - NEVER declare yourself done; end with the watch's current state and a \
+  - NEVER declare yourself done; end with the agent's current state and a \
 forward question.
 
-Compose your watch home page now."""
+Compose your agent home page now."""
 
 
 def _paused_triggers() -> dict[str, list[str]]:
     """Recipe name -> (source/event_type) trigger strings parked under the
     channels.yaml `paused_routes:` key. The dispatcher reads only `routes:`,
     so a parked route is inert — that's what pausing IS."""
-    chan = _load_yaml(DISPATCHER_HOME / "channels.yaml") or {}
+    chan = _load_yaml(dispatcher_home() / "channels.yaml") or {}
     out: dict[str, list[str]] = {}
     for r in (chan.get("paused_routes") or []):
         if isinstance(r, dict):
@@ -2230,8 +2116,8 @@ def _paused_triggers() -> dict[str, list[str]]:
     return out
 
 
-def _watch_runs(rid: str, limit: int = 5) -> list[dict[str, Any]]:
-    """Recent taskpilot runs spawned by this watch (task ids are
+def _agent_runs(rid: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Recent taskpilot runs spawned by this agent (task ids are
     '<recipe>-<event id>' by recipe convention)."""
     if not TASKPILOT_DB.is_file():
         return []
@@ -2247,8 +2133,8 @@ def _watch_runs(rid: str, limit: int = 5) -> list[dict[str, Any]]:
     return [{"task_id": r[0], "status": r[1], "updated_at": r[2]} for r in rows]
 
 
-def _watch_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
-    """This watch's recent delivered frames (newest first, archived included
+def _agent_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
+    """This agent's recent delivered frames (newest first, archived included
     so history survives the inbox)."""
     out = []
     if not frames_root().is_dir():
@@ -2258,7 +2144,7 @@ def _watch_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
             continue
         meta = _read_meta(fdir)
         origin = meta.get("origin") if isinstance(meta.get("origin"), dict) else {}
-        if meta.get("kind") == "delivered" and origin.get("watch") == rid:
+        if meta.get("kind") == "delivered" and (origin.get("agent") or origin.get("watch")) == rid:
             try:
                 mt = int((fdir / "index.html").stat().st_mtime * 1000)
             except OSError:
@@ -2270,16 +2156,16 @@ def _watch_deliveries(rid: str, limit: int = 3) -> list[dict[str, Any]]:
     return out[:limit]
 
 
-@app.get("/api/watches")
-def list_watches() -> Response:
-    """Watches = recipes joined with routes (active + paused), recent runs,
+@app.get("/api/agents")
+def list_agents() -> Response:
+    """Agents = recipes joined with routes (active + paused), recent runs,
     recent deliveries, and the singleton manager frame. The operator-facing
     automation list — everything a management panel needs in one call."""
     defs = _agent_definitions()
     paused = _paused_triggers()
     out = []
     for d in defs:
-        wid = f"watch-{d['id']}"[:64]
+        wid = f"agent-{d['id']}"[:64]
         out.append({
             "id": d["id"],
             "name": d["name"],
@@ -2288,14 +2174,14 @@ def list_watches() -> Response:
             "wired": bool(d["triggered_by"]),
             "paused": not d["triggered_by"] and bool(paused.get(d["id"])),
             "frame_id": wid if (frames_root() / wid / "index.html").is_file() else None,
-            "runs": _watch_runs(d["id"]),
-            "deliveries": _watch_deliveries(d["id"]),
+            "runs": _agent_runs(d["id"]),
+            "deliveries": _agent_deliveries(d["id"]),
         })
-    return JSONResponse({"watches": out})
+    return JSONResponse({"agents": out})
 
 
-def _move_watch_routes(rid: str, pause: bool) -> Response:
-    """Move this watch's routes between `routes:` (live) and `paused_routes:`
+def _move_agent_routes(rid: str, pause: bool) -> Response:
+    """Move this agent's routes between `routes:` (live) and `paused_routes:`
     (inert) in channels.yaml. The file is rewritten via YAML (comments are
     lost — a one-time .bak preserves the original); a backup is also taken
     on every change to .bak-last."""
@@ -2303,7 +2189,7 @@ def _move_watch_routes(rid: str, pause: bool) -> Response:
         import yaml
     except ImportError:
         return JSONResponse({"error": "PyYAML unavailable"}, status_code=500)
-    chan_path = DISPATCHER_HOME / "channels.yaml"
+    chan_path = dispatcher_home() / "channels.yaml"
     if not chan_path.is_file():
         return JSONResponse({"error": "no channels.yaml"}, status_code=404)
     data = _load_yaml(chan_path) or {}
@@ -2329,42 +2215,42 @@ def _move_watch_routes(rid: str, pause: bool) -> Response:
     return JSONResponse({"ok": True, "id": rid, "paused": pause, "moved": len(moving)})
 
 
-@app.post("/api/watches/{rid}/pause")
-def pause_watch(rid: str) -> Response:
-    """Park this watch's routes — the dispatcher stops firing it. Reversible."""
-    return _move_watch_routes(rid, pause=True)
+@app.post("/api/agents/{rid}/pause")
+def pause_agent(rid: str) -> Response:
+    """Park this agent's routes — the dispatcher stops firing it. Reversible."""
+    return _move_agent_routes(rid, pause=True)
 
 
-@app.post("/api/watches/{rid}/resume")
-def resume_watch(rid: str) -> Response:
-    return _move_watch_routes(rid, pause=False)
+@app.post("/api/agents/{rid}/resume")
+def resume_agent(rid: str) -> Response:
+    return _move_agent_routes(rid, pause=False)
 
 
-@app.post("/api/watches/{rid}/open")
-async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
-    """Open (create-if-missing) the singleton frame that manages this watch.
-    Instant, like create: mint + return; the agent spawns in the background.
-    Re-opening an existing watch frame just returns its URL — no new agent."""
+@app.post("/api/agents/{rid}/open")
+async def open_agent(rid: str, background_tasks: BackgroundTasks) -> Response:
+    """Open (create-if-missing) the singleton frame that manages this agent.
+    Instant, like create: mint + return; the mindframe spawns in the background.
+    Re-opening an existing agent frame just returns its URL — no new mindframe."""
     if not re.match(r"^[a-z0-9][a-z0-9_-]{0,40}$", rid):
-        return JSONResponse({"error": "bad watch id"}, status_code=422)
-    if not (DISPATCHER_HOME / "recipes" / rid / "recipe.yaml").is_file():
+        return JSONResponse({"error": "bad agent id"}, status_code=422)
+    if not (dispatcher_home() / "recipes" / rid / "recipe.yaml").is_file():
         return JSONResponse({"error": f"no recipe '{rid}'"}, status_code=404)
-    wid = f"watch-{rid}"[:64]
+    wid = f"agent-{rid}"[:64]
     fdir = frames_root() / wid
     if (fdir / "index.html").is_file():
         return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
     if not await _daemon_reachable():
         return JSONResponse({"error": "taskpilot daemon not reachable"}, status_code=503)
-    prompt = WATCH_BRIEF.format(rid=rid, index=str(fdir / "index.html"))
+    prompt = AGENT_BRIEF.format(rid=rid, index=str(fdir / "index.html"))
     try:
-        fdir = _mint_frame(wid, f"Watch: {rid}", prompt, {"kind": "watch-open"})
+        fdir = _mint_frame(wid, f"Agent: {rid}", prompt, {"kind": "agent-open"})
     except FileExistsError:
         return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "existing"})
     except OSError as e:
         return JSONResponse({"error": f"filesystem error: {e}"}, status_code=500)
     meta = _read_meta(fdir)
-    meta["kind"] = "watch"
-    meta["watch"] = rid
+    meta["kind"] = "agent"
+    meta["agent"] = rid
     _write_meta(fdir, meta)
     background_tasks.add_task(_spawn_frame_bg, wid, fdir, prompt)
     return JSONResponse({"id": wid, "url": f"/m/{wid}", "spawn": "starting"})
@@ -2374,8 +2260,8 @@ async def open_watch(rid: str, background_tasks: BackgroundTasks) -> Response:
 #
 # "What is running right now, and what ran recently" — every taskpilot task,
 # classified for the operator: a FRAME agent (interactive, belongs to a dock
-# frame), a WATCH run (ephemeral, spawned by a route), or OTHER. Mechanical
-# controls only: kill. Behavioral changes happen in the frame/watch surfaces.
+# frame), an AGENT run (ephemeral, spawned by a route), or OTHER. Mechanical
+# controls only: kill. Behavioral changes happen in the frame/agent surfaces.
 
 
 def _frame_task_index() -> dict[str, str]:
@@ -2398,7 +2284,7 @@ def list_runs() -> Response:
     try:
         con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
         rows = con.execute(
-            "SELECT task_id, name, status, updated_at FROM tasks "
+            "SELECT task_id, name, status, updated_at, home FROM tasks "
             "ORDER BY updated_at DESC LIMIT 200").fetchall()
         con.close()
     except sqlite3.Error:
@@ -2406,12 +2292,16 @@ def list_runs() -> Response:
     live = _live_tmux_cached()
     frame_of = _frame_task_index()
     recipes = set()
-    rdir = DISPATCHER_HOME / "recipes"
+    rdir = dispatcher_home() / "recipes"
     if rdir.is_dir():
         recipes = {d.name for d in rdir.iterdir() if d.is_dir()}
     now = time.time()
+    ws = _current_ws.get()
+    ws_path = str(ws_home(ws)) if ws else None
     out = []
-    for task_id, name, status, updated_at in rows:
+    for task_id, name, status, updated_at, home in rows:
+        if ws_path is not None and home != ws_path:
+            continue
         try:
             dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
             at = dt.replace(tzinfo=timezone.utc).timestamp()
@@ -2420,16 +2310,16 @@ def list_runs() -> Response:
         alive = task_id in live
         if not alive and (now - at) >= _FEED_WINDOW_S:
             continue
-        watch = next((r for r in recipes if task_id.startswith(r + "-")), None)
+        agent = next((r for r in recipes if task_id.startswith(r + "-")), None)
         out.append({
             "task_id": task_id,
             "name": name or task_id,
             "status": status,
             "alive": alive,
             "updated": int(at * 1000),
-            "kind": "frame" if task_id in frame_of else "watch-run" if watch else "task",
+            "kind": "frame" if task_id in frame_of else "agent-run" if agent else "task",
             "frame_id": frame_of.get(task_id),
-            "watch": watch,
+            "agent": agent,
         })
     out.sort(key=lambda r: (not r["alive"], -r["updated"]))
     return JSONResponse({"runs": out, "taskpilot_present": True})
@@ -2459,7 +2349,7 @@ def activity_feed(limit: int = 30) -> Response:
     One narrative over three stores that already exist —
       deliveries  (frames with kind=delivered; provenance from meta.origin)
       frame work  (a frame's transcript moved recently = its agent worked)
-      runs        (taskpilot rows that are NOT frame agents = watch runs)
+      runs        (taskpilot rows that are NOT frame agents = agent runs)
     Read-only; window capped at 48h so the feed is news, not archaeology."""
     now = time.time()
     items: list[dict[str, Any]] = []
@@ -2483,7 +2373,7 @@ def activity_feed(limit: int = 30) -> Response:
                 if now - at < _FEED_WINDOW_S:
                     items.append({
                         "at": int(at * 1000), "kind": "delivery",
-                        "text": f"{origin.get('watch') or 'a watch'} delivered: {title}",
+                        "text": f"{origin.get('agent') or origin.get('watch') or 'an agent'} delivered: {title}",
                         "frame_id": fdir.name,
                     })
             try:
@@ -2499,19 +2389,23 @@ def activity_feed(limit: int = 30) -> Response:
             except OSError:
                 pass
 
-    # Watch runs: taskpilot tasks that aren't frame agents.
+    # Agent runs: taskpilot tasks that aren't frame agents.
     if TASKPILOT_DB.is_file():
         import sqlite3
         try:
             con = sqlite3.connect(f"file:{TASKPILOT_DB}?mode=ro", uri=True, timeout=3)
             rows = con.execute(
-                "SELECT task_id, name, status, updated_at FROM tasks "
+                "SELECT task_id, name, status, updated_at, home FROM tasks "
                 "ORDER BY updated_at DESC LIMIT 100").fetchall()
             con.close()
         except sqlite3.Error:
             rows = []
-        for task_id, name, status, updated_at in rows:
+        ws = _current_ws.get()
+        ws_path = str(ws_home(ws)) if ws else None
+        for task_id, name, status, updated_at, home in rows:
             if task_id in frame_ids:
+                continue
+            if ws_path is not None and home != ws_path:
                 continue
             try:
                 dt = datetime.fromisoformat(str(updated_at).replace(" ", "T"))
@@ -2529,25 +2423,6 @@ def activity_feed(limit: int = 30) -> Response:
     items.sort(key=lambda i: i["at"], reverse=True)
     return JSONResponse({"items": items[:limit]})
 
-
-@app.get("/api/agents")
-def list_agents() -> Response:
-    """Agents in two groups: definitions (recipes = what can run) and live
-    (taskpilot tasks = what is running)."""
-    now = time.time()
-    c = _sys_cache.get("agents")
-    if not c or (now - c["at"]) > _SYS_TTL_S:
-        defs = _agent_definitions()
-        live = _live_agents()
-        c = {"at": now, "data": {
-            "definitions": defs,
-            "live": live,
-            "definition_count": len(defs),
-            "live_count": len(live),
-            "running_count": sum(1 for a in live if a["live"]),
-        }}
-        _sys_cache["agents"] = c
-    return JSONResponse(c["data"])
 
 
 @app.get("/{full_path:path}")
