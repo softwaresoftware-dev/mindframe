@@ -2070,7 +2070,8 @@ exactly ONE file, your page:
     {index}
 
 YOUR JOB
-  1. READ the recipe, its brief, and the channels.yaml routes. Also look at \
+  1. READ the recipe, its brief, the channels.yaml routes, and any event-sources \
+in ~/.mindframe/dispatcher/event-sources/ (a schedule trigger's cron lives there). Also look at \
 recent runs (task rows named like {rid}-* via `curl -s http://127.0.0.1:8912/tasks` \
 or ~/.taskpilot/) and recent deliverables (frames under ~/.mindframe/frames/ \
 whose meta.json origin.agent == "{rid}").

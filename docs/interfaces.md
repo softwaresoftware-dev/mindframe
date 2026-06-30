@@ -68,7 +68,10 @@ workspace partition
 (`~/.mindframe/workspaces/<id>/.mindframe/dispatcher/event-sources/*.yaml`, via
 `DISPATCHER_WORKSPACES_ROOT`), polls each system via an adapter, and **tags each
 event with its workspace** — routing then uses that workspace's `channels.yaml`
-and spawns with its home. The `/api/event` webhook was removed; ingestion is poll-only. See the
+and spawns with its home. The `/api/event` webhook was removed; ingestion is
+poll-only. **Time triggers are just another source:** a `system: schedule`
+event-source fires a synthetic event when its cron is due (the poller's
+`schedule` adapter), so "every morning" routes like any event. See the
 dispatcher plugin's own CLAUDE.md.
 
 ### Other endpoints
