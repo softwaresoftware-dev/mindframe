@@ -167,9 +167,9 @@ def ensure_venv():
 # home/workspaces/<id>/. Personal is just another workspace (no special default).
 DEFAULT_WORKSPACES = [
     ("personal", "Personal"),
-    ("crestborne", "Crestborne"),
-    ("pulsiv", "Pulsiv"),
-    ("arctype", "Arctype"),
+    ("acme", "Acme"),
+    ("globex", "Globex"),
+    ("initech", "Initech"),
 ]
 
 
@@ -286,10 +286,10 @@ def seed_home(fresh):
     # a touch of seed content in two workspaces
     _seed_dummy_frame(WORKSPACES / "personal", "welcome", "Welcome",
                       "Your personal workspace.")
-    _seed_dummy_frame(WORKSPACES / "crestborne", "deal-memo", "Deal Memo",
-                      "Crestborne workspace.")
+    _seed_dummy_frame(WORKSPACES / "acme", "deal-memo", "Deal Memo",
+                      "Acme workspace.")
     for ws_id, note, text in (("personal", "hello.md", "# Hello\nPersonal vault.\n"),
-                              ("crestborne", "deal.md", "# Deal\nCrestborne vault.\n")):
+                              ("acme", "deal.md", "# Deal\nAcme vault.\n")):
         p = WORKSPACES / ws_id / ".mindframe" / "vault" / note
         if not p.exists():
             p.write_text(text)

@@ -1,6 +1,6 @@
 ---
 name: open
-description: Open the mindframe portal (or a specific workspace) in the operator's browser. Brings up the single dashboard daemon if it is not running, then navigates the browser. Use when asked to "open up mindframe", "open mindframe", "open the mindframe home", "launch mindframe", "show me mindframe", "go to my mindframe", or "/mindframe:open". Accepts an optional workspace name (e.g. "/mindframe:open crestborne"). For creating or listing workspaces use /mindframe:workspace.
+description: Open the mindframe portal (or a specific workspace) in the operator's browser. Brings up the single dashboard daemon if it is not running, then navigates the browser. Use when asked to "open up mindframe", "open mindframe", "open the mindframe home", "launch mindframe", "show me mindframe", "go to my mindframe", or "/mindframe:open". Accepts an optional workspace name (e.g. "/mindframe:open acme"). For creating or listing workspaces use /mindframe:workspace.
 ---
 
 # Mindframe — Open
@@ -12,7 +12,7 @@ are **no per-workspace daemons or ports** — the dashboard is always
 `mindframe-dashboard` on 5174. This skill makes "open up mindframe" a reliable
 one-liner: ensure the dashboard is up, then point the browser at it.
 
-If a workspace name was passed (e.g. `/mindframe:open crestborne`), open that
+If a workspace name was passed (e.g. `/mindframe:open acme`), open that
 workspace's home; otherwise open the portal that lists every workspace.
 
 Do the steps in order; don't skip the health probe.
